@@ -1,0 +1,20 @@
+# Dependências e build
+node_modules/
+dist/
+
+# Segredos — NUNCA versionar (ver mitigação de vazamento de credenciais)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Playwright
+playwright-report/
+test-results/
+.cache/
+
+# Saída de mapeamento pode conter dados sensíveis das respostas reais
+src/integrations/segfy/endpoints-mapeados.json
