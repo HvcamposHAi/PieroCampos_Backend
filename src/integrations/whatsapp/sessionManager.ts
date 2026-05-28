@@ -30,8 +30,13 @@ interface SessionEntry {
   fechandoIntencional: boolean;
 }
 
+/** Máximo de tentativas de reconexão antes de marcar a linha como `erro`. */
+const MAX_RECONNECT = 3;
+
 class SessionManager {
   private sessoes = new Map<string, SessionEntry>();
+  /** Contador de tentativas de reconexão por canal. Zera ao conectar com sucesso ou em connect manual. */
+  private reconnectAttempts = new Map<string, number>();
   private bootstrapPromise: Promise<void> | null = null;
 
   /** Idempotente: se já há socket vivo, no-op. */
@@ -51,29 +56,74 @@ class SessionManager {
     await atualizarCanal(canalId, { status: "conectando" });
 
     const { state, saveCreds } = await useSupabaseAuthState(canalId);
-    const sock = criarSocketBaileys({ state, apelidoCanal: canal.apelido });
+    const sock = await criarSocketBaileys({ state, apelidoCanal: canal.apelido });
 
     const entry: SessionEntry = { canalId, apelido: canal.apelido, sock, fechandoIntencional: false };
     this.sessoes.set(canalId, entry);
 
     registrarHandlers(canalId, sock, saveCreds, {
+      onAberto: () => {
+        // Conectou — zera contador para futuras desconexões.
+        this.reconnectAttempts.delete(canalId);
+      },
       onFechado: (motivo, reconectavel) => {
         this.sessoes.delete(canalId);
-        if (entry.fechandoIntencional || !reconectavel) return;
-        const backoff = getEnv().WA_RECONNECT_BACKOFF_MS;
-        logger.info("[wa.session] agendando reconexão", { canalId, motivo, em_ms: backoff });
+        if (entry.fechandoIntencional || !reconectavel) {
+          this.reconnectAttempts.delete(canalId);
+          return;
+        }
+
+        const attempts = (this.reconnectAttempts.get(canalId) ?? 0) + 1;
+        this.reconnectAttempts.set(canalId, attempts);
+
+        if (attempts > MAX_RECONNECT) {
+          logger.error("[wa.session] limite de reconexões atingido — marcando como erro", {
+            canalId,
+            tentativas: attempts,
+            motivo,
+          });
+          this.reconnectAttempts.delete(canalId);
+          atualizarCanal(canalId, {
+            status: "erro",
+            qr_code: null,
+            qr_expires_at: null,
+            last_disconnect_reason: `max_reconnect_${motivo}`,
+          }).catch(() => {
+            // canal pode ter sido apagado; ignorar
+          });
+          return;
+        }
+
+        const backoff = getEnv().WA_RECONNECT_BACKOFF_MS * attempts; // backoff linear: 5s, 10s, 15s
+        logger.info("[wa.session] agendando reconexão", { canalId, motivo, tentativa: attempts, em_ms: backoff });
         setTimeout(() => {
-          this.connect(canalId).catch((e) =>
-            logger.error("[wa.session] reconect falhou", {
-              canalId,
-              erro: (e as Error).message,
-            }),
-          );
+          this.reconectarSeguro(canalId);
         }, backoff);
       },
     });
 
     return { status: "conectando", jaAtivo: false };
+  }
+
+  /**
+   * Tentativa de reconexão chamada pelo timer do onFechado.
+   * Se o canal foi apagado entretanto, para silenciosamente sem throw.
+   */
+  private async reconectarSeguro(canalId: string): Promise<void> {
+    try {
+      const canal = await buscarCanal(canalId);
+      if (!canal) {
+        logger.warn("[wa.session] reconnect abortado — canal foi apagado", { canalId });
+        this.reconnectAttempts.delete(canalId);
+        return;
+      }
+      await this.connect(canalId);
+    } catch (e) {
+      logger.error("[wa.session] reconnect falhou", {
+        canalId,
+        erro: (e as Error).message,
+      });
+    }
   }
 
   /** Derruba o socket. `logout=true` faz signOff no servidor + apaga auth_state. */
