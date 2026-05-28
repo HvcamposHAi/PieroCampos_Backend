@@ -7,6 +7,11 @@
  * ⚠️ GATE: os seletores de login e o fluxo de operações via UI dependem do
  * mapeamento (a SPA usa S3/CloudFront + New Relic/jam.dev → risco anti-bot).
  * Mantemos seletores tolerantes; confirme/ajuste após `npm run segfy:mapear`.
+ *
+ * ⚠️ 2FA (a partir de 01/06/2026): o login na SPA passa a exigir código por
+ * e-mail. O fluxo abaixo (preencher email+senha → esperar /dashboard) vai
+ * parar no desafio de 2FA. Tratar 2FA aqui (ler código do inbox) é frágil e
+ * risco de ToS — preferir API oficial / usuário isento.
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { getEnv } from "../../config/env";

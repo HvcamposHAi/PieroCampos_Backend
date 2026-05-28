@@ -5,6 +5,12 @@
  * segfy.types.ts). Pode ser que a Segfy use cookie/CSRF em vez de bearer token;
  * nesse caso, a captura de token via scraper (segfy.scraper.ts) é o fallback.
  * Nunca logamos email/senha/token.
+ *
+ * ⚠️ 2FA (a partir de 01/06/2026): a Segfy passa a enviar código de 2 fatores
+ * por e-mail no login. POST /auth/login com {email,password} provavelmente
+ * deixará de bastar (espere um 2º passo / token de desafio). Antes de habilitar
+ * em produção, avaliar usuário de API isento de 2FA ou API oficial negociada;
+ * captura de token via scraper também esbarra no mesmo gate.
  */
 import axios from "axios";
 import { getEnv } from "../../config/env";
