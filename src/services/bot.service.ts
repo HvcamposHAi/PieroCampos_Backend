@@ -1,0 +1,306 @@
+/**
+ * Orquestrador do agente Bia.
+ *
+ * Chamado pelo eventHandlers.messages.upsert APÓS a mensagem do cliente já ter
+ * sido persistida em `mensagens`. Fluxo:
+ *
+ *   1. Resolve conversa (estado, categoria, dados_coletados).
+ *   2. Se estado != bot_ativo → não responde (humano assumiu, encerrado, etc.).
+ *   3. Detecta gatilho de handoff → envia MENSAGEM_HANDOFF, executa UPDATE, sai.
+ *      A trigger no banco insere notificações para operadores.
+ *   4. RAG → contexto + classifica categoria se ainda duvida/outro.
+ *   5. Monta system prompt (BASE cacheado + DINAMICO com contexto).
+ *   6. Lê histórico recente da conversa (~10 últimas mensagens).
+ *   7. Chama Claude.
+ *   8. Persiste resposta da Bia em `mensagens` (origem='bot').
+ *   9. Merge dos campos extraídos em conversas.dados_coletados.
+ *  10. Envia via sessionManager.enviarTextoBot (sock.sendMessage).
+ *
+ * Erros não propagam para o handler — logam e mandam mensagem de fallback ao
+ * cliente para não deixar conversa sem resposta.
+ */
+import { getEnv } from "../config/env";
+import { chamarBia, type MensagemTurno } from "../integrations/claude/claude.client";
+import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
+import type { CategoriaConversa } from "../lib/roteiros";
+import { calcularProgresso, getRoteiro } from "../lib/roteiros";
+import { buildSystemPromptDinamico, SYSTEM_PROMPT_BASE } from "../lib/system-prompt";
+import { logger } from "../utils/logger";
+import {
+  detectarGatilhoHandoff,
+  executarHandoff,
+  MENSAGEM_HANDOFF,
+} from "./handoff.service";
+import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
+
+const FALLBACK_ERRO =
+  "Desculpe, tive um problema técnico aqui agora. Já estou chamando um corretor para te atender. 🙏";
+
+const HISTORICO_MAX = 12; // últimas N mensagens (alterna user/assistant)
+
+interface ConversaAtiva {
+  id: string;
+  cliente_id: string;
+  estado: string;
+  categoria: CategoriaConversa | null;
+  dados_coletados: Record<string, unknown>;
+}
+
+async function carregarConversa(conversaId: string): Promise<ConversaAtiva | null> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("conversas")
+    .select("id, cliente_id, estado, categoria, dados_coletados")
+    .eq("id", conversaId)
+    .maybeSingle();
+  if (error) {
+    logger.error("[bot] falha ao carregar conversa", { conversaId, erro: error.message });
+    return null;
+  }
+  if (!data) return null;
+  return {
+    id: data.id,
+    cliente_id: data.cliente_id,
+    estado: data.estado,
+    categoria: (data.categoria as CategoriaConversa | null) ?? null,
+    dados_coletados:
+      (data.dados_coletados as Record<string, unknown> | null) ?? {},
+  };
+}
+
+async function carregarHistorico(conversaId: string): Promise<MensagemTurno[]> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("mensagens")
+    .select("origem, direcao, corpo, enviada_em")
+    .eq("conversa_id", conversaId)
+    .order("enviada_em", { ascending: false })
+    .limit(HISTORICO_MAX);
+  if (error) {
+    logger.warn("[bot] historico nao carregado", { conversaId, erro: error.message });
+    return [];
+  }
+  const linhas = (data ?? []).reverse() as Array<{
+    origem: string;
+    direcao: string;
+    corpo: string | null;
+  }>;
+  const turnos: MensagemTurno[] = [];
+  for (const m of linhas) {
+    if (!m.corpo) continue;
+    if (m.origem === "cliente") {
+      turnos.push({ role: "user", content: m.corpo });
+    } else if (m.origem === "bot" || m.origem === "operador") {
+      turnos.push({ role: "assistant", content: m.corpo });
+    }
+  }
+  // Anthropic exige histórico alternado começando com user. Se ficar invertido,
+  // colapsa turnos consecutivos do mesmo papel concatenando.
+  const compactado: MensagemTurno[] = [];
+  for (const t of turnos) {
+    const ultimo = compactado[compactado.length - 1];
+    if (ultimo && ultimo.role === t.role) {
+      ultimo.content += "\n" + t.content;
+    } else {
+      compactado.push(t);
+    }
+  }
+  // Garante que comece com user.
+  while (compactado.length > 0 && compactado[0]!.role !== "user") {
+    compactado.shift();
+  }
+  return compactado;
+}
+
+async function mergeDadosColetados(
+  conversaId: string,
+  atuais: Record<string, unknown>,
+  novos: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (Object.keys(novos).length === 0) return atuais;
+  const merged = { ...atuais, ...novos };
+  const sb = getSupabaseAdmin();
+  const { error } = await sb
+    .from("conversas")
+    .update({ dados_coletados: merged })
+    .eq("id", conversaId);
+  if (error) {
+    logger.warn("[bot] falha ao salvar dados_coletados", {
+      conversaId,
+      erro: error.message,
+    });
+    return atuais;
+  }
+  return merged;
+}
+
+export interface ProcessarMensagemInput {
+  canalId: string;
+  conversaId: string;
+  jidRemoto: string;
+  textoCliente: string;
+  /** Função que efetivamente envia via Baileys e persiste a saída. */
+  enviar: (texto: string) => Promise<void>;
+}
+
+export async function processarMensagem(input: ProcessarMensagemInput): Promise<void> {
+  const env = getEnv();
+  if (!env.BIA_ENABLED) {
+    logger.info("[bot] BIA_ENABLED=false; ignorando mensagem", {
+      conversaId: input.conversaId,
+    });
+    return;
+  }
+
+  let conversa: ConversaAtiva | null;
+  try {
+    conversa = await carregarConversa(input.conversaId);
+  } catch (e) {
+    logger.error("[bot] erro carregando conversa", {
+      conversaId: input.conversaId,
+      erro: (e as Error).message,
+    });
+    return;
+  }
+  if (!conversa) return;
+
+  // 1) Estado: bot só responde se estiver em bot_ativo.
+  if (conversa.estado !== "bot_ativo") {
+    logger.info("[bot] conversa nao esta em bot_ativo, nao respondendo", {
+      conversaId: conversa.id,
+      estado: conversa.estado,
+    });
+    return;
+  }
+
+  // 2) Handoff: detectar gatilho ANTES de chamar Claude (econômico).
+  const gatilho = detectarGatilhoHandoff(input.textoCliente);
+  if (gatilho.detectado) {
+    try {
+      await input.enviar(MENSAGEM_HANDOFF);
+      await executarHandoff({
+        conversaId: conversa.id,
+        motivo: `gatilho:${gatilho.gatilho}`,
+      });
+    } catch (e) {
+      logger.error("[bot] falha no handoff", {
+        conversaId: conversa.id,
+        erro: (e as Error).message,
+      });
+    }
+    return;
+  }
+
+  // 3) RAG + monta prompt.
+  let contextoTexto = "";
+  try {
+    const ctx = await buscarContextoRAG({
+      clienteId: conversa.cliente_id,
+      conversaAtualId: conversa.id,
+    });
+    contextoTexto = montarContextoRAG(ctx);
+
+    // VIP: handoff imediato sem chamar Claude.
+    if (ctx.cliente?.atendimento_vip) {
+      await input.enviar(
+        "Olá! Aqui é a Bia 😊 Vou te direcionar direto para seu atendente. Já avisei a equipe!",
+      );
+      await executarHandoff({ conversaId: conversa.id, motivo: "cliente_vip" });
+      return;
+    }
+  } catch (e) {
+    logger.warn("[bot] RAG falhou; seguindo sem contexto", {
+      conversaId: conversa.id,
+      erro: (e as Error).message,
+    });
+  }
+
+  const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados);
+  const proximoCampo = progresso.pendentesObrigatorios[0] ?? null;
+
+  const systemDinamico = buildSystemPromptDinamico({
+    categoria: conversa.categoria,
+    contextoRAG: contextoTexto,
+    dadosColetados: conversa.dados_coletados,
+    pendentesObrigatorios: progresso.pendentesObrigatorios,
+    proximoCampo,
+  });
+
+  // 4) Histórico (já inclui a mensagem que acabou de chegar, pois persistimos antes).
+  const historico = await carregarHistorico(conversa.id);
+
+  // 5) Chama Claude.
+  let resposta;
+  try {
+    resposta = await chamarBia({
+      systemBase: SYSTEM_PROMPT_BASE,
+      systemDinamico,
+      historico,
+    });
+  } catch (e) {
+    logger.error("[bot] Claude falhou", {
+      conversaId: conversa.id,
+      erro: (e as Error).message,
+    });
+    try {
+      await input.enviar(FALLBACK_ERRO);
+      await executarHandoff({ conversaId: conversa.id, motivo: "erro_claude" });
+    } catch (e2) {
+      logger.error("[bot] fallback enviar/handoff tambem falhou", {
+        conversaId: conversa.id,
+        erro: (e2 as Error).message,
+      });
+    }
+    return;
+  }
+
+  // 6) Persistir campos extraídos.
+  if (Object.keys(resposta.camposExtraidos).length > 0) {
+    await mergeDadosColetados(
+      conversa.id,
+      conversa.dados_coletados,
+      resposta.camposExtraidos,
+    );
+  }
+
+  // 7) Detectar "ROTEIRO COMPLETO" e mudar estado para aguardando_cotacao.
+  if (conversa.categoria && getRoteiro(conversa.categoria)) {
+    const progressoAtualizado = calcularProgresso(conversa.categoria, {
+      ...conversa.dados_coletados,
+      ...resposta.camposExtraidos,
+    });
+    if (progressoAtualizado.completo) {
+      const sb = getSupabaseAdmin();
+      await sb
+        .from("conversas")
+        .update({ estado: "aguardando_cotacao" })
+        .eq("id", conversa.id);
+      logger.info("[bot] roteiro completo, estado=aguardando_cotacao", {
+        conversaId: conversa.id,
+      });
+    }
+  }
+
+  // 8) Enviar a resposta da Bia ao cliente.
+  if (!resposta.texto || resposta.texto.trim() === "") {
+    logger.warn("[bot] Claude retornou texto vazio; nao envio nada", {
+      conversaId: conversa.id,
+    });
+    return;
+  }
+  try {
+    await input.enviar(resposta.texto);
+  } catch (e) {
+    logger.error("[bot] falha ao enviar resposta via Baileys", {
+      conversaId: conversa.id,
+      erro: (e as Error).message,
+    });
+  }
+}
+
+// Exporta também a função para os testes mockarem persistência.
+export const _internals = {
+  carregarConversa,
+  carregarHistorico,
+  mergeDadosColetados,
+};

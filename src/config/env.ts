@@ -34,19 +34,61 @@ const schema = z
     SEGFY_COTACAO_INTERVAL_MS: numComPadrao(3_000),
     SEGFY_HEADLESS: boolDeString.default(true),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-    // Supabase — opcionais aqui (o módulo Segfy só os exige se o adapter
-    // SupabasePersistence for usado; o InMemoryPersistence dispensa).
+    // Supabase — agora obrigatório quando WA_ENABLED (ver superRefine).
     SUPABASE_URL: z.string().url().optional().or(z.literal("")).default(""),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional().default(""),
+    SUPABASE_ANON_KEY: z.string().optional().default(""),
+    // WhatsApp (Baileys).
+    WA_ENABLED: boolDeString.default(true),
+    WA_AUTH_ENCRYPTION_KEY: z.string().optional().default(""),
+    WA_RECONNECT_BACKOFF_MS: numComPadrao(5_000),
+    WA_QR_TTL_MS: numComPadrao(60_000),
+    // Agente conversacional Bia (Claude).
+    BIA_ENABLED: boolDeString.default(true),
+    ANTHROPIC_API_KEY: z.string().optional().default(""),
+    BIA_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+    BIA_MAX_TOKENS: numComPadrao(1024),
+    // HTTP.
+    PORT: numComPadrao(3000),
+    FRONT_ORIGIN: z.string().optional().default(""),
   })
-  // Quando a integração está ligada, credenciais passam a ser obrigatórias.
+  // Quando integrações estão ligadas, credenciais passam a ser obrigatórias.
   .superRefine((val, ctx) => {
-    if (!val.SEGFY_ENABLED) return;
-    if (!val.SEGFY_LOGIN) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SEGFY_LOGIN"], message: "obrigatório quando SEGFY_ENABLED=true" });
+    if (val.SEGFY_ENABLED) {
+      if (!val.SEGFY_LOGIN) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SEGFY_LOGIN"], message: "obrigatório quando SEGFY_ENABLED=true" });
+      }
+      if (!val.SEGFY_SENHA) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SEGFY_SENHA"], message: "obrigatório quando SEGFY_ENABLED=true" });
+      }
     }
-    if (!val.SEGFY_SENHA) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SEGFY_SENHA"], message: "obrigatório quando SEGFY_ENABLED=true" });
+    if (val.WA_ENABLED) {
+      if (!val.SUPABASE_URL) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SUPABASE_URL"], message: "obrigatório quando WA_ENABLED=true" });
+      }
+      if (!val.SUPABASE_SERVICE_ROLE_KEY) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SUPABASE_SERVICE_ROLE_KEY"], message: "obrigatório quando WA_ENABLED=true" });
+      }
+      if (!val.SUPABASE_ANON_KEY) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SUPABASE_ANON_KEY"], message: "obrigatório quando WA_ENABLED=true (validação do JWT do front)" });
+      }
+      // 32 bytes em base64 = 44 chars (sem padding) ou 44 com '='. Aceitamos 43-44.
+      if (!val.WA_AUTH_ENCRYPTION_KEY || val.WA_AUTH_ENCRYPTION_KEY.length < 43) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["WA_AUTH_ENCRYPTION_KEY"],
+          message: "obrigatório quando WA_ENABLED=true; deve ser 32 bytes em base64 (use: openssl rand -base64 32)",
+        });
+      }
+    }
+    if (val.BIA_ENABLED) {
+      if (!val.ANTHROPIC_API_KEY) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ANTHROPIC_API_KEY"],
+          message: "obrigatório quando BIA_ENABLED=true (chave da Anthropic — Claude Sonnet)",
+        });
+      }
     }
   });
 

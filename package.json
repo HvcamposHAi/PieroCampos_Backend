@@ -2,9 +2,10 @@
   "name": "pierocampos_backend",
   "version": "1.0.0",
   "description": "Backend Piero de Campos — integração Segfy (módulo isolado)",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "test": "vitest run",
@@ -27,13 +28,20 @@
   },
   "homepage": "https://github.com/HvcamposHAi/PieroCampos_Backend#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.99.0",
     "@supabase/supabase-js": "^2.46.1",
+    "@whiskeysockets/baileys": "6.7.16",
     "axios": "^1.7.7",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^8.0.0",
     "playwright": "^1.48.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
     "@types/node": "^22.9.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",

@@ -33,6 +33,17 @@ const CHAVES_SENSIVEIS = [
   "cookie",
   "set-cookie",
   "viewstate",
+  // WhatsApp / Baileys: QR e creds (qualquer profundidade do payload de auth_state).
+  "qr",
+  "qr_code",
+  "qrcode",
+  "creds",
+  "noisekey",
+  "signedidentitykey",
+  "signedprekey",
+  "advsecret",
+  "wa_auth_encryption_key",
+  "encryption_key",
 ];
 
 const REDACTED = "[REDACTED]";
