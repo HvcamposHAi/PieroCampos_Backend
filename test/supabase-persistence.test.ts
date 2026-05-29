@@ -45,6 +45,10 @@ function criarClienteFake(handlers: Handlers, captura: Captura): SupabaseClient<
           captura.filtros.push({ table, col, valor });
           return ctx;
         },
+        is(col: string, valor: unknown) {
+          captura.filtros.push({ table, col, valor });
+          return ctx;
+        },
         async maybeSingle() {
           if (table === "clientes") return handlers.clienteRow ?? { data: null, error: null };
           return { data: null, error: null };
@@ -95,7 +99,17 @@ describe("SupabasePersistence", () => {
     const cliente = await p.buscarClientePorId("cli_1");
     expect(cliente?.id).toBe("cli_1");
     expect(cliente?.consentimento_lgpd).toBe(true);
-    expect(captura.filtros).toEqual([{ table: "clientes", col: "id", valor: "cli_1" }]);
+    expect(captura.filtros).toContainEqual({ table: "clientes", col: "id", valor: "cli_1" });
+  });
+
+  it("buscarClientePorId filtra soft-delete (deletado_em IS NULL) — A9/LGPD", async () => {
+    const captura: Captura = { filtros: [] };
+    const fake = criarClienteFake({ clienteRow: { data: null, error: null } }, captura);
+    const p = new SupabasePersistence(fake);
+
+    await p.buscarClientePorId("cli_1");
+    // Garante que clientes excluídos (soft-delete) nunca têm PII enviada ao Segfy.
+    expect(captura.filtros).toContainEqual({ table: "clientes", col: "deletado_em", valor: null });
   });
 
   it("buscarClientePorId retorna null quando não encontra", async () => {

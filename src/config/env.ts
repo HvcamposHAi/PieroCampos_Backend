@@ -33,6 +33,12 @@ const schema = z
     SEGFY_COTACAO_TIMEOUT_MS: numComPadrao(60_000),
     SEGFY_COTACAO_INTERVAL_MS: numComPadrao(3_000),
     SEGFY_HEADLESS: boolDeString.default(true),
+    // Gmail OTP (fallback de 2FA Segfy a partir de 01/06/2026). Opcionais: o
+    // caminho primário é um usuário de serviço isento de 2FA. Quando ausentes,
+    // buscarOTPSegfy() lança erro claro e o scraper não tenta o desafio.
+    GMAIL_CLIENT_ID: z.string().optional().default(""),
+    GMAIL_CLIENT_SECRET: z.string().optional().default(""),
+    GMAIL_REFRESH_TOKEN_PIERO: z.string().optional().default(""),
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
     // Supabase — agora obrigatório quando WA_ENABLED (ver superRefine).
     SUPABASE_URL: z.string().url().optional().or(z.literal("")).default(""),

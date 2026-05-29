@@ -42,6 +42,8 @@ export class SupabasePersistence implements PersistencePort {
       .from("clientes")
       .select("id,nome,cpf,email,telefone,segfy_id,consentimento_lgpd")
       .eq("id", id)
+      // Soft-delete: nunca enviar PII de cliente já excluído ao Segfy (LGPD).
+      .is("deletado_em", null)
       .maybeSingle();
 
     if (error) {

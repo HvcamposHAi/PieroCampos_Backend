@@ -32,6 +32,7 @@ import {
   MENSAGEM_HANDOFF,
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
+import { dispararCotacaoSegfy } from "./segfy-cotacao.service";
 
 const FALLBACK_ERRO =
   "Desculpe, tive um problema técnico aqui agora. Já estou chamando um corretor para te atender. 🙏";
@@ -375,12 +376,14 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   }
 
   // 7) Detectar "ROTEIRO COMPLETO" e mudar estado para aguardando_cotacao.
+  let roteiroCompleto = false;
+  let dadosParaCotacao: Record<string, unknown> = {};
   if (conversa.categoria && getRoteiro(conversa.categoria)) {
-    const progressoAtualizado = calcularProgresso(conversa.categoria, {
-      ...conversa.dados_coletados,
-      ...resposta.camposExtraidos,
-    });
+    const dadosMerge = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
+    const progressoAtualizado = calcularProgresso(conversa.categoria, dadosMerge);
     if (progressoAtualizado.completo) {
+      roteiroCompleto = true;
+      dadosParaCotacao = dadosMerge;
       const sb = getSupabaseAdmin();
       await sb
         .from("conversas")
@@ -392,20 +395,49 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     }
   }
 
-  // 8) Enviar a resposta da Bia ao cliente.
+  // 8) Enviar a resposta da Bia ao cliente (se houver texto).
   if (!resposta.texto || resposta.texto.trim() === "") {
     logger.warn("[bot] Claude retornou texto vazio; nao envio nada", {
       conversaId: conversa.id,
     });
-    return;
+  } else {
+    try {
+      await input.enviar(resposta.texto);
+    } catch (e) {
+      logger.error("[bot] falha ao enviar resposta via Baileys", {
+        conversaId: conversa.id,
+        erro: (e as Error).message,
+      });
+    }
   }
-  try {
-    await input.enviar(resposta.texto);
-  } catch (e) {
-    logger.error("[bot] falha ao enviar resposta via Baileys", {
+
+  // 9) Roteiro recém-concluído → dispara cotação no Segfy (atrás de
+  //    SEGFY_ENABLED) e envia o comparativo logo após o fecho da Bia. Tudo
+  //    não-fatal: se a flag estiver off ou o Segfy falhar, dispararCotacaoSegfy
+  //    retorna null e a conversa segue em aguardando_cotacao (equipe assume).
+  if (roteiroCompleto) {
+    const cotacao = await dispararCotacaoSegfy({
       conversaId: conversa.id,
-      erro: (e as Error).message,
+      clienteId: conversa.cliente_id,
+      dados: dadosParaCotacao,
     });
+    if (cotacao) {
+      try {
+        await input.enviar(cotacao.texto);
+        await getSupabaseAdmin()
+          .from("conversas")
+          .update({ estado: "cotacao_enviada" })
+          .eq("id", conversa.id);
+        logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", {
+          conversaId: conversa.id,
+        });
+      } catch (e) {
+        logger.error("[bot] falha ao enviar comparativo/atualizar estado", {
+          conversaId: conversa.id,
+          erro: (e as Error).message,
+        });
+      }
+    }
   }
 }
 
