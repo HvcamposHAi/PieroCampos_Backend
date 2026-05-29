@@ -36,6 +36,28 @@ import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
 const FALLBACK_ERRO =
   "Desculpe, tive um problema técnico aqui agora. Já estou chamando um corretor para te atender. 🙏";
 
+/**
+ * Acuse enviado quando o cliente escreve DEPOIS que a coleta terminou e a
+ * conversa está com a equipe (estados de "equipe trabalhando"). Texto fixo
+ * (não vai a Claude). A igualdade exata deste texto com a última saída é o que
+ * faz o anti-spam: enviamos só 1× por rajada de mensagens do cliente.
+ */
+export const AVISO_POS_COLETA =
+  "Recebi sua mensagem! 🙌 Já estou com a equipe preparando sua cotação e te retorno por aqui assim que estiver pronta.";
+
+/**
+ * Estados em que a equipe está conduzindo a cotação/proposta. Nesses casos o
+ * bot não responde de verdade, mas ACUSA recebimento (1×) para não deixar o
+ * cliente no vácuo. Demais estados não-bot_ativo (humano_assumiu, bloqueado_vip,
+ * apolice_emitida, encerrado) permanecem em silêncio total.
+ */
+export const ESTADOS_EQUIPE_TRABALHANDO: ReadonlySet<string> = new Set([
+  "aguardando_cotacao",
+  "cotacao_enviada",
+  "aceite_registrado",
+  "proposta_transmitida",
+]);
+
 const HISTORICO_MAX = 12; // últimas N mensagens (alterna user/assistant)
 
 interface ConversaAtiva {
@@ -112,6 +134,48 @@ async function carregarHistorico(conversaId: string): Promise<MensagemTurno[]> {
   return compactado;
 }
 
+/** Corpo da última mensagem de saída (bot ou operador) da conversa, ou null. */
+async function carregarUltimaSaida(conversaId: string): Promise<string | null> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("mensagens")
+    .select("corpo")
+    .eq("conversa_id", conversaId)
+    .in("origem", ["bot", "operador"])
+    .order("enviada_em", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    logger.warn("[bot] ultima saida nao carregada", { conversaId, erro: error.message });
+    return null;
+  }
+  return ((data as { corpo: string | null } | null)?.corpo) ?? null;
+}
+
+/** Decisão para conversas que NÃO estão em bot_ativo. Função pura (testável). */
+export type AcaoForaDoBot =
+  | { tipo: "responder" } // bot_ativo → fluxo normal
+  | { tipo: "handoff"; gatilho?: string } // cliente pediu humano enquanto a equipe trabalha
+  | { tipo: "acusar" } // enviar AVISO_POS_COLETA (1ª mensagem da rajada)
+  | { tipo: "suprimir" } // anti-spam: já acusamos esta rajada
+  | { tipo: "silencio" }; // humano assumiu / VIP / fluxo encerrado
+
+export function decidirAcaoForaDoBot(params: {
+  estado: string;
+  textoCliente: string;
+  /** Corpo da última saída; só relevante p/ estados de equipe trabalhando. */
+  ultimaSaida: string | null;
+}): AcaoForaDoBot {
+  if (params.estado === "bot_ativo") return { tipo: "responder" };
+  if (!ESTADOS_EQUIPE_TRABALHANDO.has(params.estado)) return { tipo: "silencio" };
+  const gatilho = detectarGatilhoHandoff(params.textoCliente);
+  if (gatilho.detectado) return { tipo: "handoff", gatilho: gatilho.gatilho };
+  if ((params.ultimaSaida ?? "").trim() === AVISO_POS_COLETA.trim()) {
+    return { tipo: "suprimir" };
+  }
+  return { tipo: "acusar" };
+}
+
 async function mergeDadosColetados(
   conversaId: string,
   atuais: Record<string, unknown>,
@@ -164,13 +228,60 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   }
   if (!conversa) return;
 
-  // 1) Estado: bot só responde se estiver em bot_ativo.
+  // 1) Estado: bot só responde de fato em bot_ativo. Fora disso, "acusa e
+  //    segura" nos estados de equipe trabalhando (1× por rajada, anti-spam) ou
+  //    fica em silêncio total (humano assumiu / VIP / fluxo fechado).
   if (conversa.estado !== "bot_ativo") {
-    logger.info("[bot] conversa nao esta em bot_ativo, nao respondendo", {
-      conversaId: conversa.id,
+    const ultimaSaida = ESTADOS_EQUIPE_TRABALHANDO.has(conversa.estado)
+      ? await carregarUltimaSaida(conversa.id)
+      : null;
+    const acao = decidirAcaoForaDoBot({
       estado: conversa.estado,
+      textoCliente: input.textoCliente,
+      ultimaSaida,
     });
-    return;
+    switch (acao.tipo) {
+      case "handoff":
+        try {
+          await input.enviar(MENSAGEM_HANDOFF);
+          await executarHandoff({
+            conversaId: conversa.id,
+            motivo: `gatilho_espera:${acao.gatilho ?? "?"}`,
+          });
+        } catch (e) {
+          logger.error("[bot] falha no handoff (estado de espera)", {
+            conversaId: conversa.id,
+            erro: (e as Error).message,
+          });
+        }
+        return;
+      case "acusar":
+        try {
+          await input.enviar(AVISO_POS_COLETA);
+          logger.info("[bot] acuse pos-coleta enviado", {
+            conversaId: conversa.id,
+            estado: conversa.estado,
+          });
+        } catch (e) {
+          logger.error("[bot] falha ao enviar acuse pos-coleta", {
+            conversaId: conversa.id,
+            erro: (e as Error).message,
+          });
+        }
+        return;
+      case "suprimir":
+        logger.info("[bot] acuse pos-coleta suprimido (anti-spam)", {
+          conversaId: conversa.id,
+          estado: conversa.estado,
+        });
+        return;
+      default:
+        logger.info("[bot] conversa nao esta em bot_ativo, nao respondendo", {
+          conversaId: conversa.id,
+          estado: conversa.estado,
+        });
+        return;
+    }
   }
 
   // 2) Handoff: detectar gatilho ANTES de chamar Claude (econômico).
@@ -302,5 +413,6 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
 export const _internals = {
   carregarConversa,
   carregarHistorico,
+  carregarUltimaSaida,
   mergeDadosColetados,
 };
