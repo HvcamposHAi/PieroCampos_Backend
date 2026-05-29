@@ -66,8 +66,26 @@ async function main(): Promise<void> {
   const url = `${env.SEGFY_APP_URL.replace(/\/+$/, "")}/login`;
   await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  logger.info("Mapeamento aberto. Faça login e execute as operações no navegador.");
-  logger.info("Pressione Ctrl+C para salvar e sair.", { saida: SAIDA });
+  // Login automático (seletores confirmados em 29/05/2026): o campo de e-mail do
+  // SSO é um <input> sem type/name; submeter via Enter (o botão fica coberto pelo
+  // widget de chat). Se já houver 2FA (após 01/06), o fluxo pausa aqui.
+  try {
+    await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => undefined);
+    await page.locator("input:not([type=password])").first().fill(env.SEGFY_LOGIN);
+    await page.locator('input[type="password"]').first().fill(env.SEGFY_SENHA);
+    await page.locator('input[type="password"]').first().press("Enter");
+    await page.waitForURL(
+      (u) => u.href.includes("app.segfy.com") && !u.href.includes("login.segfy.com"),
+      { timeout: 25_000 },
+    );
+    logger.info("Login automático OK.");
+  } catch {
+    logger.warn("Login automático falhou (2FA? credencial?). Faça login manualmente no navegador.");
+  }
+
+  logger.info("👉 Agora, NO NAVEGADOR: HFy → Auto → preencha e DISPARE 1 cotação.");
+  logger.info("   (dispense os popups de extensão/NPS/cookies). Capturo todo o tráfego XHR.");
+  logger.info("Ao terminar, pressione Ctrl+C aqui para salvar e sair.", { saida: SAIDA });
 
   const salvar = async () => {
     await writeFile(SAIDA, JSON.stringify({ capturadoEm: new Date().toISOString(), chamadas }, null, 2), "utf8");

@@ -69,3 +69,37 @@ export const SEGFY_ENDPOINTS = {
     byApolice: (apoliceId: string) => `/comissoes?apolice_id=${encodeURIComponent(apoliceId)}`,
   },
 } as const;
+
+/**
+ * API de AUTOMAÇÃO / MULTICÁLCULO (HFy) — ✅ CONFIRMADA na captura interativa
+ * (29/05/2026, rota /multicalculo/hfy-auto, form embutido em iframe).
+ *
+ * Host: https://api.automation.segfy.com
+ * Namespace: POST /api/{recurso}/version/1.0/{ação}
+ * Envelope de REQUEST:  { data: {...}, config: { token } }
+ * Envelope de RESPONSE: { status: "OK"|..., guid, message, data, perform }
+ *
+ * 🔑 TOKEN: vem de upfygate.segfy.com/automation/api/profile/version/1.0/find-by-user
+ *   com body { config: { intranet_id: <assinaturaId>, user_id: <usuarioId> } }
+ *   → resp.data.token. Esse token vai em `config.token` de TODA chamada abaixo.
+ *   (intranet_id/usuarioId vêm do /auth/login — ver getIdentidadeSegfy()).
+ *
+ * Cotação = RPA: os "robôs" Segfy logam nos portais das 17 seguradoras
+ * (credentials_active=17). Pode exigir a extensão de navegador Segfy para alguns
+ * portais. is_multify=false nesta conta.
+ */
+export const SEGFY_AUTOMATION_BASE_URL = "https://api.automation.segfy.com";
+
+export const SEGFY_AUTOMATION_API = {
+  // ✅ Confirmados (init do form Auto):
+  partnersList: "/api/partners/version/1.0/list", // { config:{token} } → { data:{ partners:[...] } }
+  vehicleBrandList: "/api/vehicle/version/1.0/brand-list", // { data:{vehicle_type:"car"}, config:{token} }
+  vehicleCompanyList: "/api/vehicle/version/1.0/company-list", // → seguradoras [{id,name,nome,commission}]
+  templateIndex: "/api/template/version/1.0/index", // { config:{ parent_name:"coverage_vehicle", token } } → coberturas
+  // ⚠️ PENDENTES (só aparecem ao SUBMETER 1 cotação real — wizard multi-etapas
+  // com cascata FIPE marca→modelo→versão→ano dentro do iframe):
+  //   - vehicle model-list / version-list / fipe (cascata)
+  //   - criação/disparo do orçamento (provável /api/quotation|budget/version/1.0/...)
+  //   - polling de resultados das seguradoras
+  // Capturar via `npm run segfy:mapear` fazendo 1 cotação no navegador.
+} as const;
