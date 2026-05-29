@@ -14,6 +14,7 @@
     "segfy:mapear": "tsx src/scripts/mapear-segfy.ts",
     "segfy:mapear:auto": "tsx src/scripts/mapear-segfy-auto.ts",
     "segfy:descobrir-auth": "tsx src/scripts/descobrir-auth.ts",
+    "segfy:analisar": "tsx src/scripts/analisar-mapa.ts",
     "segfy:harness": "tsx src/scripts/segfy-harness.ts"
   },
   "repository": {
