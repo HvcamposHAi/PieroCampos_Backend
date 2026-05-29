@@ -73,6 +73,9 @@ function sanitizarCampos(brutos: Record<string, unknown>): Record<string, unknow
   return out;
 }
 
+/** Cap de iterações no loop de tool_use para limitar custo em runaway. */
+const MAX_TOOL_ITERS = 3;
+
 export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   const env = getEnv();
   const client = getClient();
@@ -83,42 +86,86 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     { type: "text" as const, text: input.systemDinamico },
   ];
 
-  const t0 = Date.now();
-  const resp = await client.messages.create({
-    model: env.BIA_MODEL,
-    max_tokens: env.BIA_MAX_TOKENS,
-    system,
-    tools: [TOOL_ATUALIZAR_DADOS],
-    messages: input.historico.map((m) => ({ role: m.role, content: m.content })),
-  });
-  const elapsedMs = Date.now() - t0;
+  // Histórico mutável: vamos APPEND-ar as respostas com tool_use + tool_result
+  // quando Claude parar com stop_reason='tool_use'. A SDK aceita content como
+  // array de blocks (necessário para tool_use/tool_result).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const messages: any[] = input.historico.map((m) => ({ role: m.role, content: m.content }));
 
-  // Concatena os blocos `text` da resposta e captura tool_use de atualizar_dados.
   let textoAcumulado = "";
-  let camposExtraidos: Record<string, unknown> = {};
+  const camposExtraidos: Record<string, unknown> = {};
+  let inputTokensTotal = 0;
+  let outputTokensTotal = 0;
+  let cacheReadTotal = 0;
+  let cacheCreationTotal = 0;
+  let stopReasonFinal: string | null = null;
+  let toolIters = 0;
 
-  for (const block of resp.content) {
-    if (block.type === "text") {
-      textoAcumulado += block.text;
-    } else if (block.type === "tool_use" && block.name === "atualizar_dados") {
-      const args = block.input as { campos?: Record<string, unknown> } | undefined;
-      if (args?.campos && typeof args.campos === "object") {
-        camposExtraidos = sanitizarCampos(args.campos);
+  const t0 = Date.now();
+
+  while (true) {
+    const resp = await client.messages.create({
+      model: env.BIA_MODEL,
+      max_tokens: env.BIA_MAX_TOKENS,
+      system,
+      tools: [TOOL_ATUALIZAR_DADOS],
+      messages,
+    });
+
+    inputTokensTotal += resp.usage.input_tokens;
+    outputTokensTotal += resp.usage.output_tokens;
+    cacheReadTotal +=
+      (resp.usage as unknown as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
+    cacheCreationTotal +=
+      (resp.usage as unknown as { cache_creation_input_tokens?: number })
+        .cache_creation_input_tokens ?? 0;
+    stopReasonFinal = resp.stop_reason;
+
+    // Acumula texto e captura tool_use desta resposta.
+    for (const block of resp.content) {
+      if (block.type === "text") {
+        textoAcumulado += block.text;
+      } else if (block.type === "tool_use" && block.name === "atualizar_dados") {
+        const args = block.input as { campos?: Record<string, unknown> } | undefined;
+        if (args?.campos && typeof args.campos === "object") {
+          const sanitizados = sanitizarCampos(args.campos);
+          for (const [k, v] of Object.entries(sanitizados)) camposExtraidos[k] = v;
+        }
       }
     }
+
+    // Sai do loop quando Claude termina com texto (end_turn / max_tokens / stop_sequence).
+    if (resp.stop_reason !== "tool_use") break;
+    if (toolIters >= MAX_TOOL_ITERS) {
+      logger.warn("[claude] cap de tool_use atingido; saindo do loop", { iters: toolIters });
+      break;
+    }
+    toolIters++;
+
+    // Constrói tool_result para cada tool_use da resposta e continua o turno.
+    const toolUseBlocks = resp.content.filter(
+      (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use",
+    );
+    const toolResults = toolUseBlocks.map((b) => ({
+      type: "tool_result" as const,
+      tool_use_id: b.id,
+      content: "ok",
+    }));
+    messages.push({ role: "assistant", content: resp.content });
+    messages.push({ role: "user", content: toolResults });
   }
 
-  const paradaPorMaxTokens = resp.stop_reason === "max_tokens";
+  const elapsedMs = Date.now() - t0;
+  const paradaPorMaxTokens = stopReasonFinal === "max_tokens";
 
   logger.info("[claude] resposta da Bia", {
     elapsed_ms: elapsedMs,
-    stop_reason: resp.stop_reason,
-    input_tokens: resp.usage.input_tokens,
-    output_tokens: resp.usage.output_tokens,
-    cache_read_input_tokens:
-      (resp.usage as unknown as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0,
-    cache_creation_input_tokens:
-      (resp.usage as unknown as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0,
+    stop_reason: stopReasonFinal,
+    tool_iters: toolIters,
+    input_tokens: inputTokensTotal,
+    output_tokens: outputTokensTotal,
+    cache_read_input_tokens: cacheReadTotal,
+    cache_creation_input_tokens: cacheCreationTotal,
     campos_extraidos: Object.keys(camposExtraidos),
     texto_len: textoAcumulado.length,
   });
@@ -127,7 +174,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     texto: textoAcumulado.trim(),
     camposExtraidos,
     paradaPorMaxTokens,
-    uso: { input_tokens: resp.usage.input_tokens, output_tokens: resp.usage.output_tokens },
+    uso: { input_tokens: inputTokensTotal, output_tokens: outputTokensTotal },
   };
 }
 
