@@ -68,7 +68,8 @@ export interface MensagemInsert {
   corpo?: string | null;
   midia_url?: string | null;
   midia_tipo?: string | null;
-  operador_nome?: string | null;
-  twilio_sid?: string | null; // reaproveitado como provider_msg_id (id Baileys); renomear no futuro.
+  // Coluna em prod é `twilio_message_sid` (não `twilio_sid`). Reaproveitamos
+  // como id do provider (Baileys); renomear no futuro.
+  twilio_message_sid?: string | null;
   enviada_em?: string;
 }

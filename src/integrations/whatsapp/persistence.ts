@@ -10,7 +10,6 @@
  * Tudo via service_role (bypassa RLS). Sem reentrância: cada função é uma
  * transação curta de 1–3 statements.
  */
-import { randomBytes } from "node:crypto";
 import { logger } from "../../utils/logger";
 import { getSupabaseAdmin } from "./supabase";
 import type { CanalRow, CanalUpdate, ConversaRow, MensagemInsert } from "./wa.types";
@@ -23,11 +22,6 @@ export function jidParaE164(jid: string): string | null {
   const limpo = semSufixo.split(":")[0];
   if (!limpo || !/^\d+$/.test(limpo)) return null;
   return `+${limpo}`;
-}
-
-function gerarProtocolo(): string {
-  // Curto, único, prefixado para identificar origem.
-  return `WA-${randomBytes(4).toString("hex").toUpperCase()}`;
 }
 
 export async function atualizarCanal(canalId: string, update: CanalUpdate): Promise<void> {
@@ -131,7 +125,6 @@ async function obterOuCriarConversaAberta(
     .insert({
       canal_id: canalId,
       cliente_id: clienteId,
-      protocolo: gerarProtocolo(),
       estado: "bot_ativo",
       categoria: "seguro_novo", // ENUM do banco; o adapter do front converte para CategoriaBot.
     })
@@ -159,7 +152,7 @@ export interface RegistroEntradaResultado {
 }
 
 /**
- * Idempotente em `providerMsgId` (gravado em mensagens.twilio_sid — coluna que
+ * Idempotente em `providerMsgId` (gravado em mensagens.twilio_message_sid — coluna que
  * será renomeada para provider_msg_id no futuro). Se o id já existe, retorna
  * `duplicada=true` para que o handler pule processamento subsequente (Bia).
  */
@@ -178,7 +171,7 @@ export async function registrarMensagemEntrada(
     const { data: ja } = await sb
       .from("mensagens")
       .select("id, conversa_id, conversas(cliente_id, estado)")
-      .eq("twilio_sid", input.providerMsgId)
+      .eq("twilio_message_sid", input.providerMsgId)
       .maybeSingle();
     if (ja) {
       const conv = (ja as unknown as {
@@ -202,20 +195,17 @@ export async function registrarMensagemEntrada(
     direcao: "entrada",
     origem: "cliente",
     corpo: input.texto,
-    twilio_sid: input.providerMsgId ?? null,
+    twilio_message_sid: input.providerMsgId ?? null,
     enviada_em: (input.enviadaEm ?? new Date()).toISOString(),
   };
 
   const { error: errMsg } = await sb.from("mensagens").insert(msg);
   if (errMsg) throw errMsg;
 
-  // Atualiza o cartão da fila: última mensagem + timestamp.
+  // Atualiza o cartão da fila com o timestamp da última mensagem.
   await sb
     .from("conversas")
-    .update({
-      ultima_mensagem_em: msg.enviada_em,
-      resumo_ultima_mensagem: input.texto.slice(0, 280),
-    })
+    .update({ ultima_mensagem_em: msg.enviada_em })
     .eq("id", conversa.id);
 
   return {
@@ -238,13 +228,14 @@ export async function registrarMensagemSaida(input: MensagemSaidaInput): Promise
   const sb = getSupabaseAdmin();
   const enviadaEm = new Date().toISOString();
 
+  // Nota: a coluna `operador_nome` não existe em `mensagens` em prod; o nome do
+  // operador fica em `conversas.operador_id` (via assumir conversa) e na UI.
   const msg: MensagemInsert = {
     conversa_id: input.conversaId,
     direcao: "saida",
     origem: "operador",
     corpo: input.texto,
-    operador_nome: input.operadorNome ?? null,
-    twilio_sid: input.providerMsgId ?? null,
+    twilio_message_sid: input.providerMsgId ?? null,
     enviada_em: enviadaEm,
   };
 
@@ -253,10 +244,7 @@ export async function registrarMensagemSaida(input: MensagemSaidaInput): Promise
 
   await sb
     .from("conversas")
-    .update({
-      ultima_mensagem_em: enviadaEm,
-      resumo_ultima_mensagem: input.texto.slice(0, 280),
-    })
+    .update({ ultima_mensagem_em: enviadaEm })
     .eq("id", input.conversaId);
 }
 
@@ -280,7 +268,7 @@ export async function registrarMensagemSaidaBot(input: MensagemSaidaBotInput): P
     direcao: "saida",
     origem: "bot",
     corpo: input.texto,
-    twilio_sid: input.providerMsgId ?? null,
+    twilio_message_sid: input.providerMsgId ?? null,
     enviada_em: enviadaEm,
   };
 
@@ -289,9 +277,6 @@ export async function registrarMensagemSaidaBot(input: MensagemSaidaBotInput): P
 
   await sb
     .from("conversas")
-    .update({
-      ultima_mensagem_em: enviadaEm,
-      resumo_ultima_mensagem: `Bia: ${input.texto}`.slice(0, 280),
-    })
+    .update({ ultima_mensagem_em: enviadaEm })
     .eq("id", input.conversaId);
 }
