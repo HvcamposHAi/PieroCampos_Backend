@@ -77,11 +77,32 @@ export type PayloadCotacaoAuto = z.infer<typeof PayloadCotacaoAutoSchema>;
 // Respostas Segfy (PENDENTE confirmação via mapeamento)
 // ----------------------------------------------------------------------------
 
-/** Resposta esperada do login. */
+/**
+ * Resposta do login — CONFIRMADO via mapeamento (29/05/2026):
+ * `POST upfygate.segfy.com/auth/login {email,password}` → envelope
+ * `{ data: {...}, success, code }`. O bearer fica em `data.token`. NÃO há
+ * `expires_in` (usamos validade padrão). `data.usuarioId`/`data.assinaturaId`
+ * são reaproveitados como user_id/intranet_id na API de automação (UpFy).
+ * `mfaRequired` indica o 2FA (passa a true a partir de 01/06/2026).
+ */
+export const AuthDataSchema = z
+  .object({
+    token: z.string().min(1),
+    usuarioId: z.number().int(),
+    assinaturaId: z.number().int(),
+    nome: z.string().optional(),
+    server: z.string().optional(),
+    acessoMC: z.boolean().optional(), // acesso ao Multicálculo (cotação multi-seguradora)
+    mfaRequired: z.boolean().optional(),
+    sessionToken: z.string().optional(),
+  })
+  .passthrough(); // tolera os demais campos do payload
+export type AuthData = z.infer<typeof AuthDataSchema>;
+
 export const AuthResponseSchema = z.object({
-  token: z.string().min(1),
-  refresh_token: z.string().optional(),
-  expires_in: z.number().int().positive().optional(), // segundos
+  data: AuthDataSchema,
+  success: z.boolean().optional(),
+  code: z.number().optional(),
 });
 export type AuthResponse = z.infer<typeof AuthResponseSchema>;
 

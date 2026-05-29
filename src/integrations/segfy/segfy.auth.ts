@@ -21,6 +21,18 @@ import { SEGFY_ENDPOINTS } from "./endpoints";
 let tokenAtual: string | null = null;
 let tokenExpiraEm: Date | null = null;
 
+/** Identidade do login (usuarioId/assinaturaId) — usada pela API de automação. */
+export interface IdentidadeSegfy {
+  usuarioId: number;
+  assinaturaId: number;
+}
+let identidadeAtual: IdentidadeSegfy | null = null;
+
+/** Identidade do último login REST, ou null (ex.: token veio só do scraper). */
+export function getIdentidadeSegfy(): IdentidadeSegfy | null {
+  return identidadeAtual;
+}
+
 /** Margem de segurança: renova faltando 5 min para expirar. */
 const MARGEM_MS = 5 * 60 * 1000;
 /** Validade assumida quando a API não informa expires_in. */
@@ -58,10 +70,11 @@ export async function getToken(): Promise<string> {
   );
 
   const auth = AuthResponseSchema.parse(resp.data);
-  const validadeS = auth.expires_in ?? VALIDADE_PADRAO_S;
 
-  tokenAtual = auth.token;
-  tokenExpiraEm = new Date(Date.now() + validadeS * 1000);
+  // O login não retorna expires_in — usamos a validade padrão.
+  tokenAtual = auth.data.token;
+  tokenExpiraEm = new Date(Date.now() + VALIDADE_PADRAO_S * 1000);
+  identidadeAtual = { usuarioId: auth.data.usuarioId, assinaturaId: auth.data.assinaturaId };
   return tokenAtual;
 }
 

@@ -98,6 +98,10 @@ async function main(): Promise<void> {
   logger.info("Abrindo SPA", { loginUrl, headless });
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
+  // Após o app.segfy.com redirecionar para o SSO (login.segfy.com), espera o
+  // form renderizar antes de preencher.
+  await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => undefined);
+
   // UMA tentativa de login — seletores tolerantes; falhas individuais não abortam.
   const tentar = async (fn: () => Promise<void>, oque: string) => {
     try {
@@ -106,18 +110,29 @@ async function main(): Promise<void> {
       logger.warn(`mapeamento: não consegui ${oque} (seletor pode diferir)`);
     }
   };
-  await tentar(
-    () => page.fill('input[type="email"], input[name="email"], input[name="username"], input#email', env.SEGFY_LOGIN, { timeout: 10_000 }),
-    "preencher e-mail",
-  );
-  await tentar(
-    () => page.fill('input[type="password"], input[name="password"], input#password', env.SEGFY_SENHA, { timeout: 8_000 }),
-    "preencher senha",
-  );
-  await tentar(
-    () => page.click('button[type="submit"], button:has-text("Entrar"), button:has-text("Acessar"), button:has-text("Login")', { timeout: 8_000 }),
-    "clicar em entrar",
-  );
+  // Email = primeiro input não-senha em ordem de DOM. O form do SSO (login.segfy.com)
+  // usa um <input> SEM type/name/id, então casamos por exclusão da senha.
+  const emailInput = page.locator("input:not([type=password])").first();
+  const senhaInput = page.locator('input[type="password"]').first();
+  const btnEntrar = page
+    .getByRole("button", { name: /entrar|acessar|login/i })
+    .or(page.locator('button[type="submit"]'))
+    .first();
+
+  await tentar(async () => {
+    await emailInput.waitFor({ state: "visible", timeout: 20_000 });
+    await emailInput.fill(env.SEGFY_LOGIN);
+  }, "preencher e-mail");
+  await tentar(() => senhaInput.fill(env.SEGFY_SENHA, { timeout: 10_000 }), "preencher senha");
+  // Submeter: Enter na senha é mais confiável que clicar (o botão pode estar
+  // coberto pelo widget de chat/reCAPTCHA invisível). Click forçado como fallback.
+  await tentar(async () => {
+    await senhaInput.press("Enter");
+    await page.waitForURL((u) => !u.href.includes("login.segfy.com"), { timeout: 12_000 });
+  }, "submeter via Enter");
+  if (page.url().includes("login.segfy.com")) {
+    await tentar(() => btnEntrar.click({ timeout: 8_000, force: true }), "clicar em entrar (fallback)");
+  }
 
   // Deixa o tráfego pós-login assentar (sem repetir login).
   await page.waitForLoadState("networkidle", { timeout: 25_000 }).catch(() => undefined);
