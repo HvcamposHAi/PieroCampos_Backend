@@ -47,24 +47,33 @@ function ehSim(v: unknown): boolean | undefined {
   return undefined;
 }
 
-// ---- mapas de enum (PT → Segfy). ✓ = confirmado; demais = best-guess. -------
+// ---- mapas de enum (PT → Segfy) — ✅ CONFIRMADOS no bundle do form (30/05/2026).
 const MAP_ESTADO_CIVIL: Record<string, string> = {
-  solteiro: "single", // ✓
-  casado: "married",
+  solteiro: "single",
+  casado: "married", // "Casado(a) ou união estável"
+  uniao_estavel: "married",
   divorciado: "divorced",
-  separado: "separated",
-  viuvo: "widowed",
-  uniao_estavel: "stable_union",
+  separado: "divorced",
+  viuvo: "widower", // ✓ é "widower" (não "widowed")
 };
-/** uso → { category_type, utilization_type } */
+/** uso → { category_type, utilization_type }. utilization: personal|job|both. */
 const MAP_USO: Record<string, { category_type: string; utilization_type: string }> = {
-  particular: { category_type: "particular", utilization_type: "personal" }, // ✓
-  trabalho: { category_type: "particular", utilization_type: "work" },
-  aplicativo: { category_type: "app", utilization_type: "app" },
-  app: { category_type: "app", utilization_type: "app" },
-  uber: { category_type: "app", utilization_type: "app" },
+  particular: { category_type: "particular", utilization_type: "personal" },
+  trabalho: { category_type: "particular", utilization_type: "personal" },
+  comercial: { category_type: "particular", utilization_type: "job" },
+  aplicativo: { category_type: "app_transport", utilization_type: "both" },
+  app: { category_type: "app_transport", utilization_type: "both" },
+  uber: { category_type: "app_transport", utilization_type: "both" },
+  taxi: { category_type: "taxi", utilization_type: "both" },
 };
-const MAP_RESIDENCIA: Record<string, string> = { casa: "house", apartamento: "apartment", ap: "apartment", condominio: "apartment" };
+const MAP_RESIDENCIA: Record<string, string> = {
+  casa: "house",
+  apartamento: "apartment",
+  ap: "apartment",
+  condominio: "condominium",
+  chacara: "farm",
+  sitio: "farm",
+};
 
 /** Extrai a placa de um campo `placa` ou do texto livre `dados_veiculo_fipe`. */
 function extrairPlaca(dados: Record<string, unknown>): string | undefined {
@@ -98,24 +107,35 @@ export function mapearParaCotacao(
 
   // Questionário (árvores de decisão) — só sobrescreve o padrão quando há resposta.
   const q: Partial<QuestionarioSegfy> = {};
+  // Garagem na residência: sim → portão eletrônico (default do form); não → não possui.
   const garagemCasa = ehSim(dados.garagem) ?? ehSim(dados.garagem_residencia);
-  if (garagemCasa != null) q.residence_garage = garagemCasa ? "yes_with_electronic_gate" : "no";
-  // job_garage só faz sentido se trabalha; study_garage só se estuda.
-  if (ehSim(dados.trabalha)) q.job_garage = ehSim(dados.garagem_trabalho) ? "yes" : "no";
-  if (ehSim(dados.estuda)) q.study_garage = ehSim(dados.garagem_estudo) ? "yes" : "no";
+  if (garagemCasa === true) q.residence_garage = "yes_with_electronic_gate";
+  else if (garagemCasa === false) q.residence_garage = "no_garage";
+  // Trabalho: não trabalha → does_not_work; trabalha → garagem? yes/no.
+  const trabalha = ehSim(dados.trabalha);
+  if (trabalha === false) q.job_garage = "does_not_work";
+  else if (trabalha === true) q.job_garage = ehSim(dados.garagem_trabalho) ? "yes" : "no";
+  // Estudo: não estuda → does_not_study; estuda → garagem? yes/no.
+  const estuda = ehSim(dados.estuda);
+  if (estuda === false) q.study_garage = "does_not_study";
+  else if (estuda === true) q.study_garage = ehSim(dados.garagem_estudo) ? "yes" : "no";
   const kmMes = asNumber(dados.km_mes);
   if (kmMes != null) q.monthly_km = String(kmMes);
   const dist = asNumber(dados.distancia_trabalho);
   if (dist != null) q.work_distance = String(dist);
   const tipoResid = asString(dados.tipo_residencia)?.toLowerCase();
   if (tipoResid && MAP_RESIDENCIA[tipoResid]) q.residence_type = MAP_RESIDENCIA[tipoResid];
-  const outroCondutor = ehSim(dados.outro_condutor);
-  if (outroCondutor != null) {
-    q.other_driver = outroCondutor ? "exists" : "does_not_exist";
+  // "Reside com condutores de 18 a 26 anos?" → does_not_exist | yes_female | yes_male | yes_both.
+  const condutorJovem = ehSim(dados.condutor_jovem) ?? ehSim(dados.outro_condutor);
+  if (condutorJovem === false) q.other_driver = "does_not_exist";
+  else if (condutorJovem === true) {
+    const sexo = asString(dados.sexo_condutor_jovem)?.toLowerCase();
+    q.other_driver = sexo?.startsWith("f") ? "yes_female" : sexo?.startsWith("m") ? "yes_male" : "yes_both";
     const idade = asNumber(dados.idade_condutor_secundario);
-    if (outroCondutor && idade != null) q.secondary_driver_age = String(idade);
+    q.secondary_driver_age = idade != null && idade >= 25 ? "age_25" : "age_18_to_24";
   }
-  if (ehSim(dados.isencao_fiscal) != null) q.tax_exemption = ehSim(dados.isencao_fiscal) ? "isent" : "not_isent";
+  // Isenção fiscal (PCD). ipi/icms só p/ taxi/app — não tratamos aqui.
+  if (ehSim(dados.pcd) === true) q.tax_exemption = "pcd_isent";
 
   // uso → category_type / utilization_type
   const usoKey = asString(dados.utilizacao_veiculo)?.toLowerCase();

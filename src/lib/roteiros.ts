@@ -51,9 +51,10 @@ const PERGUNTAS_SEGFY_AUTO: CampoRoteiro[] = [
   { chave: "garagem_estudo", rotulo: "Garagem no local de estudo?", obrigatorio: false, dica: "Só se estuda=sim" },
   { chave: "km_mes", rotulo: "Km rodados por mês", obrigatorio: false, dica: "Ex.: 500" },
   { chave: "distancia_trabalho", rotulo: "Distância até o trabalho (km)", obrigatorio: false },
-  { chave: "tipo_residencia", rotulo: "Tipo de residência", obrigatorio: false, dica: "casa ou apartamento" },
-  { chave: "outro_condutor", rotulo: "Outro condutor além do segurado?", obrigatorio: false, dica: "Se SIM → perguntar idade_condutor_secundario" },
-  { chave: "idade_condutor_secundario", rotulo: "Idade do condutor adicional", obrigatorio: false, dica: "Só se outro_condutor=sim" },
+  { chave: "tipo_residencia", rotulo: "Tipo de residência", obrigatorio: false, dica: "casa, apartamento, condominio ou chacara" },
+  { chave: "condutor_jovem", rotulo: "Reside com condutor de 18 a 26 anos?", obrigatorio: false, dica: "Tarifa muda muito. Se SIM → perguntar sexo_condutor_jovem e idade_condutor_secundario" },
+  { chave: "sexo_condutor_jovem", rotulo: "Sexo do condutor jovem", obrigatorio: false, dica: "Só se condutor_jovem=sim: masculino/feminino" },
+  { chave: "idade_condutor_secundario", rotulo: "Idade do condutor jovem", obrigatorio: false, dica: "Só se condutor_jovem=sim: 18-24 ou 25" },
 ];
 
 const RENOVACAO: Roteiro = {

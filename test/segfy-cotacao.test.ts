@@ -31,25 +31,27 @@ describe("mapearParaCotacao", () => {
     expect(r.entrada?.questionario?.utilization_type).toBe("personal");
   });
 
-  it("árvore de decisão: trabalha=sim → job_garage; outro_condutor=sim → idade", () => {
+  it("árvore de decisão: trabalha/estuda/condutor jovem com valores reais do form", () => {
     const r = mapearParaCotacao(
       {
         placa: "SFI7F72", cep: "81270320",
         trabalha: "sim", garagem_trabalho: "sim",
         estuda: "nao",
-        outro_condutor: "sim", idade_condutor_secundario: "40",
+        condutor_jovem: "sim", sexo_condutor_jovem: "feminino", idade_condutor_secundario: "20",
       },
       CLIENTE,
     );
     expect(r.entrada?.questionario?.job_garage).toBe("yes");
-    expect(r.entrada?.questionario?.study_garage).toBeUndefined(); // estuda=nao não pergunta
-    expect(r.entrada?.questionario?.other_driver).toBe("exists");
-    expect(r.entrada?.questionario?.secondary_driver_age).toBe("40");
+    expect(r.entrada?.questionario?.study_garage).toBe("does_not_study"); // estuda=nao
+    expect(r.entrada?.questionario?.other_driver).toBe("yes_female");
+    expect(r.entrada?.questionario?.secondary_driver_age).toBe("age_18_to_24"); // 20 < 25
   });
 
-  it("não inventa job_garage quando não trabalha", () => {
+  it("não trabalha → job_garage=does_not_work; sem resposta → não mexe", () => {
     const r = mapearParaCotacao({ placa: "SFI7F72", cep: "81270320", trabalha: "nao" }, CLIENTE);
-    expect(r.entrada?.questionario?.job_garage).toBeUndefined();
+    expect(r.entrada?.questionario?.job_garage).toBe("does_not_work");
+    const semDados = mapearParaCotacao({ placa: "SFI7F72", cep: "81270320" }, CLIENTE);
+    expect(semDados.entrada?.questionario).toBeUndefined(); // nada respondido → usa padrão
   });
 });
 
