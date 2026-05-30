@@ -176,6 +176,22 @@ function main(): void {
     if (interessantes.length === 0 && ws.length > 0) {
       console.log("  (nenhum frame com palavras-chave de preço — cole alguns frames recv manualmente p/ eu ver)");
     }
+
+    // Frames ENVIADOS pelo cliente (Socket.IO): é aqui que está o SUBSCRIBE/join
+    // do canal de resultados (evento + sala). Decodifica `<digits>[/ns,]<json>`.
+    const sio = ws.filter((f) => f.dir === "sent" && f.ws.includes("socket-io"));
+    const decod = new Set<string>();
+    for (const f of sio) {
+      const m = /^(\d+)(\/[^,[{]+,)?(\[.*\]|\{.*\})$/s.exec(f.amostra.trim());
+      // só mostra frames de EVENTO (42...) — ignora ping/pong/handshake puro.
+      const corpo = m ? `${m[1]}${m[2] ?? ""} ${m[3]}` : f.amostra;
+      if (/^\d*42|subscribe|join|room|channel|register/i.test(f.amostra)) decod.add(corpo.slice(0, 200));
+    }
+    console.log(`\n--- ${sio.length} frames ENVIADOS no socket-io; ${decod.size} candidatos a SUBSCRIBE/join ---`);
+    for (const d of [...decod].slice(0, 15)) console.log(`  → ${d}`);
+    if (decod.size === 0 && sio.length > 0) {
+      console.log("  (nenhum 42[...] de evento — talvez o subscribe seja via query/handshake; cole os primeiros frames sent)");
+    }
   } else {
     console.log("\n(⚠️ nenhum frame de WebSocket capturado — os preços chegaram? aguardou os resultados antes do Ctrl+C?)");
   }
