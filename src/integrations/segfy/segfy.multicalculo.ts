@@ -13,18 +13,26 @@
  * Nunca logamos token/CPF.
  */
 import { randomUUID } from "node:crypto";
-import axios from "axios";
-import { chromium } from "playwright";
+import axios, { type AxiosResponse } from "axios";
 import { io } from "socket.io-client";
 import { getEnv } from "../../config/env";
 import { logger } from "../../utils/logger";
-import { SEGFY_AUTOMATION_API, SEGFY_AUTOMATION_BASE_URL, SEGFY_RESULTS_WS_URL } from "./endpoints";
+import { SEGFY_AUTOMATION_API, SEGFY_AUTOMATION_BASE_URL, SEGFY_ENDPOINTS } from "./endpoints";
 import { mapearResultadoParaItem } from "./segfy.resultado";
 import type { ResultadoCotacaoItem } from "./segfy.types";
 
 const SOCKET_ORIGIN = "https://socket-io.segfy.com";
 const COBERTURA_PADRAO_ID = "4b620414-68ec-4dd5-b10f-406e1a7ead3a";
 const TIMEOUT_RESULTADOS_MS = 120_000;
+
+// Login 100% HTTP (sem browser) via Firebase. A API key é a chave web PÚBLICA
+// do Segfy (embutida no client) — não é segredo.
+const FIREBASE_WEB_KEY = "AIzaSyBqZi-53TxYuo-uvNDUMS1LbM6OsKB7dQc";
+const FIREBASE_VERIFY = `https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=${FIREBASE_WEB_KEY}`;
+const SSO_LOGIN = "https://api.sso.segfy.com/login";
+const UPFY_BASE = "https://upfygate.segfy.com";
+/** Validade do cache de token (idToken Firebase expira em 3600s; margem de 10min). */
+const TOKEN_TTL_MS = 50 * 60 * 1000;
 
 export interface SegfyTokens {
   bearer: string; // JWT (header Authorization)
@@ -57,58 +65,67 @@ interface DecodePlateResp {
 }
 interface CalcResp { status: string; data?: { quotation_id: string } }
 
-/** Login SSO (Playwright) e captura do bearer + token de automação. */
-export async function obterTokensSegfy(): Promise<SegfyTokens> {
+interface FirebaseVerifyResp { idToken?: string }
+interface UpfyLoginResp {
+  data?: { authAutomationToken?: string; userAutomationToken?: string };
+}
+
+function setCookieToHeader(resp: AxiosResponse): string {
+  const sc = resp.headers["set-cookie"];
+  return Array.isArray(sc) ? sc.map((c) => c.split(";")[0]).join("; ") : "";
+}
+
+let cache: { tokens: SegfyTokens; expiraEm: number } | null = null;
+
+/**
+ * Login Segfy 100% via HTTP (SEM browser): Firebase verifyPassword → SSO →
+ * upfygate /auth/login (com o cookie do SSO) → find-by-user. Cacheia o token.
+ *
+ * ⚠️ 2FA (a partir de 01/06/2026): o SSO pode exigir código por e-mail; nesse
+ * caso usar usuário de serviço isento (Configurações > Usuários) ou Gmail OTP.
+ */
+export async function obterTokensSegfy(forcar = false): Promise<SegfyTokens> {
+  if (!forcar && cache && cache.expiraEm > Date.now()) return cache.tokens;
   const env = getEnv();
-  const browser = await chromium.launch({ headless: env.SEGFY_HEADLESS });
-  try {
-    const page = await browser
-      .newContext({
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-      })
-      .then((c) => c.newPage());
+  // Origin/Referer do SSO: a API key do Firebase tem restrição de referrer.
+  const json = {
+    "Content-Type": "application/json",
+    Origin: "https://login.segfy.com",
+    Referer: "https://login.segfy.com/",
+  };
 
-    let bearer = "";
-    let automationToken = "";
-    page.on("request", (req) => {
-      const u = req.url();
-      if (u.includes("api.automation.segfy.com") || u.includes("upfygate.segfy.com")) {
-        const a = req.headers()["authorization"];
-        if (a?.toLowerCase().startsWith("bearer ") && (!bearer || u.includes("api.automation"))) bearer = a;
-      }
-    });
-    page.on("response", async (resp) => {
-      if (resp.url().includes("find-by-user")) {
-        try {
-          const j = (await resp.json()) as { data?: { token?: string } };
-          if (j.data?.token) automationToken = j.data.token;
-        } catch {
-          /* ignore */
-        }
-      }
-    });
+  // 1) Firebase verifyPassword → idToken
+  const fb = await axios.post<FirebaseVerifyResp>(
+    FIREBASE_VERIFY,
+    { email: env.SEGFY_LOGIN, password: env.SEGFY_SENHA, returnSecureToken: true },
+    { headers: json, timeout: 30_000 },
+  );
+  const idToken = fb.data.idToken;
+  if (!idToken) throw new Error("Segfy: Firebase não retornou idToken (credencial?).");
 
-    const base = env.SEGFY_APP_URL.replace(/\/+$/, "");
-    await page.goto(`${base}/login`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => undefined);
-    await page.locator("input:not([type=password])").first().fill(env.SEGFY_LOGIN);
-    await page.locator('input[type="password"]').first().fill(env.SEGFY_SENHA);
-    await page.locator('input[type="password"]').first().press("Enter");
-    await page.waitForURL((u) => u.href.includes("app.segfy.com") && !u.href.includes("login"), { timeout: 25_000 });
-    // Abre o multicálculo p/ disparar as chamadas da api.automation (captura o bearer).
-    await page.goto(`${base}/multicalculo/hfy-auto`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForLoadState("networkidle", { timeout: 25_000 }).catch(() => undefined);
-    for (let i = 0; i < 20 && !(bearer && automationToken); i++) await page.waitForTimeout(1_000);
+  // 2) SSO → cookie de sessão (.segfy.com)
+  const sso = await axios.post(SSO_LOGIN, { idToken }, { headers: json, timeout: 30_000 });
+  const cookie = setCookieToHeader(sso);
 
-    if (!bearer || !automationToken) {
-      throw new Error("Segfy: não capturei bearer/automationToken (2FA? credencial? layout?).");
-    }
-    logger.info("Segfy multicálculo: tokens obtidos");
-    return { bearer, automationToken };
-  } finally {
-    await browser.close();
+  // 3) upfygate /auth/login (com o cookie do SSO) → já traz os tokens de automação.
+  //    bearer = authAutomationToken (Authorization); config.token = userAutomationToken.
+  //    (Não é preciso find-by-user — esses tokens vêm direto no login.)
+  const up = await axios.post<UpfyLoginResp>(
+    `${UPFY_BASE}${SEGFY_ENDPOINTS.auth.login}`,
+    { email: env.SEGFY_LOGIN, password: env.SEGFY_SENHA },
+    { headers: { ...json, Cookie: cookie }, timeout: 30_000 },
+  );
+  const d = up.data.data;
+  if (!d?.authAutomationToken || !d?.userAutomationToken) {
+    throw new Error("Segfy: /auth/login não retornou tokens de automação (2FA? SSO?).");
   }
+  const tokens: SegfyTokens = {
+    bearer: `Bearer ${d.authAutomationToken}`,
+    automationToken: d.userAutomationToken,
+  };
+  cache = { tokens, expiraEm: Date.now() + TOKEN_TTL_MS };
+  logger.info("Segfy multicálculo: tokens obtidos (HTTP, sem browser)");
+  return tokens;
 }
 
 function headers(tokens: SegfyTokens): Record<string, string> {
@@ -134,15 +151,16 @@ async function post<T>(path: string, body: unknown, tokens: SegfyTokens): Promis
  */
 export async function cotarAuto(
   dados: DadosCotacaoAuto,
-  tokens: SegfyTokens,
+  tokens?: SegfyTokens,
 ): Promise<ResultadoCotacaoItem[]> {
-  const { automationToken: token } = tokens;
+  const tk = tokens ?? (await obterTokensSegfy()); // reaproveita o cache p/ várias cotações
+  const { automationToken: token } = tk;
   const insurers = dados.insurers ?? INSURERS_PADRAO;
 
   // 1) segurado + veículo
-  const ins = (await post<InsuredResp>(SEGFY_AUTOMATION_API.insured, { data: { document: dados.cpf }, config: { token } }, tokens)).data;
+  const ins = (await post<InsuredResp>(SEGFY_AUTOMATION_API.insured, { data: { document: dados.cpf }, config: { token } }, tk)).data;
   if (!ins) throw new Error("Segfy: segurado não encontrado para o CPF informado");
-  const dec = (await post<DecodePlateResp>(SEGFY_AUTOMATION_API.decodePlate, { data: { plate: dados.placa }, config: { token } }, tokens)).data;
+  const dec = (await post<DecodePlateResp>(SEGFY_AUTOMATION_API.decodePlate, { data: { plate: dados.placa }, config: { token } }, tk)).data;
   if (!dec || !dec.brands[0] || !dec.models[0]) throw new Error("Segfy: placa não decodificada");
   const brand = dec.brands[0];
   const model = dec.models[0];
@@ -196,7 +214,7 @@ export async function cotarAuto(
   });
 
   await new Promise((r) => setTimeout(r, 1_000)); // garante a conexão antes do disparo
-  const calc = await post<CalcResp>(SEGFY_AUTOMATION_API.calculate, payload, tokens);
+  const calc = await post<CalcResp>(SEGFY_AUTOMATION_API.calculate, payload, tk);
   logger.info("Segfy: cotação disparada", { quotationId: calc.data?.quotation_id, seguradoras: insurers.length });
 
   await coleta;
