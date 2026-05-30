@@ -27,22 +27,45 @@ export interface OpcoesSocket {
 
 let cacheVersion: { version: [number, number, number]; expiraEm: number } | null = null;
 const TTL_VERSION_MS = 60 * 60 * 1000; // 1 hora
+const FETCH_VERSION_TIMEOUT_MS = 6_000;
+/** Versão hardcoded de último recurso — manter alinhada à lib instalada. */
+const FALLBACK_VERSION: [number, number, number] = [2, 3000, 0];
+
+/**
+ * Promise.race com timeout portável (não depende de AbortSignal no fetch da
+ * lib). Limpa o timer no finally para não vazar. A promise que escapar continua
+ * em background sem efeito relevante (no máximo uma escrita tardia no cache).
+ */
+export async function comTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const t = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`timeout_${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([p, t]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 
 async function versionAtual(): Promise<[number, number, number]> {
   if (cacheVersion && Date.now() < cacheVersion.expiraEm) {
     return cacheVersion.version;
   }
   try {
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    const { version, isLatest } = await comTimeout(
+      fetchLatestBaileysVersion(),
+      FETCH_VERSION_TIMEOUT_MS,
+    );
     cacheVersion = { version, expiraEm: Date.now() + TTL_VERSION_MS };
     logger.info("[wa.client] versão WA atualizada", { version, isLatest });
     return version;
   } catch (e) {
-    logger.warn("[wa.client] fetchLatestBaileysVersion falhou; usando default da lib", {
+    logger.warn("[wa.client] fetchLatestBaileysVersion falhou; usando cache/fallback", {
       erro: (e as Error).message,
     });
-    // Fallback: deixa o makeWASocket usar a versão hardcoded.
-    return [2, 3000, 0];
+    // Prefere o cache expirado (mais próximo da realidade) ao hardcoded.
+    return cacheVersion?.version ?? FALLBACK_VERSION;
   }
 }
 

@@ -38,14 +38,24 @@ class SessionManager {
   private sessoes = new Map<string, SessionEntry>();
   /** Contador de tentativas de reconexão por canal. Zera ao conectar com sucesso ou em connect manual. */
   private reconnectAttempts = new Map<string, number>();
+  /** Canais com abertura de socket EM ANDAMENTO (anti-corrida de duplo-connect). */
+  private conectando = new Set<string>();
   private bootstrapPromise: Promise<void> | null = null;
 
-  /** Idempotente: se já há socket vivo, no-op. */
+  /**
+   * Idempotente e NÃO-BLOQUEANTE: valida o canal, marca `conectando` e dispara
+   * a abertura do socket em background, retornando de imediato. Tirar o
+   * `await criarSocketBaileys` do caminho da resposta evita que o front (que
+   * aborta em ~Ns) estoure timeout durante cold start / fetch de versão.
+   */
   async connect(canalId: string): Promise<{ status: string; jaAtivo: boolean }> {
-    const existente = this.sessoes.get(canalId);
-    if (existente) {
+    if (this.sessoes.get(canalId)) {
       logger.info("[wa.session] connect chamado mas socket já existe", { canalId });
       return { status: "ja_ativo", jaAtivo: true };
+    }
+    if (this.conectando.has(canalId)) {
+      logger.info("[wa.session] connect já em andamento", { canalId });
+      return { status: "conectando", jaAtivo: false };
     }
 
     const canal = await buscarCanal(canalId);
@@ -54,12 +64,45 @@ class SessionManager {
       throw new Error(`canal ${canalId} provider=${canal.provider}; só Baileys suporta connect`);
     }
 
+    this.conectando.add(canalId);
     await atualizarCanal(canalId, { status: "conectando" });
 
-    const { state, saveCreds } = await useSupabaseAuthState(canalId);
-    const sock = await criarSocketBaileys({ state, apelidoCanal: canal.apelido });
+    // Abre o socket fora do caminho da resposta. Erros marcam `erro` (o próximo
+    // bootstrap/connect recupera); o `finally` libera o guard.
+    void this.abrirSocket(canalId, canal.apelido)
+      .catch((e) => {
+        logger.error("[wa.session] abrirSocket falhou", {
+          canalId,
+          erro: (e as Error).message,
+        });
+        atualizarCanal(canalId, {
+          status: "erro",
+          last_disconnect_reason: "connect_erro",
+        }).catch(() => {
+          // canal pode ter sido apagado; ignorar
+        });
+      })
+      .finally(() => this.conectando.delete(canalId));
 
-    const entry: SessionEntry = { canalId, apelido: canal.apelido, sock, fechandoIntencional: false };
+    return { status: "conectando", jaAtivo: false };
+  }
+
+  /** Cria o socket e registra os handlers. Chamado em background por connect(). */
+  private async abrirSocket(canalId: string, apelido: string): Promise<void> {
+    const { state, saveCreds } = await useSupabaseAuthState(canalId);
+    const sock = await criarSocketBaileys({ state, apelidoCanal: apelido });
+
+    // Corrida: outro fluxo já abriu um socket para este canal nesse meio-tempo.
+    if (this.sessoes.get(canalId)) {
+      try {
+        sock.end(undefined);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    const entry: SessionEntry = { canalId, apelido, sock, fechandoIntencional: false };
     this.sessoes.set(canalId, entry);
 
     registrarHandlers(canalId, sock, saveCreds, {
@@ -102,8 +145,6 @@ class SessionManager {
         }, backoff);
       },
     });
-
-    return { status: "conectando", jaAtivo: false };
   }
 
   /**
@@ -250,6 +291,37 @@ class SessionManager {
       providerMsgId: messageId,
     });
     return { messageId };
+  }
+
+  /**
+   * Encerra todos os sockets e marca os canais como `desconectado` no banco.
+   * Chamado no SIGTERM/SIGINT (Render manda SIGTERM antes de hibernar), para a
+   * tela não ficar mostrando `conectado` stale enquanto o processo morreu.
+   * `fechandoIntencional=true` impede o onFechado de agendar reconexão.
+   */
+  async shutdown(motivo = "shutdown"): Promise<void> {
+    const ids = [...this.sessoes.keys()];
+    logger.info("[wa.session] shutdown iniciando", { motivo, quantidade: ids.length });
+    await Promise.allSettled(
+      ids.map(async (canalId) => {
+        const entry = this.sessoes.get(canalId);
+        if (entry) {
+          entry.fechandoIntencional = true;
+          try {
+            entry.sock.end(undefined);
+          } catch {
+            /* ignore */
+          }
+        }
+        this.sessoes.delete(canalId);
+        await atualizarCanal(canalId, {
+          status: "desconectado",
+          qr_code: null,
+          qr_expires_at: null,
+          last_disconnect_reason: motivo,
+        });
+      }),
+    );
   }
 
   /**

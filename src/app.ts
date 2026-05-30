@@ -27,6 +27,13 @@ export function criarApp(): express.Express {
   );
   app.use(express.json({ limit: "256kb" }));
 
+  // Keep-alive: SEMPRE 200, independente do bootstrap. Um pinger externo
+  // (UptimeRobot/cron) bate aqui p/ manter o Render Free acordado sem ser
+  // enganado pelo gate 503 do /health. Público e fora de /api/wa.
+  app.get("/ping", (_req, res) => {
+    res.status(200).json({ ok: true, ts: Date.now() });
+  });
+
   let bootstrapPronto = false;
   app.get("/health", (_req, res) => {
     if (!bootstrapPronto) {

@@ -65,6 +65,33 @@ const baileysLoggerSilencioso = {
 };
 
 /**
+ * Quais tipos de `messages.upsert` processamos:
+ *   - "notify": mensagem ao vivo.
+ *   - "append": backlog entregue ao REABRIR o socket (mensagens recebidas
+ *     durante hibernação/restart). Precisamos processar p/ a Bia não deixar o
+ *     cliente sem resposta. `prepend`/sync de histórico antigo → NÃO.
+ * Seguro contra replay: `syncFullHistory:false` + idempotência por providerMsgId
+ * em registrarMensagemEntrada + a janela de backlog (ver dentroDaJanelaBacklog).
+ */
+export function deveProcessarUpsert(type: string): boolean {
+  return type === "notify" || type === "append";
+}
+
+/**
+ * Para o backlog ("append"), descarta mensagens mais velhas que `maxIdadeMs`
+ * (default 24h) — evita reabrir conversas antigas se o WA entregar histórico.
+ * `ts` é o messageTimestamp do Baileys (segundos). Sem timestamp → processa.
+ */
+export function dentroDaJanelaBacklog(
+  ts: number | null | undefined,
+  agoraMs: number,
+  maxIdadeMs = 86_400_000,
+): boolean {
+  if (!ts) return true;
+  return agoraMs - Number(ts) * 1000 <= maxIdadeMs;
+}
+
+/**
  * Detecta um questionário .xlsx anexado. Retorna o documentMessage (com ou sem
  * caption) se o anexo for uma planilha, senão null.
  */
@@ -182,12 +209,19 @@ export function registrarHandlers(
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+    if (!deveProcessarUpsert(type)) return;
     for (const m of messages) {
       try {
         if (m.key.fromMe) continue; // saída — não processamos como entrada
         if (!m.key.remoteJid) continue;
         if (m.key.remoteJid.endsWith("@g.us")) continue; // ignora grupos por enquanto
+        // Backlog ("append"): só processa se for recente (janela de 24h).
+        if (
+          type === "append" &&
+          !dentroDaJanelaBacklog(m.messageTimestamp ? Number(m.messageTimestamp) : null, Date.now())
+        ) {
+          continue;
+        }
         const jidRemoto = m.key.remoteJid;
         const enviadaEm = m.messageTimestamp
           ? new Date(Number(m.messageTimestamp) * 1000)
