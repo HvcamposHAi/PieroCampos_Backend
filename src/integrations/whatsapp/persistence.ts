@@ -248,6 +248,47 @@ export async function registrarMensagemSaida(input: MensagemSaidaInput): Promise
     .eq("id", input.conversaId);
 }
 
+export interface MensagemSaidaBotDocumentoInput {
+  canalId: string;
+  conversaId: string;
+  /** Texto que aparece no card da fila (ex.: nome do arquivo / legenda). */
+  descricao: string;
+  /** Tipo de mídia (ex.: "document"). */
+  midiaTipo: string;
+  providerMsgId?: string;
+}
+
+/**
+ * Variante para a Bia enviar um DOCUMENTO (ex.: questionário .xlsx). Grava
+ * `origem='bot'`, `midia_tipo` e `corpo`=descrição. `midia_url` fica NULL
+ * (enviamos o buffer em memória; sem upload p/ Storage nesta versão).
+ */
+export async function registrarMensagemSaidaBotDocumento(
+  input: MensagemSaidaBotDocumentoInput,
+): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const enviadaEm = new Date().toISOString();
+
+  const msg: MensagemInsert = {
+    conversa_id: input.conversaId,
+    direcao: "saida",
+    origem: "bot",
+    corpo: input.descricao,
+    midia_url: null,
+    midia_tipo: input.midiaTipo,
+    twilio_message_sid: input.providerMsgId ?? null,
+    enviada_em: enviadaEm,
+  };
+
+  const { error: errMsg } = await sb.from("mensagens").insert(msg);
+  if (errMsg) throw errMsg;
+
+  await sb
+    .from("conversas")
+    .update({ ultima_mensagem_em: enviadaEm })
+    .eq("id", input.conversaId);
+}
+
 export interface MensagemSaidaBotInput {
   canalId: string;
   conversaId: string;

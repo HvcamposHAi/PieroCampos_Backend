@@ -21,10 +21,11 @@
  */
 import { getEnv } from "../config/env";
 import { chamarBia, type MensagemTurno } from "../integrations/claude/claude.client";
+import { gerarQuestionarioXlsx, parseQuestionarioXlsx } from "../integrations/formulario";
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
 import type { CategoriaConversa } from "../lib/roteiros";
 import { calcularProgresso, getRoteiro } from "../lib/roteiros";
-import { buildSystemPromptDinamico, SYSTEM_PROMPT_BASE } from "../lib/system-prompt";
+import { buildSystemPromptDinamico, SYSTEM_PROMPT_BASE, type ModoBia } from "../lib/system-prompt";
 import { logger } from "../utils/logger";
 import {
   detectarGatilhoHandoff,
@@ -61,19 +62,27 @@ export const ESTADOS_EQUIPE_TRABALHANDO: ReadonlySet<string> = new Set([
 
 const HISTORICO_MAX = 12; // últimas N mensagens (alterna user/assistant)
 
+const MIME_XLSX =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const CAPTION_FORMULARIO =
+  "Preencha a coluna *Resposta* e me devolva este arquivo aqui mesmo 🙂";
+
 interface ConversaAtiva {
   id: string;
   cliente_id: string;
   estado: string;
   categoria: CategoriaConversa | null;
   dados_coletados: Record<string, unknown>;
+  /** Estado interno do bot (modalidade, formulário). Pode estar ausente em prod
+   *  antes do ALTER TABLE — tratamos null como {} (degrada com segurança). */
+  dados_bot: Record<string, unknown>;
 }
 
 async function carregarConversa(conversaId: string): Promise<ConversaAtiva | null> {
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, cliente_id, estado, categoria, dados_coletados")
+    .select("id, cliente_id, estado, categoria, dados_coletados, dados_bot")
     .eq("id", conversaId)
     .maybeSingle();
   if (error) {
@@ -88,6 +97,8 @@ async function carregarConversa(conversaId: string): Promise<ConversaAtiva | nul
     categoria: (data.categoria as CategoriaConversa | null) ?? null,
     dados_coletados:
       (data.dados_coletados as Record<string, unknown> | null) ?? {},
+    dados_bot:
+      ((data as { dados_bot?: Record<string, unknown> | null }).dados_bot) ?? {},
   };
 }
 
@@ -177,6 +188,35 @@ export function decidirAcaoForaDoBot(params: {
   return { tipo: "acusar" };
 }
 
+/**
+ * Postura da Bia conforme o estado da conversa. Função pura (testável).
+ *  - ativo          → bot_ativo: coleta normal + conversa aberta.
+ *  - espera_equipe  → estados de equipe trabalhando: acuse fixo + anti-spam.
+ *  - holding_humano → humano/apólice: Bia só acolhe (NUNCA fica calada), sem coletar.
+ *  - mudo           → bloqueado_vip/encerrado: não responde.
+ */
+export function decidirModoBia(estado: string): ModoBia {
+  if (estado === "bot_ativo") return "ativo";
+  if (ESTADOS_EQUIPE_TRABALHANDO.has(estado)) return "espera_equipe";
+  if (estado === "humano_assumiu" || estado === "apolice_emitida") return "holding_humano";
+  return "mudo"; // bloqueado_vip, encerrado
+}
+
+/**
+ * A Bia deve oferecer a escolha "1 a 1 ou formulário" neste turno? Só para os
+ * roteiros longos (renovacao/seguro_novo), antes de qualquer coleta e enquanto
+ * a modalidade ainda não foi escolhida. Função pura (testável).
+ */
+export function deveOferecerModalidade(p: {
+  categoria: CategoriaConversa | null;
+  dadosBot: Record<string, unknown>;
+  dadosColetados: Record<string, unknown>;
+}): boolean {
+  if (p.categoria !== "renovacao" && p.categoria !== "seguro_novo") return false;
+  if ((p.dadosBot as { modalidade?: unknown })?.modalidade) return false;
+  return Object.keys(p.dadosColetados).length === 0;
+}
+
 async function mergeDadosColetados(
   conversaId: string,
   atuais: Record<string, unknown>,
@@ -199,6 +239,126 @@ async function mergeDadosColetados(
   return merged;
 }
 
+/** Merge raso em `conversas.dados_bot` (modalidade/formulário). */
+async function mergeDadosBot(
+  conversaId: string,
+  atuais: Record<string, unknown>,
+  novos: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (Object.keys(novos).length === 0) return atuais;
+  const merged = { ...atuais, ...novos };
+  const sb = getSupabaseAdmin();
+  const { error } = await sb
+    .from("conversas")
+    .update({ dados_bot: merged })
+    .eq("id", conversaId);
+  if (error) {
+    logger.warn("[bot] falha ao salvar dados_bot", { conversaId, erro: error.message });
+    return atuais;
+  }
+  return merged;
+}
+
+/**
+ * Se o roteiro estiver completo: muda estado p/ aguardando_cotacao, dispara a
+ * cotação no Segfy (atrás de SEGFY_ENABLED) e, havendo retorno, envia o
+ * comparativo e move para cotacao_enviada. Compartilhado entre o fluxo de texto
+ * (processarMensagem) e o de formulário (processarFormularioRecebido).
+ */
+export async function finalizarSeRoteiroCompleto(p: {
+  conversaId: string;
+  clienteId: string;
+  categoria: CategoriaConversa | null;
+  dados: Record<string, unknown>;
+  enviar: (texto: string) => Promise<void>;
+}): Promise<{ completo: boolean }> {
+  if (!p.categoria || !getRoteiro(p.categoria)) return { completo: false };
+  const progresso = calcularProgresso(p.categoria, p.dados);
+  if (!progresso.completo) return { completo: false };
+
+  const sb = getSupabaseAdmin();
+  await sb.from("conversas").update({ estado: "aguardando_cotacao" }).eq("id", p.conversaId);
+  logger.info("[bot] roteiro completo, estado=aguardando_cotacao", { conversaId: p.conversaId });
+
+  const cotacao = await dispararCotacaoSegfy({
+    conversaId: p.conversaId,
+    clienteId: p.clienteId,
+    dados: p.dados,
+  });
+  if (cotacao) {
+    try {
+      await p.enviar(cotacao.texto);
+      await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
+      logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", {
+        conversaId: p.conversaId,
+      });
+    } catch (e) {
+      logger.error("[bot] falha ao enviar comparativo/atualizar estado", {
+        conversaId: p.conversaId,
+        erro: (e as Error).message,
+      });
+    }
+  }
+  return { completo: true };
+}
+
+/**
+ * Gera e envia o questionário .xlsx da categoria. Degrada para no-op logado se
+ * não houver canal de documento. Marca dados_bot.formulario.enviado_em.
+ */
+async function enviarFormulario(p: {
+  conversaId: string;
+  categoria: CategoriaConversa;
+  dadosBot: Record<string, unknown>;
+  enviarDocumento?: EnviarDocumento;
+}): Promise<void> {
+  if (!p.enviarDocumento) {
+    logger.warn("[bot] enviarFormulario sem canal de documento; no-op", {
+      conversaId: p.conversaId,
+    });
+    return;
+  }
+  let buf: Buffer;
+  try {
+    buf = await gerarQuestionarioXlsx(p.categoria);
+  } catch (e) {
+    logger.error("[bot] falha ao gerar questionário xlsx", {
+      conversaId: p.conversaId,
+      erro: (e as Error).message,
+    });
+    return;
+  }
+  try {
+    await p.enviarDocumento({
+      documento: buf,
+      fileName: `Questionario_${p.categoria}_PieroCampos.xlsx`,
+      mimetype: MIME_XLSX,
+      caption: CAPTION_FORMULARIO,
+    });
+  } catch (e) {
+    logger.error("[bot] falha ao enviar questionário xlsx", {
+      conversaId: p.conversaId,
+      erro: (e as Error).message,
+    });
+    return;
+  }
+  await mergeDadosBot(p.conversaId, p.dadosBot, {
+    formulario: {
+      enviado_em: new Date().toISOString(),
+      categoria: p.categoria,
+      versao: 1,
+    },
+  });
+}
+
+/** Envia um documento já vinculado ao canal/conversa/jid (injetado pelo handler). */
+export type EnviarDocumento = (doc: {
+  documento: Buffer;
+  fileName: string;
+  mimetype: string;
+  caption?: string;
+}) => Promise<void>;
+
 export interface ProcessarMensagemInput {
   canalId: string;
   conversaId: string;
@@ -206,6 +366,8 @@ export interface ProcessarMensagemInput {
   textoCliente: string;
   /** Função que efetivamente envia via Baileys e persiste a saída. */
   enviar: (texto: string) => Promise<void>;
+  /** Envio de documento (opcional; ausente em rotas/testes só-texto). */
+  enviarDocumento?: EnviarDocumento;
 }
 
 export async function processarMensagem(input: ProcessarMensagemInput): Promise<void> {
@@ -229,13 +391,22 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   }
   if (!conversa) return;
 
-  // 1) Estado: bot só responde de fato em bot_ativo. Fora disso, "acusa e
-  //    segura" nos estados de equipe trabalhando (1× por rajada, anti-spam) ou
-  //    fica em silêncio total (humano assumiu / VIP / fluxo fechado).
-  if (conversa.estado !== "bot_ativo") {
-    const ultimaSaida = ESTADOS_EQUIPE_TRABALHANDO.has(conversa.estado)
-      ? await carregarUltimaSaida(conversa.id)
-      : null;
+  // 1) Postura do turno conforme o estado.
+  //    - mudo          → não responde (bloqueado_vip / encerrado).
+  //    - espera_equipe → acuse fixo + anti-spam (comportamento original).
+  //    - ativo/holding → segue para o Claude (coleta normal ou acolhimento).
+  const modo = decidirModoBia(conversa.estado);
+
+  if (modo === "mudo") {
+    logger.info("[bot] modo mudo; nao respondendo", {
+      conversaId: conversa.id,
+      estado: conversa.estado,
+    });
+    return;
+  }
+
+  if (modo === "espera_equipe") {
+    const ultimaSaida = await carregarUltimaSaida(conversa.id);
     const acao = decidirAcaoForaDoBot({
       estado: conversa.estado,
       textoCliente: input.textoCliente,
@@ -270,14 +441,8 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
           });
         }
         return;
-      case "suprimir":
+      default: // suprimir (anti-spam)
         logger.info("[bot] acuse pos-coleta suprimido (anti-spam)", {
-          conversaId: conversa.id,
-          estado: conversa.estado,
-        });
-        return;
-      default:
-        logger.info("[bot] conversa nao esta em bot_ativo, nao respondendo", {
           conversaId: conversa.id,
           estado: conversa.estado,
         });
@@ -285,7 +450,8 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     }
   }
 
-  // 2) Handoff: detectar gatilho ANTES de chamar Claude (econômico).
+  // 2) Handoff: detectar gatilho ANTES de chamar Claude (econômico). Vale para
+  //    modo ativo E holding (ex.: cliente pede cancelamento / fala em sinistro).
   const gatilho = detectarGatilhoHandoff(input.textoCliente);
   if (gatilho.detectado) {
     try {
@@ -312,8 +478,9 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     });
     contextoTexto = montarContextoRAG(ctx);
 
-    // VIP: handoff imediato sem chamar Claude.
-    if (ctx.cliente?.atendimento_vip) {
+    // VIP: handoff imediato sem chamar Claude (só no fluxo ativo; em holding o
+    // humano já assumiu).
+    if (modo === "ativo" && ctx.cliente?.atendimento_vip) {
       await input.enviar(
         "Olá! Aqui é a Bia 😊 Vou te direcionar direto para seu atendente. Já avisei a equipe!",
       );
@@ -329,6 +496,13 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
 
   const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados);
   const proximoCampo = progresso.pendentesObrigatorios[0] ?? null;
+  const oferecerModalidade =
+    modo === "ativo" &&
+    deveOferecerModalidade({
+      categoria: conversa.categoria,
+      dadosBot: conversa.dados_bot,
+      dadosColetados: conversa.dados_coletados,
+    });
 
   const systemDinamico = buildSystemPromptDinamico({
     categoria: conversa.categoria,
@@ -336,6 +510,8 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     dadosColetados: conversa.dados_coletados,
     pendentesObrigatorios: progresso.pendentesObrigatorios,
     proximoCampo,
+    modo,
+    oferecerModalidade,
   });
 
   // 4) Histórico (já inclui a mensagem que acabou de chegar, pois persistimos antes).
@@ -366,7 +542,14 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     return;
   }
 
-  // 6) Persistir campos extraídos.
+  // 6) Holding (humano assumiu): só acolhe — não coleta, não muda estado, não
+  //    dispara cotação. Envia o texto e encerra o turno.
+  if (modo !== "ativo") {
+    await enviarRespostaBia(resposta.texto, input.enviar, conversa.id);
+    return;
+  }
+
+  // 7) Persistir campos extraídos.
   if (Object.keys(resposta.camposExtraidos).length > 0) {
     await mergeDadosColetados(
       conversa.id,
@@ -375,68 +558,165 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     );
   }
 
-  // 7) Detectar "ROTEIRO COMPLETO" e mudar estado para aguardando_cotacao.
-  let roteiroCompleto = false;
-  let dadosParaCotacao: Record<string, unknown> = {};
-  if (conversa.categoria && getRoteiro(conversa.categoria)) {
-    const dadosMerge = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
-    const progressoAtualizado = calcularProgresso(conversa.categoria, dadosMerge);
-    if (progressoAtualizado.completo) {
-      roteiroCompleto = true;
-      dadosParaCotacao = dadosMerge;
-      const sb = getSupabaseAdmin();
-      await sb
-        .from("conversas")
-        .update({ estado: "aguardando_cotacao" })
-        .eq("id", conversa.id);
-      logger.info("[bot] roteiro completo, estado=aguardando_cotacao", {
-        conversaId: conversa.id,
-      });
-    }
-  }
-
   // 8) Enviar a resposta da Bia ao cliente (se houver texto).
-  if (!resposta.texto || resposta.texto.trim() === "") {
-    logger.warn("[bot] Claude retornou texto vazio; nao envio nada", {
-      conversaId: conversa.id,
+  await enviarRespostaBia(resposta.texto, input.enviar, conversa.id);
+
+  // 9) Modalidade escolhida neste turno: registra e, se "formulário", envia o
+  //    questionário .xlsx. O gate fecha o turno (não coleta junto).
+  if (resposta.modalidadeEscolhida) {
+    const dadosBotAtualizado = await mergeDadosBot(conversa.id, conversa.dados_bot, {
+      modalidade: resposta.modalidadeEscolhida,
     });
-  } else {
-    try {
-      await input.enviar(resposta.texto);
-    } catch (e) {
-      logger.error("[bot] falha ao enviar resposta via Baileys", {
+    if (resposta.modalidadeEscolhida === "formulario" && conversa.categoria) {
+      await enviarFormulario({
         conversaId: conversa.id,
-        erro: (e as Error).message,
+        categoria: conversa.categoria,
+        dadosBot: dadosBotAtualizado,
+        enviarDocumento: input.enviarDocumento,
       });
     }
+    return;
   }
 
-  // 9) Roteiro recém-concluído → dispara cotação no Segfy (atrás de
-  //    SEGFY_ENABLED) e envia o comparativo logo após o fecho da Bia. Tudo
-  //    não-fatal: se a flag estiver off ou o Segfy falhar, dispararCotacaoSegfy
-  //    retorna null e a conversa segue em aguardando_cotacao (equipe assume).
-  if (roteiroCompleto) {
-    const cotacao = await dispararCotacaoSegfy({
-      conversaId: conversa.id,
-      clienteId: conversa.cliente_id,
-      dados: dadosParaCotacao,
+  // 10) Roteiro recém-concluído → cotação no Segfy + comparativo (helper
+  //     compartilhado com o fluxo de formulário).
+  const dadosMerge = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
+  await finalizarSeRoteiroCompleto({
+    conversaId: conversa.id,
+    clienteId: conversa.cliente_id,
+    categoria: conversa.categoria,
+    dados: dadosMerge,
+    enviar: input.enviar,
+  });
+}
+
+/** Envia o texto da Bia se não estiver vazio; loga e não envia se vazio. */
+async function enviarRespostaBia(
+  texto: string,
+  enviar: (t: string) => Promise<void>,
+  conversaId: string,
+): Promise<void> {
+  if (!texto || texto.trim() === "") {
+    logger.warn("[bot] Claude retornou texto vazio; nao envio nada", { conversaId });
+    return;
+  }
+  try {
+    await enviar(texto);
+  } catch (e) {
+    logger.error("[bot] falha ao enviar resposta via Baileys", {
+      conversaId,
+      erro: (e as Error).message,
     });
-    if (cotacao) {
-      try {
-        await input.enviar(cotacao.texto);
-        await getSupabaseAdmin()
-          .from("conversas")
-          .update({ estado: "cotacao_enviada" })
-          .eq("id", conversa.id);
-        logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", {
-          conversaId: conversa.id,
-        });
-      } catch (e) {
-        logger.error("[bot] falha ao enviar comparativo/atualizar estado", {
-          conversaId: conversa.id,
-          erro: (e as Error).message,
-        });
-      }
+  }
+}
+
+export interface ProcessarFormularioRecebidoInput {
+  canalId: string;
+  conversaId: string;
+  jidRemoto: string;
+  /** Buffer do .xlsx baixado do WhatsApp. */
+  documento: Buffer;
+  enviar: (texto: string) => Promise<void>;
+}
+
+/**
+ * Processa um questionário .xlsx devolvido pelo cliente: parseia, mescla em
+ * dados_coletados e, se o roteiro completar, segue para a cotação. Idempotente
+ * por dados_bot.formulario.recebido_em. Só atua com a conversa em bot_ativo.
+ */
+export async function processarFormularioRecebido(
+  input: ProcessarFormularioRecebidoInput,
+): Promise<void> {
+  const env = getEnv();
+  if (!env.BIA_ENABLED) return;
+
+  let conversa: ConversaAtiva | null;
+  try {
+    conversa = await carregarConversa(input.conversaId);
+  } catch (e) {
+    logger.error("[bot] erro carregando conversa (formulário)", {
+      conversaId: input.conversaId,
+      erro: (e as Error).message,
+    });
+    return;
+  }
+  if (!conversa) return;
+
+  // Conversa fora de bot_ativo: só acusa; um humano analisa o arquivo.
+  if (conversa.estado !== "bot_ativo") {
+    try {
+      await input.enviar(
+        "Recebi seu formulário! ✅ Um corretor vai analisar e te dá retorno por aqui.",
+      );
+    } catch {
+      /* não-fatal */
+    }
+    return;
+  }
+
+  // Idempotência: já processamos um formulário nesta conversa?
+  const formMeta = (conversa.dados_bot.formulario ?? {}) as { recebido_em?: string };
+  if (formMeta.recebido_em) {
+    logger.info("[bot] formulário já processado; ignorando", { conversaId: conversa.id });
+    return;
+  }
+
+  const parsed = await parseQuestionarioXlsx(input.documento);
+  if (!parsed) {
+    try {
+      await input.enviar(
+        "Recebi um arquivo, mas não consegui ler como o formulário que enviei. Pode reenviar a planilha preenchida, ou me responder por aqui mesmo? 🙂",
+      );
+    } catch {
+      /* não-fatal */
+    }
+    return;
+  }
+
+  // Drift guard: mescla só chaves do roteiro da conversa.
+  const roteiro = getRoteiro(conversa.categoria);
+  const validasDoRoteiro = new Set((roteiro?.campos ?? []).map((c) => c.chave));
+  const novos: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(parsed.respostas)) {
+    if (validasDoRoteiro.has(k)) novos[k] = v;
+  }
+  if (parsed.categoria !== conversa.categoria) {
+    logger.warn("[bot] categoria do formulário difere da conversa", {
+      conversaId: conversa.id,
+      arquivo: parsed.categoria,
+      conversa: conversa.categoria,
+    });
+  }
+
+  const dadosMerge = await mergeDadosColetados(conversa.id, conversa.dados_coletados, novos);
+  await mergeDadosBot(conversa.id, conversa.dados_bot, {
+    formulario: {
+      ...(conversa.dados_bot.formulario as Record<string, unknown> | undefined),
+      recebido_em: new Date().toISOString(),
+    },
+  });
+
+  try {
+    await input.enviar("Recebi sua planilha! ✅ Já estou conferindo os dados.");
+  } catch {
+    /* não-fatal */
+  }
+
+  const { completo } = await finalizarSeRoteiroCompleto({
+    conversaId: conversa.id,
+    clienteId: conversa.cliente_id,
+    categoria: conversa.categoria,
+    dados: dadosMerge,
+    enviar: input.enviar,
+  });
+
+  if (!completo) {
+    try {
+      await input.enviar(
+        "Faltou preencher alguns campos obrigatórios. Posso te perguntar o restante por aqui mesmo? 🙂",
+      );
+    } catch {
+      /* não-fatal */
     }
   }
 }

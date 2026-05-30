@@ -47,13 +47,45 @@ ENCERRAMENTO (quando completar o roteiro)
 "Perfeito, [primeiro nome]! Tenho tudo que preciso. Vou repassar pra equipe e te dou retorno aqui pelo WhatsApp. ✅"
 `;
 
+/**
+ * Postura da Bia neste turno (calculada a partir do `estado` da conversa em
+ * bot.service.decidirModoBia). Vive aqui — e não em bot.service — para que o
+ * builder de prompt possa tipá-la sem criar import circular (bot.service já
+ * importa deste arquivo).
+ *
+ *  - ativo          → fluxo normal de coleta; conversa aberta puxando p/ seguros.
+ *  - espera_equipe  → NÃO chega ao Claude (acuse fixo no bot.service).
+ *  - holding_humano → corretor humano já assumiu; Bia só acolhe, sem coletar.
+ *  - mudo           → não responde (não chega ao Claude).
+ */
+export type ModoBia = "ativo" | "espera_equipe" | "holding_humano" | "mudo";
+
 export interface BuildSystemPromptInput {
   categoria: CategoriaConversa | null;
   contextoRAG: string;
   dadosColetados: Record<string, unknown>;
   pendentesObrigatorios: CampoRoteiro[];
   proximoCampo: CampoRoteiro | null;
+  /** Postura do turno. Default histórico = "ativo". */
+  modo?: ModoBia;
+  /**
+   * Quando true, a Bia deve PRIMEIRO perguntar como o cliente prefere responder
+   * (1 a 1 ou formulário) antes de coletar qualquer campo. Calculado pelo
+   * bot.service (só renovacao/seguro_novo, antes do início da coleta).
+   */
+  oferecerModalidade?: boolean;
 }
+
+const BLOCO_HOLDING = `MODO DE ATENDIMENTO: um corretor humano JÁ ASSUMIU este atendimento.
+Seu papel agora é APENAS manter o cliente acolhido enquanto o corretor cuida do caso. Regras deste modo:
+- Converse de forma simpática e responda o que der, mas NUNCA fique calada: o cliente nunca pode ficar sem resposta.
+- NUNCA cite preço, valor de cotação, status de proposta ou prazo — quem trata disso é o corretor.
+- NUNCA contradiga, repita ou "atropele" o corretor. Deixe claro, com naturalidade, que um corretor já está cuidando do caso e dará retorno.
+- Se o cliente trouxer assunto fora de seguros, responda com leveza e traga gentilmente de volta ao contexto da corretora.
+- NÃO use a ferramenta atualizar_dados neste modo (não estamos coletando roteiro).`;
+
+const LINHA_ABERTURA_ATIVO =
+  "POSTURA: converse abertamente e com simpatia, inclusive sobre assuntos fora de seguros, mas SEMPRE traga a conversa de volta ao contexto da corretora (seguros, cotação, atendimento). Nunca deixe o cliente sem resposta.";
 
 /**
  * Monta a parte DINÂMICA do system prompt — concatenada após a BASE pelo
@@ -61,11 +93,39 @@ export interface BuildSystemPromptInput {
  */
 export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string {
   const roteiro = getRoteiro(input.categoria);
+  const modo: ModoBia = input.modo ?? "ativo";
   const partes: string[] = [];
 
+  // Modo holding: corretor humano assumiu. Suprime roteiro e instrui acolhimento.
+  if (modo === "holding_humano") {
+    partes.push(BLOCO_HOLDING);
+    partes.push("");
+    partes.push("CONTEXTO DO CLIENTE (RAG):");
+    partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");
+    return partes.join("\n");
+  }
+
+  partes.push(LINHA_ABERTURA_ATIVO);
+  partes.push("");
   partes.push("CONTEXTO DO CLIENTE (RAG):");
   partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");
   partes.push("");
+
+  // Gate de modalidade: antes de coletar, pergunta 1-a-1 vs formulário.
+  if (input.oferecerModalidade && roteiro) {
+    partes.push(`TIPO DE ATENDIMENTO: ${roteiro.titulo} (${roteiro.descricao})`);
+    partes.push("");
+    partes.push(
+      "ESCOLHA DE MODALIDADE (faça ISTO neste turno, antes de qualquer pergunta do roteiro):",
+    );
+    partes.push(
+      "Pergunte ao cliente, de forma natural, como ele prefere passar as informações: (1) você pergunta aqui mesmo, uma de cada vez, ou (2) você envia uma planilha (Excel) para ele preencher com calma e devolver aqui.",
+    );
+    partes.push(
+      "Quando o cliente escolher, chame a ferramenta escolher_modalidade com 'um_a_um' ou 'formulario'. NÃO faça perguntas do roteiro nem chame atualizar_dados neste turno.",
+    );
+    return partes.join("\n");
+  }
 
   if (!input.categoria || input.categoria === "duvida" || input.categoria === "outro") {
     partes.push("TIPO DE ATENDIMENTO: ainda não identificado.");
