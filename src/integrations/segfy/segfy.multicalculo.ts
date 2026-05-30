@@ -39,11 +39,50 @@ export interface SegfyTokens {
   automationToken: string; // config.token
 }
 
+/** Questionário do Segfy (chaves/enums já no formato da API). */
+export interface QuestionarioSegfy {
+  residence_garage: string; // yes_with_electronic_gate | yes | no
+  job_garage: string; // yes | no
+  study_garage: string; // yes | no
+  utilization_type: string; // personal | app | ...
+  other_driver: string; // does_not_exist | exists
+  secondary_driver_age: string;
+  monthly_km: string;
+  work_distance: string;
+  residence_type: string; // house | apartment
+  tax_exemption: string; // not_isent | isent
+}
+
+/** Questionário-padrão (valores CONFIRMADOS que a API aceita). Servem de base;
+ * o mapeador do bot sobrescreve o que o cliente respondeu. */
+export const QUESTIONARIO_PADRAO: QuestionarioSegfy = {
+  residence_garage: "yes_with_electronic_gate",
+  job_garage: "no",
+  study_garage: "no",
+  utilization_type: "personal",
+  other_driver: "does_not_exist",
+  secondary_driver_age: " ",
+  monthly_km: "500",
+  work_distance: "5",
+  residence_type: "house",
+  tax_exemption: "not_isent",
+};
+
 export interface DadosCotacaoAuto {
   cpf: string;
   placa: string;
   cep: string;
   profissao?: string;
+  /** estado civil já mapeado p/ a chave Segfy (single/married/...). */
+  maritalStatus?: string;
+  /** uso já mapeado (particular/aplicativo/...). */
+  categoryType?: string;
+  /** bônus de classe (0-10). */
+  bonus?: number;
+  /** respostas do questionário (sobrescrevem o QUESTIONARIO_PADRAO). */
+  questionario?: Partial<QuestionarioSegfy>;
+  /** flags do veículo (sobrescrevem os defaults do decode-plate). */
+  vehicleFlags?: Partial<{ alienated: boolean; gas_kit: boolean; armored: boolean; chassis_relabeled: boolean; anti_theft: boolean }>;
   insurers?: Array<{ name: string; commission: number }>;
 }
 
@@ -149,10 +188,15 @@ async function post<T>(path: string, body: unknown, tokens: SegfyTokens): Promis
  * Dispara a cotação Auto e coleta os resultados por seguradora via WebSocket.
  * Resolve quando todas as seguradoras responderem ou no timeout.
  */
+export interface ResultadoCotacaoAuto {
+  quotationId: string | null;
+  resultados: ResultadoCotacaoItem[];
+}
+
 export async function cotarAuto(
   dados: DadosCotacaoAuto,
   tokens?: SegfyTokens,
-): Promise<ResultadoCotacaoItem[]> {
+): Promise<ResultadoCotacaoAuto> {
   const tk = tokens ?? (await obterTokensSegfy()); // reaproveita o cache p/ várias cotações
   const { automationToken: token } = tk;
   const insurers = dados.insurers ?? INSURERS_PADRAO;
@@ -172,14 +216,14 @@ export async function cotarAuto(
   fim.setFullYear(fim.getFullYear() + 1);
   const payload = {
     data: {
-      renewal: { quotation_type: "NEW_QUOTATION", insurer: "new", prior_policy: "", claim_amount: "", prior_policy_end: "", bonus_current: " ", prior_ic: "", bonus_last: " " },
+      renewal: { quotation_type: "NEW_QUOTATION", insurer: "new", prior_policy: "", claim_amount: "", prior_policy_end: "", bonus_current: dados.bonus != null ? String(dados.bonus) : " ", prior_ic: "", bonus_last: " " },
       zip_code: dados.cep.replace(/\D/g, ""),
       validity_start: now.toISOString(),
       validity_end: fim.toISOString(),
       customer: { cellphone: ins.cellphone, email: ins.email, document: dados.cpf, sex: ins.gender, birth_date: ins.birth_date, name: ins.name, social_name: "" },
-      main_driver: { relationship: "himself", marital_status: "single", document: dados.cpf, profession: dados.profissao ?? "Administrador", name: ins.name, birth_date: ins.birth_date, sex: ins.gender },
-      vehicle: { circulation_zip_code: "", fuel_type: model.fuel_type, model: model.value, model_year: String(dec.model_year), manufacture_year: String(dec.manufacture_year), brand: brand.value, chassis: dec.chassis, plate: dados.placa.replace(/\W/g, ""), vehicle_type: "car", zero_km: model.zero_km, category_type: "particular", fipe_code: model.data_fipe.fipe_code, fipe_value: model.data_fipe.fipe_value, alienated: false, gas_kit: false, armored: false, chassis_relabeled: false, anti_theft: false, fipe_url: model.data_fipe.fipe_url },
-      questionnaire: { residence_garage: "yes_with_electronic_gate", job_garage: "no", study_garage: "no", utilization_type: "personal", other_driver: "does_not_exist", secondary_driver_age: " ", monthly_km: "500", work_distance: "5", residence_type: "house", tax_exemption: "not_isent" },
+      main_driver: { relationship: "himself", marital_status: dados.maritalStatus ?? "single", document: dados.cpf, profession: dados.profissao ?? "Administrador", name: ins.name, birth_date: ins.birth_date, sex: ins.gender },
+      vehicle: { circulation_zip_code: "", fuel_type: model.fuel_type, model: model.value, model_year: String(dec.model_year), manufacture_year: String(dec.manufacture_year), brand: brand.value, chassis: dec.chassis, plate: dados.placa.replace(/\W/g, ""), vehicle_type: "car", zero_km: model.zero_km, category_type: dados.categoryType ?? "particular", fipe_code: model.data_fipe.fipe_code, fipe_value: model.data_fipe.fipe_value, alienated: false, gas_kit: false, armored: false, chassis_relabeled: false, anti_theft: false, ...dados.vehicleFlags, fipe_url: model.data_fipe.fipe_url },
+      questionnaire: { ...QUESTIONARIO_PADRAO, ...dados.questionario },
       questionnaire_truck: {},
       coverage: { fipe_percentage: "100", selected_coverage: { label: "PADRAO", value: COBERTURA_PADRAO_ID }, description: "PADRAO", coverage_type: "comprehensive", franchise: "reduced_50", assistance: "assistance_500_km_referenced", glass: "glass_total_referenced", rental_car: "rental_car_07_days_referenced", rental_car_profile: "basic", replacement_zero_km: "no_replacement", material_damage: "200000.00", body_injuries: "200000.00", moral_damage: "0.00", death_illness: "10000.00", expense_extraordinary: "0", dmh: "0", maxpar_coverages: { bodywork_and_paint: false, wheel_tire_and_suspension: false }, lmi_residential: "0", defense_costs: "0", quick_repairs: false, body_shop_repair: false, exemption_franchise: false },
       alive_extension: "false",
@@ -221,9 +265,10 @@ export async function cotarAuto(
   socket.close();
 
   // Ordena: cotadas primeiro, por menor prêmio.
-  return [...itens.values()].sort((a, b) => {
+  const resultados = [...itens.values()].sort((a, b) => {
     if (a.status === "cotado" && b.status !== "cotado") return -1;
     if (b.status === "cotado" && a.status !== "cotado") return 1;
     return a.premio_total - b.premio_total;
   });
+  return { quotationId: calc.data?.quotation_id ?? null, resultados };
 }

@@ -39,7 +39,7 @@ async function main(): Promise<void> {
 
   for (const [i, p] of pedidos.entries()) {
     logger.info(`Cotando ${i + 1}/${pedidos.length}`, { placa: p.placa });
-    const resultados = await cotarAuto(p, tokens);
+    const { resultados } = await cotarAuto(p, tokens);
     console.log(`\n=== Cotação ${i + 1}: ${p.placa} — ${resultados.length} seguradoras ===`);
     for (const r of resultados) {
       const linha = r.status === "cotado"

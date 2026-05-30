@@ -33,6 +33,29 @@ export interface Roteiro {
   campos: CampoRoteiro[];
 }
 
+/**
+ * Perguntas extras exigidas pelo MULTICÁLCULO do Segfy (Auto), com ÁRVORES DE
+ * DECISÃO. A Bia coleta essas além dos campos comerciais; o mapeamento p/ a API
+ * está em `segfy-cotacao.service.ts` (MAP_*). Campos condicionais ficam como
+ * opcionais e a `dica` indica quando perguntar.
+ *
+ * ⚠️ Espelhar no front (bot-scripts.ts) — ver nota no topo deste arquivo.
+ */
+const PERGUNTAS_SEGFY_AUTO: CampoRoteiro[] = [
+  { chave: "placa", rotulo: "Placa do veículo", obrigatorio: true, dica: "Identifica o veículo e a FIPE automaticamente" },
+  { chave: "profissao", rotulo: "Profissão", obrigatorio: true },
+  { chave: "garagem", rotulo: "Garagem na residência?", obrigatorio: false, dica: "Tem garagem/portão fechado em casa? sim/não" },
+  { chave: "trabalha", rotulo: "Trabalha?", obrigatorio: false, dica: "Se SIM → perguntar garagem_trabalho" },
+  { chave: "garagem_trabalho", rotulo: "Garagem no trabalho?", obrigatorio: false, dica: "Só se trabalha=sim" },
+  { chave: "estuda", rotulo: "Estuda?", obrigatorio: false, dica: "Se SIM → perguntar garagem_estudo" },
+  { chave: "garagem_estudo", rotulo: "Garagem no local de estudo?", obrigatorio: false, dica: "Só se estuda=sim" },
+  { chave: "km_mes", rotulo: "Km rodados por mês", obrigatorio: false, dica: "Ex.: 500" },
+  { chave: "distancia_trabalho", rotulo: "Distância até o trabalho (km)", obrigatorio: false },
+  { chave: "tipo_residencia", rotulo: "Tipo de residência", obrigatorio: false, dica: "casa ou apartamento" },
+  { chave: "outro_condutor", rotulo: "Outro condutor além do segurado?", obrigatorio: false, dica: "Se SIM → perguntar idade_condutor_secundario" },
+  { chave: "idade_condutor_secundario", rotulo: "Idade do condutor adicional", obrigatorio: false, dica: "Só se outro_condutor=sim" },
+];
+
 const RENOVACAO: Roteiro = {
   id: "renovacao",
   titulo: "Renovação",
@@ -49,6 +72,7 @@ const RENOVACAO: Roteiro = {
     { chave: "bonus", rotulo: "Bônus", obrigatorio: false, dica: "0 a 10, está na apólice atual" },
     { chave: "estado_civil", rotulo: "Estado civil", obrigatorio: true },
     { chave: "cep", rotulo: "CEP", obrigatorio: true, dica: "CEP onde o carro pernoita" },
+    ...PERGUNTAS_SEGFY_AUTO,
   ],
 };
 
@@ -68,6 +92,7 @@ const SEGURO_NOVO: Roteiro = {
     { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true },
     { chave: "renovacao_outro_corretor", rotulo: "Vinha de outro corretor?", obrigatorio: false },
     { chave: "bonus", rotulo: "Bônus atual", obrigatorio: false },
+    ...PERGUNTAS_SEGFY_AUTO,
   ],
 };
 
