@@ -45,9 +45,15 @@ interface Chamada {
   requestBody?: string;
   responseSample?: string;
 }
+interface WsFrame {
+  ws: string;
+  dir: "recv" | "sent";
+  amostra: string;
+}
 interface Mapa {
   capturadoEm?: string;
   chamadas: Chamada[];
+  wsFrames?: WsFrame[];
 }
 
 const RELEVANTE = /segfy\.com|run\.app/i;
@@ -152,6 +158,27 @@ function main(): void {
 
   console.log("Dica: o DISPARO costuma ser um POST único com payload grande (segurado+veículo+coberturas);");
   console.log("o POLLING é a mesma URL chamada várias vezes retornando status/resultados por seguradora.");
+
+  // WebSocket: é por aqui que chegam os RESULTADOS (preços por seguradora).
+  const ws = mapa.wsFrames ?? [];
+  if (ws.length > 0) {
+    const urls = [...new Set(ws.map((f) => f.ws))].filter((u) => /segfy|run\.app/i.test(u));
+    console.log(`\n=== WebSocket: ${ws.length} frames em ${urls.length} canal(is) ===`);
+    for (const u of urls) console.log(`  ${u}`);
+    // Mostra frames RECEBIDOS que parecem resultado (preço/seguradora/status).
+    const interessantes = ws.filter(
+      (f) => f.dir === "recv" && /premio|premium|preco|preço|parcela|company|insurer|result|valor|cotac/i.test(f.amostra),
+    );
+    console.log(`\n--- ${interessantes.length} frames RECEBIDOS com cara de resultado (mascarados) ---`);
+    for (const f of interessantes.slice(0, 8)) {
+      console.log(`  [${f.ws.slice(0, 40)}…] ${JSON.stringify(parseMask(f.amostra))}`);
+    }
+    if (interessantes.length === 0 && ws.length > 0) {
+      console.log("  (nenhum frame com palavras-chave de preço — cole alguns frames recv manualmente p/ eu ver)");
+    }
+  } else {
+    console.log("\n(⚠️ nenhum frame de WebSocket capturado — os preços chegaram? aguardou os resultados antes do Ctrl+C?)");
+  }
 }
 
 main();

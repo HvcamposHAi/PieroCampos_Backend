@@ -89,17 +89,38 @@ export const SEGFY_ENDPOINTS = {
  * portais. is_multify=false nesta conta.
  */
 export const SEGFY_AUTOMATION_BASE_URL = "https://api.automation.segfy.com";
+/** Host do "Gestão" (salva o orçamento + provável leitura de resultados). */
+export const SEGFY_GESTAO_BASE_URL = "https://gestao.segfy.com";
 
+/**
+ * Fluxo de cotação Auto — ✅ CONFIRMADO na captura interativa (30/05/2026):
+ *   1) insured  (busca segurado por CPF)
+ *   2) professionList / decodePlate (placa→FIPE) / modelList  (resolução de dados)
+ *   3) calculate  → DISPARA o multicálculo; devolve { data: { quotation_id, ... } }
+ *   4) SalvaCotacaoAutomation (host gestao) → salva o orçamento; devolve o id (string)
+ *   5) resultados por seguradora chegam ASSÍNCRONOS via `callback` (WebSocket) —
+ *      ⚠️ AINDA NÃO CAPTURADO (xhr/fetch não pega ws). Recapturar com WS.
+ */
 export const SEGFY_AUTOMATION_API = {
-  // ✅ Confirmados (init do form Auto):
+  // ✅ Init do form Auto:
   partnersList: "/api/partners/version/1.0/list", // { config:{token} } → { data:{ partners:[...] } }
   vehicleBrandList: "/api/vehicle/version/1.0/brand-list", // { data:{vehicle_type:"car"}, config:{token} }
   vehicleCompanyList: "/api/vehicle/version/1.0/company-list", // → seguradoras [{id,name,nome,commission}]
   templateIndex: "/api/template/version/1.0/index", // { config:{ parent_name:"coverage_vehicle", token } } → coberturas
-  // ⚠️ PENDENTES (só aparecem ao SUBMETER 1 cotação real — wizard multi-etapas
-  // com cascata FIPE marca→modelo→versão→ano dentro do iframe):
-  //   - vehicle model-list / version-list / fipe (cascata)
-  //   - criação/disparo do orçamento (provável /api/quotation|budget/version/1.0/...)
-  //   - polling de resultados das seguradoras
-  // Capturar via `npm run segfy:mapear` fazendo 1 cotação no navegador.
+  // ✅ Resolução de dados da cotação:
+  insured: "/api/vehicle/version/1.0/insured", // { data:{document}, config:{token} } → segurado {id,name,birth_date,gender,...}
+  professionList: "/api/vehicle/version/1.0/profession-list", // { data:{profession} } → [{id,name}] (autocomplete)
+  decodePlate: "/api/vehicle/version/1.0/decode-plate", // { data:{plate} } → {manufacture_year,model_year,chassis,brands[],models[{...,data_fipe:{fipe_code,fipe_value}}]}
+  modelList: "/api/vehicle/version/1.0/model-list", // { data:{brand,brand_id,model,model_year,vehicle_type} } → modelos
+  // ✅ DISPARO do multicálculo:
+  calculate: "/api/vehicle/version/1.0/calculate", // { data:{renewal,customer,main_driver,vehicle,questionnaire,coverage,...}, config:{insurers:[{name,commission}],callback,token} } → { data:{ quotation_id, ... } }
+} as const;
+
+/** Endpoints no host gestao.segfy.com (não upfygate, não api.automation). */
+export const SEGFY_GESTAO_API = {
+  // ✅ Salva o orçamento da automação. Query: ?codigoOrcamento=&token=...
+  // Body { quotation_id, token, data:{...quote...}, config:{insurers,callback,...}, tipo_multicalculo:"Auto" } → "<idOrcamento>" (string).
+  salvaCotacaoAutomation: "/api/Orcamento/SalvaCotacaoAutomation",
+  // ⚠️ PENDENTE: leitura dos resultados (preços por seguradora). Provavelmente
+  // por WebSocket (callback) ou poll do id retornado. Recapturar com WS ligado.
 } as const;

@@ -26,16 +26,37 @@ interface ChamadaMapeada {
   responseSample?: string;
 }
 
+/** Frames de WebSocket — é por aqui que os RESULTADOS por seguradora chegam
+ * (o multicálculo é assíncrono via `callback`). */
+interface WsFrame {
+  ws: string;
+  dir: "recv" | "sent";
+  amostra: string;
+}
+
 const SAIDA = resolve(__dirname, "../integrations/segfy/endpoints-mapeados.json");
 const MAX_AMOSTRA = 4_000; // limita o tamanho do corpo de resposta salvo
 
 async function main(): Promise<void> {
   const env = getEnv();
   const chamadas: ChamadaMapeada[] = [];
+  const wsFrames: WsFrame[] = [];
 
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext();
   const page = await context.newPage();
+
+  // Captura WebSocket (resultados assíncronos por seguradora). Limita o volume
+  // e o tamanho de cada frame para o arquivo não explodir.
+  page.on("websocket", (ws) => {
+    const guardar = (dir: "recv" | "sent") => (data: string | Buffer) => {
+      if (wsFrames.length > 400) return;
+      const s = typeof data === "string" ? data : `<binary:${data.length}>`;
+      wsFrames.push({ ws: ws.url(), dir, amostra: s.slice(0, MAX_AMOSTRA) });
+    };
+    ws.on("framereceived", (e) => guardar("recv")(e.payload));
+    ws.on("framesent", (e) => guardar("sent")(e.payload));
+  });
 
   page.on("request", (req) => {
     const tipo = req.resourceType();
@@ -84,12 +105,18 @@ async function main(): Promise<void> {
   }
 
   logger.info("👉 Agora, NO NAVEGADOR: HFy → Auto → preencha e DISPARE 1 cotação.");
-  logger.info("   (dispense os popups de extensão/NPS/cookies). Capturo todo o tráfego XHR.");
-  logger.info("Ao terminar, pressione Ctrl+C aqui para salvar e sair.", { saida: SAIDA });
+  logger.info("   (dispense os popups de extensão/NPS/cookies). Capturo XHR + WebSocket.");
+  logger.info("   ⏳ IMPORTANTE: AGUARDE os PREÇOS das seguradoras aparecerem na tela");
+  logger.info("      (pode levar 1-3 min) ANTES de sair — é por WebSocket que vêm os resultados.");
+  logger.info("Quando os preços tiverem carregado, pressione Ctrl+C aqui para salvar.", { saida: SAIDA });
 
   const salvar = async () => {
-    await writeFile(SAIDA, JSON.stringify({ capturadoEm: new Date().toISOString(), chamadas }, null, 2), "utf8");
-    logger.info("Mapa salvo", { total: chamadas.length, saida: SAIDA });
+    await writeFile(
+      SAIDA,
+      JSON.stringify({ capturadoEm: new Date().toISOString(), chamadas, wsFrames }, null, 2),
+      "utf8",
+    );
+    logger.info("Mapa salvo", { total: chamadas.length, wsFrames: wsFrames.length, saida: SAIDA });
     await browser.close();
     process.exit(0);
   };
