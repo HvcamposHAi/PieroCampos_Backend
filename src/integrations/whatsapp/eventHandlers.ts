@@ -8,9 +8,14 @@
  *
  * Reconnect: implementado fora daqui (sessionManager observa transição).
  */
-import { DisconnectReason, type WASocket, type WAMessage } from "@whiskeysockets/baileys";
+import {
+  DisconnectReason,
+  downloadMediaMessage,
+  type WASocket,
+  type WAMessage,
+} from "@whiskeysockets/baileys";
 import { getEnv } from "../../config/env";
-import { processarMensagem } from "../../services/bot.service";
+import { processarFormularioRecebido, processarMensagem } from "../../services/bot.service";
 import { logger } from "../../utils/logger";
 import {
   atualizarCanal,
@@ -42,6 +47,39 @@ function extrairTexto(m: WAMessage): string | null {
     msg.videoMessage?.caption ??
     null
   );
+}
+
+/**
+ * Logger silencioso estruturalmente compatível com a interface (ILogger) que o
+ * Baileys exige no `downloadMediaMessage`. Nosso logger (utils/logger) tem outra
+ * assinatura, então usamos um shim no-op — o download não precisa logar.
+ */
+const baileysLoggerSilencioso = {
+  level: "silent",
+  child: () => baileysLoggerSilencioso,
+  trace: () => {},
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+/**
+ * Detecta um questionário .xlsx anexado. Retorna o documentMessage (com ou sem
+ * caption) se o anexo for uma planilha, senão null.
+ */
+function extrairDocumentoXlsx(m: WAMessage): { fileName: string } | null {
+  const doc =
+    m.message?.documentMessage ??
+    m.message?.documentWithCaptionMessage?.message?.documentMessage;
+  if (!doc) return null;
+  const mimetype = doc.mimetype ?? "";
+  const fileName = doc.fileName ?? "arquivo.xlsx";
+  const ehXlsx =
+    mimetype.includes("spreadsheetml") ||
+    mimetype.includes("ms-excel") ||
+    fileName.toLowerCase().endsWith(".xlsx");
+  return ehXlsx ? { fileName } : null;
 }
 
 function classificarMotivo(reasonCode: number | undefined): {
@@ -150,24 +188,81 @@ export function registrarHandlers(
         if (m.key.fromMe) continue; // saída — não processamos como entrada
         if (!m.key.remoteJid) continue;
         if (m.key.remoteJid.endsWith("@g.us")) continue; // ignora grupos por enquanto
+        const jidRemoto = m.key.remoteJid;
+        const enviadaEm = m.messageTimestamp
+          ? new Date(Number(m.messageTimestamp) * 1000)
+          : undefined;
+
+        // (A) Questionário .xlsx devolvido pelo cliente → fluxo de formulário.
+        const docXlsx = extrairDocumentoXlsx(m);
+        if (docXlsx) {
+          const registro = await registrarMensagemEntrada({
+            canalId,
+            jidRemoto,
+            texto: `[formulário recebido: ${docXlsx.fileName}]`,
+            pushName: m.pushName ?? undefined,
+            providerMsgId: m.key.id ?? undefined,
+            enviadaEm,
+          });
+          if (!registro || registro.duplicada) continue;
+
+          const enviarTexto = async (t: string) => {
+            await sessionManager.enviarTextoBot({
+              canalId,
+              conversaId: registro.conversaId,
+              jid: jidRemoto,
+              texto: t,
+            });
+          };
+
+          let buffer: Buffer;
+          try {
+            buffer = (await downloadMediaMessage(
+              m,
+              "buffer",
+              {},
+              {
+                logger: baileysLoggerSilencioso,
+                reuploadRequest: sock.updateMediaMessage,
+              },
+            )) as Buffer;
+          } catch (e) {
+            logger.error("[wa.handlers] download do formulário falhou", {
+              canalId,
+              erro: (e as Error).message,
+            });
+            await enviarTexto(
+              "Não consegui baixar seu arquivo aqui 😕 Pode reenviar, ou me responder por aqui mesmo?",
+            ).catch(() => {});
+            continue;
+          }
+
+          await processarFormularioRecebido({
+            canalId,
+            conversaId: registro.conversaId,
+            jidRemoto,
+            documento: buffer,
+            enviar: enviarTexto,
+          });
+          continue;
+        }
+
+        // (B) Texto (inclui captions de imagem/vídeo).
         const texto = extrairTexto(m);
         if (!texto) continue; // mídia sem caption diferido para outra fase
-        const jidRemoto = m.key.remoteJid;
         const registro = await registrarMensagemEntrada({
           canalId,
           jidRemoto,
           texto,
           pushName: m.pushName ?? undefined,
           providerMsgId: m.key.id ?? undefined,
-          enviadaEm: m.messageTimestamp
-            ? new Date(Number(m.messageTimestamp) * 1000)
-            : undefined,
+          enviadaEm,
         });
 
         if (!registro || registro.duplicada) continue;
 
-        // Aciona o agente Bia. Função `enviar` injetada para evitar acoplar o
-        // bot.service ao sessionManager (testes podem mockar).
+        // Aciona o agente Bia. Funções `enviar`/`enviarDocumento` injetadas para
+        // evitar acoplar o bot.service ao sessionManager (testes podem mockar).
         await processarMensagem({
           canalId,
           conversaId: registro.conversaId,
@@ -179,6 +274,17 @@ export function registrarHandlers(
               conversaId: registro.conversaId,
               jid: jidRemoto,
               texto: respostaTexto,
+            });
+          },
+          enviarDocumento: async (doc) => {
+            await sessionManager.enviarDocumentoBot({
+              canalId,
+              conversaId: registro.conversaId,
+              jid: jidRemoto,
+              documento: doc.documento,
+              fileName: doc.fileName,
+              mimetype: doc.mimetype,
+              caption: doc.caption,
             });
           },
         });

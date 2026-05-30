@@ -29,9 +29,13 @@ export interface MensagemTurno {
   content: string;
 }
 
+export type Modalidade = "um_a_um" | "formulario";
+
 export interface ResultadoBia {
   texto: string;
   camposExtraidos: Record<string, unknown>;
+  /** Preferência registrada via tool escolher_modalidade neste turno, se houve. */
+  modalidadeEscolhida: Modalidade | null;
   paradaPorMaxTokens: boolean;
   uso: { input_tokens: number; output_tokens: number };
 }
@@ -57,6 +61,23 @@ const TOOL_ATUALIZAR_DADOS = {
       },
     },
     required: ["campos"],
+  },
+};
+
+const TOOL_ESCOLHER_MODALIDADE = {
+  name: "escolher_modalidade",
+  description:
+    "Registra como o cliente prefere responder o roteiro: 'um_a_um' (você pergunta aqui, uma de cada vez) ou 'formulario' (você envia uma planilha Excel para ele preencher e devolver). Use SOMENTE quando o cliente expressar a preferência.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      modalidade: {
+        type: "string" as const,
+        enum: ["um_a_um", "formulario"] as const,
+        description: "A preferência escolhida pelo cliente.",
+      },
+    },
+    required: ["modalidade"],
   },
 };
 
@@ -94,6 +115,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
 
   let textoAcumulado = "";
   const camposExtraidos: Record<string, unknown> = {};
+  let modalidadeEscolhida: Modalidade | null = null;
   let inputTokensTotal = 0;
   let outputTokensTotal = 0;
   let cacheReadTotal = 0;
@@ -108,7 +130,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
       model: env.BIA_MODEL,
       max_tokens: env.BIA_MAX_TOKENS,
       system,
-      tools: [TOOL_ATUALIZAR_DADOS],
+      tools: [TOOL_ATUALIZAR_DADOS, TOOL_ESCOLHER_MODALIDADE],
       messages,
     });
 
@@ -130,6 +152,11 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
         if (args?.campos && typeof args.campos === "object") {
           const sanitizados = sanitizarCampos(args.campos);
           for (const [k, v] of Object.entries(sanitizados)) camposExtraidos[k] = v;
+        }
+      } else if (block.type === "tool_use" && block.name === "escolher_modalidade") {
+        const args = block.input as { modalidade?: unknown } | undefined;
+        if (args?.modalidade === "um_a_um" || args?.modalidade === "formulario") {
+          modalidadeEscolhida = args.modalidade;
         }
       }
     }
@@ -167,12 +194,14 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     cache_read_input_tokens: cacheReadTotal,
     cache_creation_input_tokens: cacheCreationTotal,
     campos_extraidos: Object.keys(camposExtraidos),
+    modalidade_escolhida: modalidadeEscolhida,
     texto_len: textoAcumulado.length,
   });
 
   return {
     texto: textoAcumulado.trim(),
     camposExtraidos,
+    modalidadeEscolhida,
     paradaPorMaxTokens,
     uso: { input_tokens: inputTokensTotal, output_tokens: outputTokensTotal },
   };

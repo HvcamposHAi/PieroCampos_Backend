@@ -20,6 +20,7 @@ import {
   lerCanaisParaBootstrap,
   registrarMensagemSaida,
   registrarMensagemSaidaBot,
+  registrarMensagemSaidaBotDocumento,
 } from "./persistence";
 import { useSupabaseAuthState } from "./supabaseAuthState";
 
@@ -210,6 +211,42 @@ class SessionManager {
       canalId: input.canalId,
       conversaId: input.conversaId,
       texto: input.texto,
+      providerMsgId: messageId,
+    });
+    return { messageId };
+  }
+
+  /**
+   * Envia um DOCUMENTO (buffer em memória) pela Bia: usado para o questionário
+   * .xlsx. Mesmas precondições de `enviarTextoBot`. Persiste com `midia_tipo`.
+   */
+  async enviarDocumentoBot(input: {
+    canalId: string;
+    conversaId: string;
+    jid: string;
+    documento: Buffer;
+    fileName: string;
+    mimetype: string;
+    caption?: string;
+  }): Promise<{ messageId: string }> {
+    const entry = this.sessoes.get(input.canalId);
+    if (!entry) throw new Error(`canal ${input.canalId} não conectado`);
+    const canal = await buscarCanal(input.canalId);
+    if (!canal || canal.status !== "conectado") {
+      throw new Error(`canal ${input.canalId} status=${canal?.status ?? "?"} (precisa estar conectado)`);
+    }
+    const resultado = await entry.sock.sendMessage(input.jid, {
+      document: input.documento,
+      fileName: input.fileName,
+      mimetype: input.mimetype,
+      caption: input.caption,
+    });
+    const messageId = resultado?.key?.id ?? "";
+    await registrarMensagemSaidaBotDocumento({
+      canalId: input.canalId,
+      conversaId: input.conversaId,
+      descricao: input.caption ?? `[documento: ${input.fileName}]`,
+      midiaTipo: "document",
       providerMsgId: messageId,
     });
     return { messageId };
