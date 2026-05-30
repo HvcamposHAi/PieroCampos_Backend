@@ -27,14 +27,15 @@ export const SegfyResultDataSchema = z
       .object({ name: z.string().optional(), full_name: z.string().optional() })
       .passthrough()
       .optional(),
-    premium: z.number().optional(),
-    franchise: z.number().optional(),
-    commission: z.number().optional(),
+    // Seguradoras que recusam/erram retornam premium/franchise = null.
+    premium: z.number().nullable().optional(),
+    franchise: z.number().nullable().optional(),
+    commission: z.number().nullable().optional(),
     status: z.string().optional(),
     messages: z.string().optional(),
     // installments: { "Cartão de Crédito": { "1": 4013.53, ..., "10": 401.35 }, "Boleto": {...} }
-    installments: z.record(z.record(z.number())).optional(),
-    company_coverages: z.record(z.unknown()).optional(),
+    installments: z.record(z.record(z.number())).nullable().optional(),
+    company_coverages: z.record(z.unknown()).nullable().optional(),
   })
   .passthrough();
 export type SegfyResultData = z.infer<typeof SegfyResultDataSchema>;
@@ -72,7 +73,7 @@ function resumoCoberturas(cov?: Record<string, unknown>): string {
  */
 export function mapearResultadoParaItem(dataBruto: unknown): ResultadoCotacaoItem {
   const d = SegfyResultDataSchema.parse(dataBruto);
-  const { parcelas, valor_parcela } = melhorParcelamento(d.installments);
+  const { parcelas, valor_parcela } = melhorParcelamento(d.installments ?? undefined);
   const premioOk = typeof d.premium === "number" && d.premium > 0;
   const statusOk = premioOk && (!d.status || STATUS_OK.test(d.status));
   return {
@@ -80,7 +81,7 @@ export function mapearResultadoParaItem(dataBruto: unknown): ResultadoCotacaoIte
     premio_total: d.premium ?? 0,
     parcelas,
     valor_parcela,
-    coberturas_resumo: resumoCoberturas(d.company_coverages),
+    coberturas_resumo: resumoCoberturas(d.company_coverages ?? undefined),
     status: statusOk ? "cotado" : (d.status ?? "recusado"),
   };
 }
