@@ -1,0 +1,54 @@
+# Keep-alive PALIATIVO — mantém o Render Free acordado batendo em /ping.
+#
+# Por que: o backend roda em Render Free, que HIBERNA após ~15 min de
+# inatividade. Ao dormir, o socket Baileys morre (telefone cai) e mensagens
+# não são respondidas ao vivo. Este cron bate em /ping (sempre-200) para a
+# instância não hibernar. SOLUÇÃO DEFINITIVA = subir para Render Starter
+# (sem hibernação); remover este workflow quando isso acontecer.
+#
+# Limitações conhecidas do GitHub Actions agendado:
+#   - É "best effort": o disparo pode atrasar 5-15 min sob carga do GitHub.
+#   - Schedules são DESABILITADOS após 60 dias sem atividade no repo.
+# Para algo mais firme, use um monitor externo (UptimeRobot/cron-job.org)
+# apontando para a mesma URL.
+#
+# Janela: a cada 10 min, ~07:00–00:00 BRT (UTC-3), p/ não estourar a cota de
+# 750h/mês do Free. Fora da janela, o backlog offline (type="append", já
+# tratado no backend) responde as mensagens quando a instância acordar.
+
+name: keep-alive
+
+on:
+  schedule:
+    # Minuto a cada 10; horas em UTC: 00–02 (21–23 BRT) e 10–23 (07–20 BRT).
+    - cron: "*/10 0-2,10-23 * * *"
+  workflow_dispatch: {} # permite disparo manual pela aba Actions
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /ping (acorda o Render Free)
+        run: |
+          URL="https://pierocampos-backend.onrender.com/ping"
+          echo "Pingando $URL (cold start pode levar até ~90s)…"
+          # --max-time generoso p/ tolerar cold start; 3 tentativas com backoff.
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 "$URL" || echo "000")
+            echo "tentativa $i → HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Backend acordado ✅"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Não obtive 200 após 3 tentativas (HTTP=$code)."
+          # Não falha o workflow: um ping perdido não é crítico (o próximo cobre).
+          exit 0
