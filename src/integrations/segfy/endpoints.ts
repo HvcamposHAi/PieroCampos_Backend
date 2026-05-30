@@ -121,6 +121,21 @@ export const SEGFY_GESTAO_API = {
   // ✅ Salva o orçamento da automação. Query: ?codigoOrcamento=&token=...
   // Body { quotation_id, token, data:{...quote...}, config:{insurers,callback,...}, tipo_multicalculo:"Auto" } → "<idOrcamento>" (string).
   salvaCotacaoAutomation: "/api/Orcamento/SalvaCotacaoAutomation",
-  // ⚠️ PENDENTE: leitura dos resultados (preços por seguradora). Provavelmente
-  // por WebSocket (callback) ou poll do id retornado. Recapturar com WS ligado.
 } as const;
+
+/**
+ * RESULTADOS por seguradora — ✅ CONFIRMADO (30/05/2026): chegam por WebSocket,
+ * NÃO por HTTP. Canal Socket.IO (Engine.IO v4); o "evento" é o `callback` uuid
+ * enviado no /calculate. Para cada seguradora chegam eventos { action, data }:
+ *   - action "STEP"   → progresso { company:{name}, message, percentage }
+ *   - action "RESULT" → cotação final { company:{name,full_name}, premium,
+ *       franchise, commission, status, messages, installments, company_coverages }
+ *   - action "PDF"    → { company, proposal_number, company_data:{pdf} }
+ * Parsing do RESULT → ResultadoCotacaoItem em segfy.resultado.ts.
+ *
+ * ⚠️ A LIGAR (cliente live): conectar socket.io-client a SEGFY_RESULTS_WS_URL,
+ * autenticar (token), inscrever no canal=callback, coletar RESULTs até concluir
+ * (todas as seguradoras retornarem ou timeout). Há também um canal Faye
+ * (wss://gestao.fayews.segfy.com/faye) — secundário, não usado para preços.
+ */
+export const SEGFY_RESULTS_WS_URL = "wss://socket-io.segfy.com/socket.io/?EIO=4&transport=websocket";
