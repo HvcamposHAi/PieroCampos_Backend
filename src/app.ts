@@ -15,6 +15,28 @@ import { cotacaoRouter } from "./integrations/cotacao/routes";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
 import { logger } from "./utils/logger";
 
+/**
+ * Decide se a Origin pode falar com a API. FRONT_ORIGIN é uma lista separada por
+ * vírgula que aceita:
+ *   - origem exata: https://piero-broker-assist.humberto-320.workers.dev
+ *   - wildcard de subdomínio: *.humberto-320.workers.dev (cobre os PREVIEW
+ *     deploys do Cloudflare Workers, cujo host muda a cada versão — ex.:
+ *     3eed78fd-piero-broker-assist.humberto-320.workers.dev)
+ *   - "*" libera tudo.
+ * Sem FRONT_ORIGIN → libera tudo (dev). Requisições sem Origin (curl/healthcheck)
+ * passam. A autenticação real é o JWT Supabase (authSupabase), não o CORS.
+ */
+export function origemPermitida(origin: string | undefined, frontOrigin: string): boolean {
+  if (!origin) return true;
+  const lista = frontOrigin.split(",").map((o) => o.trim()).filter(Boolean);
+  if (lista.length === 0) return true;
+  return lista.some((item) => {
+    if (item === "*") return true;
+    if (item.startsWith("*.")) return origin.endsWith(item.slice(1)); // sufixo c/ o ponto
+    return origin === item;
+  });
+}
+
 export function criarApp(): express.Express {
   const env = getEnv();
   const app = express();
@@ -22,7 +44,7 @@ export function criarApp(): express.Express {
   app.use(helmet());
   app.use(
     cors({
-      origin: env.FRONT_ORIGIN ? env.FRONT_ORIGIN.split(",").map((o) => o.trim()) : "*",
+      origin: (origin, cb) => cb(null, origemPermitida(origin, env.FRONT_ORIGIN)),
       credentials: true,
     }),
   );
