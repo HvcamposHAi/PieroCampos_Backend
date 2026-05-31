@@ -14,9 +14,11 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
-import { buscarCanal } from "./persistence";
+import { buscarCanal, e164ParaJid } from "./persistence";
 import {
   carregarConversaParaEdicao,
+  carregarConversaParaEnvio,
+  definirEstadoConversa,
   editarDadosColetados,
   enfileirarCampoForcado,
   editarCpfCliente,
@@ -146,6 +148,125 @@ router.post("/send", exigirAdmin, async (req: Request, res: Response) => {
       canalId: parsed.data.canalId,
       erro: (e as Error).message,
     });
+    res.status(409).json({ erro: "send_failed", mensagem: (e as Error).message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Atendimento humano — assumir / responder / devolver (operador dono ou admin).
+// Diferente de /send (admin), estas rotas são escopadas por conversa atribuída.
+// ----------------------------------------------------------------------------
+
+// Operador assume a conversa: estado -> humano_assumiu e vira dono. Silencia a
+// Bia (decidirModoBia). Idempotente. Dispara a trigger de notificação de handoff.
+router.post("/conversas/:id/assumir", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return; // resposta já enviada
+  const operador = await carregarOperadorAtivo(req);
+  if (!operador) {
+    res.status(403).json({ erro: "operador_required" });
+    return;
+  }
+  try {
+    await definirEstadoConversa({
+      conversaId,
+      estado: "humano_assumiu",
+      operadorId: operador.id,
+    });
+    res.json({ ok: true, estado: "humano_assumiu" });
+  } catch (e) {
+    logger.error("[wa.routes] assumir falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "assumir_failed", mensagem: (e as Error).message });
+  }
+});
+
+// Operador devolve ao robô: estado -> bot_ativo (mantém operador_id por auditoria).
+// Reativa a Bia.
+router.post("/conversas/:id/devolver", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+  try {
+    await definirEstadoConversa({ conversaId, estado: "bot_ativo" });
+    res.json({ ok: true, estado: "bot_ativo" });
+  } catch (e) {
+    logger.error("[wa.routes] devolver falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "devolver_failed", mensagem: (e as Error).message });
+  }
+});
+
+// Operador envia uma mensagem ao cliente. O backend deriva canal + JID da própria
+// conversa (não confia em valores do browser). Só permite em humano_assumiu.
+const responderSchema = z.object({ texto: z.string().min(1).max(4096) });
+
+router.post("/conversas/:id/responder", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = responderSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+
+  const conversa = await carregarConversaParaEnvio(conversaId);
+  if (!conversa) {
+    res.status(404).json({ erro: "conversa_nao_encontrada" });
+    return;
+  }
+  if (conversa.estado !== "humano_assumiu") {
+    res.status(409).json({ erro: "conversa_nao_assumida" });
+    return;
+  }
+  const jid = conversa.telefone ? e164ParaJid(conversa.telefone) : null;
+  if (!conversa.canal_id || !jid) {
+    res.status(409).json({ erro: "destino_indisponivel" });
+    return;
+  }
+  // Claim-on-send: se a conversa chegou em humano_assumiu por handoff automático
+  // (sem dono), o ato de responder vira posse — assim a Bia para de acolher
+  // (decidirModoBia passa a 'mudo'). Best-effort: não bloqueia o envio.
+  if (!conversa.operador_id) {
+    const operador = await carregarOperadorAtivo(req);
+    if (operador) {
+      try {
+        await definirEstadoConversa({
+          conversaId,
+          estado: "humano_assumiu",
+          operadorId: operador.id,
+        });
+      } catch (e) {
+        logger.warn("[wa.routes] claim-on-send falhou", {
+          conversaId,
+          erro: (e as Error).message,
+        });
+      }
+    }
+  }
+  try {
+    const out = await sessionManager.enviarTexto({
+      canalId: conversa.canal_id,
+      conversaId,
+      jid,
+      texto: parsed.data.texto,
+      operadorNome: autz.email,
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    logger.error("[wa.routes] responder falhou", { conversaId, erro: (e as Error).message });
     res.status(409).json({ erro: "send_failed", mensagem: (e as Error).message });
   }
 });

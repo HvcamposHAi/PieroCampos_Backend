@@ -24,6 +24,17 @@ export function jidParaE164(jid: string): string | null {
   return `+${limpo}`;
 }
 
+/**
+ * Inverso de `jidParaE164`: converte um telefone E.164 (`+<num>`) no JID Baileys
+ * de usuário (`<num>@s.whatsapp.net`). Aceita também o número sem `+`/com máscara
+ * (só os dígitos importam). Retorna null se não restar dígito algum.
+ */
+export function e164ParaJid(telefone: string): string | null {
+  const digitos = (telefone ?? "").replace(/\D/g, "");
+  if (!digitos) return null;
+  return `${digitos}@s.whatsapp.net`;
+}
+
 export async function atualizarCanal(canalId: string, update: CanalUpdate): Promise<void> {
   const sb = getSupabaseAdmin();
   const { error } = await sb.from("canais").update(update).eq("id", canalId);
