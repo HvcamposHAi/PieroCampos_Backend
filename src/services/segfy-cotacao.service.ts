@@ -21,6 +21,7 @@ import {
 } from "../integrations/segfy/segfy.multicalculo";
 import { formatarComparativoParaWhatsApp } from "../integrations/segfy/segfy.format";
 import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
+import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { logger } from "../utils/logger";
 
@@ -166,51 +167,52 @@ export interface ResultadoDisparo {
 }
 
 /**
- * Dispara a cotação no Segfy, registrando cada ETAPA do pipeline (observabilidade)
- * e o resultado (menor preço em destaque). Devolve o texto do comparativo, ou
- * null (flag off, faltam dados, ou falha — sempre não-fatal p/ o bot).
+ * Dispara a cotação no Segfy com OBSERVABILIDADE PRIMEIRO: cria a cotação
+ * (`processando`) e a 1ª etapa LOGO no início, para que a tela (aba Etapas +
+ * página Cotações) SEMPRE mostre a tentativa — inclusive quando a integração
+ * está desabilitada, falta consentimento/dados, ou o Segfy falha (cada caso
+ * vira uma etapa de ERRO legível). Devolve o comparativo (menor preço) ou null.
+ * `persistInjetado` permite testar sem Supabase.
  */
-export async function dispararCotacaoSegfy(params: {
-  conversaId: string;
-  clienteId: string;
-  dados: Record<string, unknown>;
-}): Promise<ResultadoDisparo | null> {
+export async function dispararCotacaoSegfy(
+  params: { conversaId: string; clienteId: string; dados: Record<string, unknown> },
+  persistInjetado?: PersistencePort,
+): Promise<ResultadoDisparo | null> {
   const env = getEnv();
-  if (!env.SEGFY_ENABLED) {
-    logger.info("[segfy] SEGFY_ENABLED=false; cotação não disparada", { conversaId: params.conversaId });
-    return null;
-  }
-  const persist = new SupabasePersistence();
+  const persist: PersistencePort = persistInjetado ?? new SupabasePersistence();
 
-  const cliente = await persist.buscarClientePorId(params.clienteId);
-  if (!cliente || !cliente.consentimento_lgpd) {
-    await persist.registrarEtapa({
-      conversaId: params.conversaId,
-      etapa: "token",
-      status: "erro",
-      mensagem: cliente ? "Sem consentimento LGPD do cliente." : "Cliente não encontrado.",
-    });
-    return null;
-  }
-
-  const { entrada, faltando } = mapearParaCotacao(params.dados, cliente);
-  if (!entrada) {
-    await persist.registrarEtapa({
-      conversaId: params.conversaId,
-      etapa: "veiculo",
-      status: "erro",
-      mensagem: `Dados insuficientes para cotar: ${faltando.join(", ")}.`,
-    });
-    return null;
-  }
-
-  // Cria a cotação em 'processando' para as etapas/tela se ligarem.
+  // 1) Cria a cotação SEMPRE (observabilidade imediata via realtime).
   const { cotacaoId } = await persist.iniciarCotacao({
     conversaId: params.conversaId,
     clienteId: params.clienteId,
     ramo: "auto",
-    dadosEntrada: { ...params.dados, placa: entrada.placa },
+    dadosEntrada: params.dados,
   });
+  await persist.registrarEtapa({
+    cotacaoId,
+    conversaId: params.conversaId,
+    etapa: "token",
+    status: "andamento",
+    mensagem: "Iniciando cotação…",
+  });
+
+  // Helper: marca a etapa/cotação como ERRO e encerra (visível na tela).
+  const falhar = async (etapa: "token" | "segurado" | "veiculo" | "calculo" | "coleta" | "salvar", msg: string): Promise<null> => {
+    await persist.registrarEtapa({ cotacaoId, conversaId: params.conversaId, etapa, status: "erro", mensagem: msg });
+    await persist.atualizarCotacao(cotacaoId, { status: "erro" });
+    logger.warn("[segfy] cotação não concluída", { conversaId: params.conversaId, etapa, msg });
+    return null;
+  };
+
+  if (!env.SEGFY_ENABLED) {
+    return falhar("token", "Integração Segfy desabilitada (SEGFY_ENABLED=false). Habilite para cotar de verdade.");
+  }
+  const cliente = await persist.buscarClientePorId(params.clienteId);
+  if (!cliente) return falhar("token", "Cliente não encontrado ou excluído.");
+  if (!cliente.consentimento_lgpd) return falhar("token", "Sem consentimento LGPD do cliente.");
+
+  const { entrada, faltando } = mapearParaCotacao(params.dados, cliente);
+  if (!entrada) return falhar("veiculo", `Dados insuficientes para cotar: ${faltando.join(", ")}.`);
 
   try {
     const { quotationId, resultados } = await cotarAuto(entrada, undefined, (e) => {

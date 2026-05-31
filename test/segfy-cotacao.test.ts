@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { mapearParaCotacao, dispararCotacaoSegfy } from "../src/services/segfy-cotacao.service";
+import { InMemoryPersistence } from "../src/integrations/segfy/persistence.port";
 import { _resetEnvCache } from "../src/config/env";
 
 const CLIENTE = { cpf: "090.656.619-30", nome: "Camilly" };
@@ -63,8 +64,17 @@ describe("dispararCotacaoSegfy", () => {
     _resetEnvCache();
   });
 
-  it("retorna null sem efeitos quando SEGFY_ENABLED=false", async () => {
-    const r = await dispararCotacaoSegfy({ conversaId: "c1", clienteId: "cli1", dados: { placa: "SFI7F72" } });
+  it("SEGFY_ENABLED=false: não cota, mas DEIXA RASTRO (cotação + etapa de erro visível)", async () => {
+    const mem = new InMemoryPersistence();
+    const r = await dispararCotacaoSegfy(
+      { conversaId: "c1", clienteId: "cli1", dados: { placa: "SFI7F72" } },
+      mem,
+    );
     expect(r).toBeNull();
+    // Observabilidade: criou a cotação e registrou a etapa de erro legível.
+    expect(mem.cotacoesIniciadas).toHaveLength(1);
+    expect(mem.cotacoesAtualizadas.some((c) => c.status === "erro")).toBe(true);
+    const erro = mem.etapas.find((e) => e.status === "erro");
+    expect(erro?.mensagem).toMatch(/desabilitada/i);
   });
 });
