@@ -123,9 +123,21 @@ let cache: { tokens: SegfyTokens; expiraEm: number } | null = null;
  * ⚠️ 2FA (a partir de 01/06/2026): o SSO pode exigir código por e-mail; nesse
  * caso usar usuário de serviço isento (Configurações > Usuários) ou Gmail OTP.
  */
-export async function obterTokensSegfy(forcar = false): Promise<SegfyTokens> {
+/** Credenciais do portal (vêm do banco/serviço; default = .env). */
+export interface CredenciaisSegfy {
+  email: string;
+  password: string;
+}
+
+export async function obterTokensSegfy(
+  forcar = false,
+  credenciais?: CredenciaisSegfy,
+): Promise<SegfyTokens> {
   if (!forcar && cache && cache.expiraEm > Date.now()) return cache.tokens;
   const env = getEnv();
+  // Credenciais: prioriza as injetadas (banco); fallback .env (retrocompat).
+  const email = credenciais?.email || env.SEGFY_LOGIN;
+  const password = credenciais?.password || env.SEGFY_SENHA;
   // Origin/Referer do SSO: a API key do Firebase tem restrição de referrer.
   const json = {
     "Content-Type": "application/json",
@@ -136,7 +148,7 @@ export async function obterTokensSegfy(forcar = false): Promise<SegfyTokens> {
   // 1) Firebase verifyPassword → idToken
   const fb = await axios.post<FirebaseVerifyResp>(
     FIREBASE_VERIFY,
-    { email: env.SEGFY_LOGIN, password: env.SEGFY_SENHA, returnSecureToken: true },
+    { email, password, returnSecureToken: true },
     { headers: json, timeout: 30_000 },
   );
   const idToken = fb.data.idToken;
@@ -151,7 +163,7 @@ export async function obterTokensSegfy(forcar = false): Promise<SegfyTokens> {
   //    (Não é preciso find-by-user — esses tokens vêm direto no login.)
   const up = await axios.post<UpfyLoginResp>(
     `${UPFY_BASE}${SEGFY_ENDPOINTS.auth.login}`,
-    { email: env.SEGFY_LOGIN, password: env.SEGFY_SENHA },
+    { email, password },
     { headers: { ...json, Cookie: cookie }, timeout: 30_000 },
   );
   const d = up.data.data;
@@ -210,6 +222,7 @@ export async function cotarAuto(
   dados: DadosCotacaoAuto,
   tokens?: SegfyTokens,
   onEtapa?: (e: EtapaEvento) => void,
+  credenciais?: CredenciaisSegfy,
 ): Promise<ResultadoCotacaoAuto> {
   const emit = (e: EtapaEvento): void => {
     try {
@@ -233,7 +246,7 @@ export async function cotarAuto(
   const insurers = dados.insurers ?? INSURERS_PADRAO;
 
   // 0) token de automação
-  const tk = tokens ?? (await comEtapa("token", () => obterTokensSegfy(), "autenticado no Segfy"));
+  const tk = tokens ?? (await comEtapa("token", () => obterTokensSegfy(false, credenciais), "autenticado no Segfy"));
   if (tokens) emit({ etapa: "token", status: "ok", mensagem: "token reutilizado" });
   const { automationToken: token } = tk;
 

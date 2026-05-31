@@ -60,14 +60,10 @@ const schema = z
   })
   // Quando integrações estão ligadas, credenciais passam a ser obrigatórias.
   .superRefine((val, ctx) => {
-    if (val.SEGFY_ENABLED) {
-      if (!val.SEGFY_LOGIN) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SEGFY_LOGIN"], message: "obrigatório quando SEGFY_ENABLED=true" });
-      }
-      if (!val.SEGFY_SENHA) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SEGFY_SENHA"], message: "obrigatório quando SEGFY_ENABLED=true" });
-      }
-    }
+    // SEGFY_LOGIN/SEGFY_SENHA NÃO são mais obrigatórios quando SEGFY_ENABLED=true:
+    // as credenciais agora podem vir da tabela `segfy_credenciais` (Admin > Segfy);
+    // o .env permanece apenas como fallback. Ver segfy-credenciais.service.ts.
+    void val;
     if (val.WA_ENABLED) {
       if (!val.SUPABASE_URL) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["SUPABASE_URL"], message: "obrigatório quando WA_ENABLED=true" });
