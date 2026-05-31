@@ -77,4 +77,21 @@ describe("dispararCotacaoSegfy", () => {
     const erro = mem.etapas.find((e) => e.status === "erro");
     expect(erro?.mensagem).toMatch(/desabilitada/i);
   });
+
+  it("dados faltando: etapa de erro ACIONÁVEL (Complemente) apontando o que falta", async () => {
+    process.env.SEGFY_ENABLED = "true";
+    _resetEnvCache();
+    const mem = new InMemoryPersistence();
+    mem.semearCliente({ id: "cli1", cpf: null, nome: "Humberto", email: null, telefone: "+55", segfy_id: null, consentimento_lgpd: true });
+    const r = await dispararCotacaoSegfy(
+      { conversaId: "c1", clienteId: "cli1", dados: {} }, // sem cpf/placa/cep
+      mem,
+    );
+    expect(r).toBeNull();
+    const erro = mem.etapas.find((e) => e.status === "erro");
+    expect(erro?.etapa).toBe("segurado"); // cpf falta → etapa do segurado
+    expect(erro?.mensagem).toMatch(/Faltam dados para cotar/i);
+    expect(erro?.mensagem).toMatch(/Complemente/i);
+    expect(erro?.mensagem).toMatch(/cpf/i);
+  });
 });

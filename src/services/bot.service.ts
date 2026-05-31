@@ -330,10 +330,11 @@ export async function confirmarEdispararCotacao(p: {
   // se a conversa já estava com um humano, uma nova falha não re-notifica.
   const { data: pre } = await sb
     .from("conversas")
-    .select("estado")
+    .select("estado, dados_bot")
     .eq("id", p.conversaId)
     .maybeSingle();
   const estadoInicial = (pre as { estado?: string } | null)?.estado;
+  const dadosBot = comoObjeto((pre as { dados_bot?: Record<string, unknown> | null } | null)?.dados_bot);
 
   await sb.from("conversas").update({ estado: "aguardando_cotacao" }).eq("id", p.conversaId);
 
@@ -346,12 +347,16 @@ export async function confirmarEdispararCotacao(p: {
     // Cotação falhou (Segfy off / dados faltando / erro): escala para um humano
     // (a trigger do banco notifica os operadores). A conversa fica em holding —
     // a Bia continua respondendo. Só escala se já não estava com humano.
+    // Marca a falha em dados_bot ANTES do handoff: o trigger de handoff usa isso
+    // para NÃO emitir o aviso genérico (o aviso específico vem do trg_cotacoes_desfecho).
+    await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: true });
     if (estadoInicial !== "humano_assumiu") {
       await executarHandoff({ conversaId: p.conversaId, motivo: "cotacao_falhou" });
     }
     return { cotou: false };
   }
   try {
+    await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: false });
     await p.enviar(cotacao.texto);
     await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
     logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", { conversaId: p.conversaId });

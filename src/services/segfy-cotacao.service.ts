@@ -216,7 +216,7 @@ export async function dispararCotacaoSegfy(
   if (!entrada) {
     // CPF falta → falha no passo do segurado; demais (placa/cep) → no veículo.
     const etapaFalha = faltando.some((f) => f.startsWith("cpf")) ? "segurado" : "veiculo";
-    return falhar(etapaFalha, `Dados insuficientes para cotar: ${faltando.join(", ")}.`);
+    return falhar(etapaFalha, `Faltam dados para cotar: ${faltando.join(", ")}. Complemente em 'Dados coletados' ou peça à Bia.`);
   }
 
   // Credenciais do portal: banco (tela Admin) com fallback .env. Sem nenhuma → não cota.

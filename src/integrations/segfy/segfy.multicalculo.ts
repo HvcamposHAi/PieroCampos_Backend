@@ -294,7 +294,11 @@ export async function cotarAuto(
     "segurado",
     async () => {
       const r = (await post<InsuredResp>(SEGFY_AUTOMATION_API.insured, { data: { document: dados.cpf }, config: { token } }, tk)).data;
-      if (!r) throw new Error("segurado não encontrado para o CPF informado");
+      // Guard: um CPF inválido pode retornar objeto vazio (sem nome/nascimento),
+      // que só estouraria 422 lá no /calculate. Falha aqui com motivo claro.
+      if (!r || !r.name || !r.birth_date) {
+        throw new Error("Não localizei o segurado pelo CPF — confira o CPF informado.");
+      }
       return r;
     },
     "segurado localizado",
