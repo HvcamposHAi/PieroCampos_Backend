@@ -54,10 +54,10 @@ describe("chamarBia + escolher_modalidade", () => {
     expect(r.modalidadeEscolhida).toBe("formulario");
     expect(r.texto).toContain("planilha");
     expect(mockCreate).toHaveBeenCalledTimes(2);
-    // As duas tools são oferecidas ao modelo.
+    // Tools base oferecidas ao modelo (sem confirmar_cotacao fora da fase).
     const toolsArg = mockCreate.mock.calls[0]![0].tools as Array<{ name: string }>;
     expect(toolsArg.map((t) => t.name).sort()).toEqual(
-      ["atualizar_dados", "escolher_modalidade"].sort(),
+      ["atualizar_dados", "escolher_modalidade", "registrar_consentimento_lgpd"].sort(),
     );
   });
 

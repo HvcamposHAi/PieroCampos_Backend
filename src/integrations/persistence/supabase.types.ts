@@ -50,6 +50,8 @@ export interface Database {
         };
         Update: {
           segfy_id?: string | null;
+          consentimento_lgpd?: boolean;
+          consentimento_em?: string | null;
         };
         Relationships: [];
       };

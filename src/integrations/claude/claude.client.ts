@@ -38,6 +38,8 @@ export interface ResultadoBia {
   modalidadeEscolhida: Modalidade | null;
   /** Confirmação da cotação pelo cliente (tool confirmar_cotacao), se houve. */
   confirmarCotacao: boolean | null;
+  /** Consentimento LGPD do cliente (tool registrar_consentimento_lgpd), se houve. */
+  consentimentoLgpd: boolean | null;
   paradaPorMaxTokens: boolean;
   uso: { input_tokens: number; output_tokens: number };
 }
@@ -101,6 +103,22 @@ const TOOL_CONFIRMAR_COTACAO = {
   },
 };
 
+const TOOL_CONSENTIMENTO_LGPD = {
+  name: "registrar_consentimento_lgpd",
+  description:
+    "Registra o consentimento LGPD do cliente para coletar e usar os dados na cotação. Chame com autorizado=true SOMENTE quando o cliente autorizar claramente (ex.: 'sim', 'autorizo', 'pode usar'). Se ele recusar, autorizado=false.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      autorizado: {
+        type: "boolean" as const,
+        description: "true = cliente autorizou o uso dos dados (LGPD); false = recusou.",
+      },
+    },
+    required: ["autorizado"],
+  },
+};
+
 function sanitizarCampos(brutos: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(brutos)) {
@@ -133,14 +151,18 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = input.historico.map((m) => ({ role: m.role, content: m.content }));
 
-  const tools = input.permitirConfirmacao
-    ? [TOOL_ATUALIZAR_DADOS, TOOL_ESCOLHER_MODALIDADE, TOOL_CONFIRMAR_COTACAO]
-    : [TOOL_ATUALIZAR_DADOS, TOOL_ESCOLHER_MODALIDADE];
+  const tools = [
+    TOOL_ATUALIZAR_DADOS,
+    TOOL_ESCOLHER_MODALIDADE,
+    TOOL_CONSENTIMENTO_LGPD,
+    ...(input.permitirConfirmacao ? [TOOL_CONFIRMAR_COTACAO] : []),
+  ];
 
   let textoAcumulado = "";
   const camposExtraidos: Record<string, unknown> = {};
   let modalidadeEscolhida: Modalidade | null = null;
   let confirmarCotacao: boolean | null = null;
+  let consentimentoLgpd: boolean | null = null;
   let inputTokensTotal = 0;
   let outputTokensTotal = 0;
   let cacheReadTotal = 0;
@@ -186,6 +208,9 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
       } else if (block.type === "tool_use" && block.name === "confirmar_cotacao") {
         const args = block.input as { confirmado?: unknown } | undefined;
         if (typeof args?.confirmado === "boolean") confirmarCotacao = args.confirmado;
+      } else if (block.type === "tool_use" && block.name === "registrar_consentimento_lgpd") {
+        const args = block.input as { autorizado?: unknown } | undefined;
+        if (typeof args?.autorizado === "boolean") consentimentoLgpd = args.autorizado;
       }
     }
 
@@ -231,6 +256,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     camposExtraidos,
     modalidadeEscolhida,
     confirmarCotacao,
+    consentimentoLgpd,
     paradaPorMaxTokens,
     uso: { input_tokens: inputTokensTotal, output_tokens: outputTokensTotal },
   };

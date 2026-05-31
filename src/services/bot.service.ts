@@ -312,6 +312,20 @@ async function mergeDadosBot(
   return merged;
 }
 
+/** Grava o consentimento LGPD do cliente (autorização dada no chat). */
+async function registrarConsentimentoLgpd(clienteId: string): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const { error } = await sb
+    .from("clientes")
+    .update({ consentimento_lgpd: true, consentimento_em: new Date().toISOString() })
+    .eq("id", clienteId);
+  if (error) {
+    logger.warn("[bot] falha ao registrar consentimento LGPD", { clienteId, erro: error.message });
+  } else {
+    logger.info("[bot] consentimento LGPD registrado", { clienteId });
+  }
+}
+
 /**
  * Se o roteiro estiver completo: NÃO dispara cotação automaticamente — muda o
  * estado p/ `aguardando_confirmacao_cotacao`, onde a Bia pede a DECISÃO do
@@ -631,6 +645,12 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   if (modo !== "ativo") {
     await enviarRespostaBia(resposta.texto, input.enviar, conversa.id);
     return;
+  }
+
+  // 6.1) Consentimento LGPD: se o cliente autorizou neste turno, grava no cadastro
+  //      (clientes.consentimento_lgpd) — pré-requisito para a cotação no Segfy.
+  if (resposta.consentimentoLgpd === true) {
+    await registrarConsentimentoLgpd(conversa.cliente_id);
   }
 
   // 7) Persistir campos extraídos.
