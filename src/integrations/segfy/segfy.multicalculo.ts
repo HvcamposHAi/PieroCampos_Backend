@@ -212,10 +212,43 @@ export interface EtapaEvento {
   mensagem?: string;
 }
 
-/** Mensagem curta de erro — NUNCA token/CPF. */
-function erroCurto(e: unknown): string {
+/** Remove CPF (11 dígitos) e corta o comprimento. Nunca lança. */
+function sanitizar(s: string, max = 180): string {
+  return s.replace(/\b\d{11}\b/g, "***").slice(0, max);
+}
+
+/**
+ * Mensagem curta de erro — NUNCA token/CPF. Para erros HTTP do Segfy (axios),
+ * extrai o MOTIVO REAL do corpo da resposta (message/error/errors[]…), que o
+ * axios esconde atrás de "Request failed with status code NNN". Robusta: se o
+ * corpo vier em formato inesperado, cai para `e.message`.
+ */
+export function erroCurto(e: unknown): string {
+  try {
+    if (axios.isAxiosError(e)) {
+      const status = e.response?.status;
+      const data = e.response?.data as
+        | { message?: string; error?: string; errors?: unknown; detail?: string; title?: string }
+        | string
+        | undefined;
+      let motivo = "";
+      if (typeof data === "string") motivo = data;
+      else if (data) {
+        motivo =
+          (typeof data.message === "string" && data.message) ||
+          (typeof data.error === "string" && data.error) ||
+          (typeof data.detail === "string" && data.detail) ||
+          (typeof data.title === "string" && data.title) ||
+          (data.errors != null ? (typeof data.errors === "string" ? data.errors : JSON.stringify(data.errors)) : "");
+      }
+      const prefixo = status ? `HTTP ${status}` : "erro de rede";
+      return sanitizar(motivo ? `${prefixo}: ${motivo}` : `${prefixo}: ${e.message}`);
+    }
+  } catch {
+    /* formato inesperado → cai no fallback abaixo */
+  }
   const m = e instanceof Error ? e.message : String(e);
-  return m.replace(/\b\d{11}\b/g, "***").slice(0, 140);
+  return sanitizar(m);
 }
 
 export async function cotarAuto(
@@ -238,6 +271,12 @@ export async function cotarAuto(
       emit({ etapa, status: "ok", mensagem: okMsg });
       return r;
     } catch (e) {
+      // Diagnóstico: loga o CORPO da resposta de erro do Segfy (sanitizado, sem
+      // CPF/token) para identificar a validação que falhou (ex.: 422 do calculate).
+      if (axios.isAxiosError(e)) {
+        const body = typeof e.response?.data === "string" ? e.response.data : JSON.stringify(e.response?.data ?? {});
+        logger.warn("[segfy] resposta de erro", { etapa, status: e.response?.status, body: sanitizar(body, 800) });
+      }
       emit({ etapa, status: "erro", mensagem: erroCurto(e) });
       throw e;
     }

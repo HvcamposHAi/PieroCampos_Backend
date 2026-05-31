@@ -261,14 +261,11 @@ export async function dispararCotacaoSegfy(
       asString(params.dados.nome) ?? asString(params.dados.segurado) ?? cliente.nome ?? "tudo certo";
     return { texto: formatarComparativoParaWhatsApp(resultados, nome), cotacaoId, maisBarata };
   } catch (e) {
+    // A etapa REAL que falhou (calculo/segurado/...) já foi registrada como erro
+    // pelo `onEtapa` do cotarAuto, com o motivo real. NÃO registramos um segundo
+    // erro em "salvar" (isso criava uma 2ª linha vermelha enganosa); só marcamos
+    // a cotação como erro — "Salvar cotação" permanece pendente.
     await persist.atualizarCotacao(cotacaoId, { status: "erro" });
-    await persist.registrarEtapa({
-      cotacaoId,
-      conversaId: params.conversaId,
-      etapa: "salvar",
-      status: "erro",
-      mensagem: e instanceof Error ? e.message.slice(0, 140) : String(e),
-    });
     logger.error("[segfy] cotação falhou (não-fatal)", {
       conversaId: params.conversaId,
       erro: e instanceof Error ? e.message : String(e),
