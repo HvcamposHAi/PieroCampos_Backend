@@ -297,7 +297,10 @@ export async function cotarAuto(
       // Guard: um CPF inválido pode retornar objeto vazio (sem nome/nascimento),
       // que só estouraria 422 lá no /calculate. Falha aqui com motivo claro.
       if (!r || !r.name || !r.birth_date) {
-        throw new Error("Não localizei o segurado pelo CPF — confira o CPF informado.");
+        // Diagnóstico (sem PII): distingue "CPF errado" de "insured não retorna
+        // dados p/ CPF válido" (→ aciona coleta de nascimento/sexo no futuro).
+        logger.warn("[segfy] insured vazio", { insured_vazio: true, cpf_len: dados.cpf.replace(/\D/g, "").length });
+        throw new Error("Não localizei os dados do segurado para este CPF (verifique o CPF informado).");
       }
       return r;
     },

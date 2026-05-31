@@ -33,7 +33,8 @@ import {
   MENSAGEM_HANDOFF,
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
-import { dispararCotacaoSegfy } from "./segfy-cotacao.service";
+import { dispararCotacaoSegfy, mapearParaCotacao } from "./segfy-cotacao.service";
+import { cpfValido, formatarCpf } from "../lib/cpf";
 
 const FALLBACK_ERRO =
   "Desculpe, tive um problema técnico aqui agora. Já estou chamando um corretor para te atender. 🙏";
@@ -61,6 +62,8 @@ interface ConversaAtiva {
   id: string;
   cliente_id: string;
   estado: string;
+  /** Operador dono (setado por "Assumir"). null = handoff automático sem dono ainda. */
+  operador_id: string | null;
   categoria: CategoriaConversa | null;
   dados_coletados: Record<string, unknown>;
   /** Estado interno do bot (modalidade, formulário). Pode estar ausente em prod
@@ -72,7 +75,7 @@ async function carregarConversa(conversaId: string): Promise<ConversaAtiva | nul
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, cliente_id, estado, categoria, dados_coletados, dados_bot")
+    .select("id, cliente_id, estado, operador_id, categoria, dados_coletados, dados_bot")
     .eq("id", conversaId)
     .maybeSingle();
   if (error) {
@@ -84,6 +87,7 @@ async function carregarConversa(conversaId: string): Promise<ConversaAtiva | nul
     id: data.id,
     cliente_id: data.cliente_id,
     estado: data.estado,
+    operador_id: (data as { operador_id?: string | null }).operador_id ?? null,
     categoria: (data.categoria as CategoriaConversa | null) ?? null,
     // Guard de objeto: em prod sem a migration de default, dados_coletados pode
     // vir como '[]'::jsonb (array). Spread de array quebra o merge — normaliza p/ {}.
@@ -149,13 +153,21 @@ async function carregarHistorico(conversaId: string): Promise<MensagemTurno[]> {
  * Postura da Bia conforme o estado. Função pura (testável). A Bia NUNCA fica
  * calada, exceto em `encerrado` (uma nova mensagem reabre como conversa nova).
  *  - ativo   → bot_ativo / aguardando_confirmacao_cotacao: coleta + decisão.
- *  - holding → cotação/equipe, humano assumiu, apólice, VIP: só acolhe.
- *  - mudo    → encerrado (e qualquer estado desconhecido cai em holding = responde).
+ *  - holding → cotação/equipe, apólice, VIP: só acolhe.
+ *  - mudo    → encerrado, e humano_assumiu QUANDO um operador é o dono (clicou
+ *              "Assumir"): a Bia não fala por cima do humano. Reversível via
+ *              "devolver ao robô" (volta para bot_ativo).
+ *
+ * Nota sobre humano_assumiu SEM dono: o estado também é setado pelo handoff
+ * automático (ex.: cotação falhou) antes de qualquer operador pegar a conversa.
+ * Nesse caso `operadorId` é null e a Bia segue em holding (acolhe; "sempre
+ * responde") para não deixar o cliente no vácuo até alguém assumir.
  */
-export function decidirModoBia(estado: string): ModoBia {
+export function decidirModoBia(estado: string, operadorId?: string | null): ModoBia {
   if (estado === "bot_ativo" || estado === "aguardando_confirmacao_cotacao") return "ativo";
   if (estado === "encerrado") return "mudo";
-  return "holding"; // cotação/equipe + humano_assumiu + apolice_emitida + bloqueado_vip
+  if (estado === "humano_assumiu") return operadorId ? "mudo" : "holding";
+  return "holding"; // cotação/equipe + apolice_emitida + bloqueado_vip
 }
 
 /** 1ª linha do bloco de holding, conforme o estado (explica quem está cuidando). */
@@ -313,6 +325,26 @@ export async function finalizarSeRoteiroCompleto(p: {
 }
 
 /**
+ * Crítica COMPLETA de dados para a cotação (cpf ausente/inválido, placa, cep),
+ * re-derivada via `mapearParaCotacao`. Vazio quando os dados estão ok (a falha
+ * foi por outro motivo: Segfy off, 422, etc.). Best-effort — nunca lança.
+ */
+async function derivarCotacaoFaltando(
+  sb: ReturnType<typeof getSupabaseAdmin>,
+  clienteId: string,
+  dados: Record<string, unknown>,
+): Promise<string[]> {
+  try {
+    const { data } = await sb.from("clientes").select("cpf, nome").eq("id", clienteId).maybeSingle();
+    const cli = data as { cpf?: string | null; nome?: string | null } | null;
+    const { faltando } = mapearParaCotacao(dados, { cpf: cli?.cpf ?? null, nome: cli?.nome ?? null });
+    return faltando;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Dispara a cotação no Segfy (decisão do cliente OU do operador): muda p/
  * `aguardando_cotacao`, executa o pipeline (registrando etapas) e, havendo
  * resultado, envia o comparativo (menor preço em destaque) e move p/
@@ -349,14 +381,17 @@ export async function confirmarEdispararCotacao(p: {
     // a Bia continua respondendo. Só escala se já não estava com humano.
     // Marca a falha em dados_bot ANTES do handoff: o trigger de handoff usa isso
     // para NÃO emitir o aviso genérico (o aviso específico vem do trg_cotacoes_desfecho).
-    await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: true });
+    // `cotacao_faltando` = crítica COMPLETA (dados ausentes/ inválidos) p/ a tela
+    // destacar todos os campos; vazio quando a falha não foi por dados.
+    const faltando = await derivarCotacaoFaltando(sb, p.clienteId, p.dados);
+    await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: true, cotacao_faltando: faltando });
     if (estadoInicial !== "humano_assumiu") {
       await executarHandoff({ conversaId: p.conversaId, motivo: "cotacao_falhou" });
     }
     return { cotou: false };
   }
   try {
-    await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: false });
+    await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: false, cotacao_faltando: [] });
     await p.enviar(cotacao.texto);
     await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
     logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", { conversaId: p.conversaId });
@@ -462,7 +497,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   //    - mudo    → não responde (só `encerrado`; nova msg já reabriu como nova conversa).
   //    - ativo   → fluxo completo (coleta / confirmação).
   //    - holding → equipe/corretor cuidando: a Bia ACOLHE (nunca cala), sem coletar.
-  const modo = decidirModoBia(conversa.estado);
+  const modo = decidirModoBia(conversa.estado, conversa.operador_id);
 
   if (modo === "mudo") {
     logger.info("[bot] modo mudo; nao respondendo", {
@@ -597,6 +632,12 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       conversa.dados_coletados,
       resposta.camposExtraidos,
     );
+    // CPF é fonte única: ao coletar um CPF válido, espelha no cadastro.
+    const cpfColetado = resposta.camposExtraidos.cpf;
+    if (typeof cpfColetado === "string" && cpfValido(cpfColetado)) {
+      const sb = getSupabaseAdmin();
+      await sb.from("clientes").update({ cpf: formatarCpf(cpfColetado) }).eq("id", conversa.cliente_id);
+    }
   }
 
   // 7.1) Dequeue da fila de campos forçados: remove os que já foram preenchidos

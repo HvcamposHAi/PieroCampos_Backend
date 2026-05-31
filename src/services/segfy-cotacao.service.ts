@@ -24,6 +24,7 @@ import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
+import { cpfValido } from "../lib/cpf";
 import { logger } from "../utils/logger";
 
 const VALIDADE_COTACAO_MS = 7 * 24 * 60 * 60 * 1000;
@@ -100,14 +101,17 @@ export function mapearParaCotacao(
   cliente: { cpf: string | null; nome?: string | null },
 ): EntradaMapeada {
   const faltando: string[] = [];
-  // CPF: aceita do cadastro do cliente OU do que a Bia coletou (dados_coletados).
-  const cpf = (asString(cliente.cpf) ?? asString(dados.cpf) ?? asString(dados.cpf_cnpj))?.replace(/\D/g, "");
+  // CPF: fonte única. Prioriza o COLETADO/editado (dados_coletados) e cai no
+  // cadastro. Valida o dígito: CPF preenchido porém inválido entra na crítica.
+  const cpfBruto = asString(dados.cpf) ?? asString(dados.cpf_cnpj) ?? asString(cliente.cpf);
+  const cpf = cpfBruto?.replace(/\D/g, "");
   const placa = extrairPlaca(dados);
   const cep = asString(dados.cep) ?? asString(dados.endereco);
   if (!cpf) faltando.push("cpf");
+  else if (!cpfValido(cpf)) faltando.push("cpf (inválido)");
   if (!placa) faltando.push("placa do veículo");
   if (!cep) faltando.push("cep");
-  if (!cpf || !placa || !cep) return { entrada: null, faltando };
+  if (faltando.length > 0 || !cpf || !placa || !cep) return { entrada: null, faltando };
 
   // Questionário (árvores de decisão) — só sobrescreve o padrão quando há resposta.
   const q: Partial<QuestionarioSegfy> = {};

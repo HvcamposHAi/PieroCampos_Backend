@@ -17,6 +17,23 @@ describe("mapearParaCotacao", () => {
     expect(r.faltando).toContain("cep");
   });
 
+  it("CPF preenchido porém inválido → crítica 'cpf (inválido)'", () => {
+    const r = mapearParaCotacao(
+      { placa: "SFI7F72", cep: "81270320" },
+      { cpf: "000.000.000-00" }, // placeholder, inválido
+    );
+    expect(r.entrada).toBeNull();
+    expect(r.faltando).toContain("cpf (inválido)");
+  });
+
+  it("CPF do dados_coletados TEM precedência sobre o cadastro (cliente.cpf)", () => {
+    const r = mapearParaCotacao(
+      { cpf: "090.656.619-30", placa: "SFI7F72", cep: "81270320" }, // coletado válido
+      { cpf: "000.000.000-00" }, // cadastro placeholder
+    );
+    expect(r.entrada?.cpf).toBe("09065661930"); // usou o coletado
+  });
+
   it("extrai placa do texto livre e mapeia estado civil/uso (confirmados)", () => {
     const r = mapearParaCotacao(
       { dados_veiculo_fipe: "Hyundai HB20 placa SFI7F72", cep: "81270-320", estado_civil: "solteiro", utilizacao_veiculo: "particular", profissao: "Administrador", bonus: "5" },

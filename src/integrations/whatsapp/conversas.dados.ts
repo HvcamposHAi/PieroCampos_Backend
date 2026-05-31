@@ -8,8 +8,12 @@
  * rotas /api/wa/conversas/:id/*. service_role (getSupabaseAdmin).
  */
 import { getRoteiro } from "../../lib/roteiros";
+import { cpfValido, formatarCpf } from "../../lib/cpf";
 import { logger } from "../../utils/logger";
 import { getSupabaseAdmin } from "./supabase";
+
+// Reexport p/ compatibilidade com imports existentes (ex.: test/cpf.test.ts).
+export { cpfValido, formatarCpf };
 
 /** Tamanho máximo de um valor editado manualmente (defensivo). */
 const MAX_VALOR = 500;
@@ -64,6 +68,74 @@ export async function carregarConversaParaEdicao(
   };
 }
 
+export interface ConversaParaEnvio {
+  id: string;
+  estado: string;
+  operador_id: string | null;
+  canal_id: string | null;
+  telefone: string | null;
+}
+
+/**
+ * Carrega o mínimo para um envio do OPERADOR: estado (precisa estar
+ * `humano_assumiu`), dono atual e o destino (canal + telefone do cliente, do
+ * qual derivamos o JID Baileys). service_role. Retorna null se a conversa não
+ * existir.
+ */
+export async function carregarConversaParaEnvio(
+  conversaId: string,
+): Promise<ConversaParaEnvio | null> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("conversas")
+    .select("id, estado, operador_id, canal_id, clientes(telefone)")
+    .eq("id", conversaId)
+    .maybeSingle();
+  if (error) {
+    logger.warn("[conversas.dados] carregar p/ envio falhou", {
+      conversaId,
+      erro: error.message,
+    });
+    return null;
+  }
+  if (!data) return null;
+  const row = data as {
+    id: string;
+    estado: string;
+    operador_id: string | null;
+    canal_id: string | null;
+    clientes: { telefone: string | null } | { telefone: string | null }[] | null;
+  };
+  // PostgREST devolve o join 1:1 como objeto, mas tipamos defensivamente p/ array.
+  const cliente = Array.isArray(row.clientes) ? row.clientes[0] : row.clientes;
+  return {
+    id: row.id,
+    estado: row.estado,
+    operador_id: row.operador_id ?? null,
+    canal_id: row.canal_id ?? null,
+    telefone: cliente?.telefone ?? null,
+  };
+}
+
+/**
+ * Transiciona o estado de atendimento de uma conversa (assumir/devolver) e,
+ * opcionalmente, grava o dono. Usado pelas rotas /assumir e /devolver.
+ * service_role.
+ */
+export async function definirEstadoConversa(input: {
+  conversaId: string;
+  estado: "humano_assumiu" | "bot_ativo";
+  operadorId?: string | null;
+}): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const patch: { estado: string; operador_id?: string } = { estado: input.estado };
+  // Só gravamos operador_id quando informado (assumir). No devolver mantemos o
+  // dono por auditoria/Fila.
+  if (input.operadorId) patch.operador_id = input.operadorId;
+  const { error } = await sb.from("conversas").update(patch).eq("id", input.conversaId);
+  if (error) throw new Error(`definirEstadoConversa/update: ${error.message}`);
+}
+
 /** Conjunto de chaves válidas para o roteiro da categoria da conversa. */
 function chavesDoRoteiro(categoria: string | null): Set<string> {
   // getRoteiro aceita o ENUM do banco (seguro_novo, nao_renovado, etc.).
@@ -103,6 +175,15 @@ export async function editarDadosColetados(input: {
       continue;
     }
     const v = typeof vBruto === "string" ? vBruto.trim().slice(0, MAX_VALOR) : "";
+    if (k === "cpf") {
+      // CPF: não grava inválido (vai p/ ignorados) e sempre formatado.
+      if (!cpfValido(v)) {
+        ignorados.push("cpf");
+        continue;
+      }
+      patch[k] = formatarCpf(v);
+      continue;
+    }
     patch[k] = v;
   }
 
@@ -131,27 +212,20 @@ export async function editarDadosColetados(input: {
     throw new Error(`editarDadosColetados/update: ${error.message}`);
   }
 
+  // CPF é fonte única: ao editar em Dados, sincroniza o cadastro (clientes.cpf).
+  if (patch.cpf) await sincronizarCpfCadastro(input.conversaId, patch.cpf);
+
   return { ok: true, atualizados: Object.keys(patch), ignorados, dados: mergedDados };
 }
 
-/** Valida CPF: 11 dígitos + dígitos verificadores. Rejeita repetidos (000…00). */
-export function cpfValido(bruto: string): boolean {
-  const d = (bruto ?? "").replace(/\D/g, "");
-  if (d.length !== 11) return false;
-  if (/^(\d)\1{10}$/.test(d)) return false; // todos iguais (placeholder)
-  const dig = (fim: number): number => {
-    let soma = 0;
-    for (let i = 0; i < fim; i++) soma += Number(d[i]) * (fim + 1 - i);
-    const r = (soma * 10) % 11;
-    return r === 10 ? 0 : r;
-  };
-  return dig(9) === Number(d[9]) && dig(10) === Number(d[10]);
-}
-
-/** Formata 11 dígitos como 000.000.000-00. */
-export function formatarCpf(bruto: string): string {
-  const d = (bruto ?? "").replace(/\D/g, "");
-  return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9, 11)}`;
+/** Espelha o CPF no cadastro (clientes.cpf) a partir da conversa. Best-effort. */
+async function sincronizarCpfCadastro(conversaId: string, cpf: string): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const { data } = await sb.from("conversas").select("cliente_id").eq("id", conversaId).maybeSingle();
+  const clienteId = (data as { cliente_id?: string } | null)?.cliente_id;
+  if (!clienteId) return;
+  const { error } = await sb.from("clientes").update({ cpf }).eq("id", clienteId);
+  if (error) logger.warn("[conversas.dados] sync cpf→cadastro falhou", { conversaId, erro: error.message });
 }
 
 export type ResultadoCpf =
@@ -172,14 +246,22 @@ export async function editarCpfCliente(input: {
   const sb = getSupabaseAdmin();
   const { data: conv } = await sb
     .from("conversas")
-    .select("cliente_id")
+    .select("cliente_id, dados_coletados")
     .eq("id", input.conversaId)
     .maybeSingle();
-  const clienteId = (conv as { cliente_id?: string } | null)?.cliente_id;
+  const row = conv as { cliente_id?: string; dados_coletados?: unknown } | null;
+  const clienteId = row?.cliente_id;
   if (!clienteId) return { ok: false, erro: "cliente_nao_encontrado" };
   const cpf = formatarCpf(input.cpf);
   const { error } = await sb.from("clientes").update({ cpf }).eq("id", clienteId);
   if (error) throw new Error(`editarCpfCliente/update: ${error.message}`);
+  // Fonte única: espelha também em dados_coletados.cpf (que a cotação lê).
+  const dados = comoObjeto(row?.dados_coletados);
+  const { error: e2 } = await sb
+    .from("conversas")
+    .update({ dados_coletados: { ...dados, cpf } })
+    .eq("id", input.conversaId);
+  if (e2) logger.warn("[conversas.dados] sync cpf→coletados falhou", { conversaId: input.conversaId, erro: e2.message });
   logger.info("[conversas.dados] CPF do cliente atualizado", {
     conversaId: input.conversaId,
     por: input.porEmail ?? "?",
