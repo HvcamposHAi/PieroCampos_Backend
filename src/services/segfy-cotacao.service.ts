@@ -23,6 +23,7 @@ import { formatarComparativoParaWhatsApp } from "../integrations/segfy/segfy.for
 import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
+import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
 import { logger } from "../utils/logger";
 
 const VALIDADE_COTACAO_MS = 7 * 24 * 60 * 60 * 1000;
@@ -214,16 +215,27 @@ export async function dispararCotacaoSegfy(
   const { entrada, faltando } = mapearParaCotacao(params.dados, cliente);
   if (!entrada) return falhar("veiculo", `Dados insuficientes para cotar: ${faltando.join(", ")}.`);
 
+  // Credenciais do portal: banco (tela Admin) com fallback .env. Sem nenhuma → não cota.
+  const credenciais = await obterCredenciaisSegfy();
+  if (!credenciais) {
+    return falhar("token", "Credenciais do Segfy não configuradas (Admin > Segfy ou .env).");
+  }
+
   try {
-    const { quotationId, resultados } = await cotarAuto(entrada, undefined, (e) => {
-      void persist.registrarEtapa({
-        cotacaoId,
-        conversaId: params.conversaId,
-        etapa: e.etapa,
-        status: e.status,
-        mensagem: e.mensagem,
-      });
-    });
+    const { quotationId, resultados } = await cotarAuto(
+      entrada,
+      undefined,
+      (e) => {
+        void persist.registrarEtapa({
+          cotacaoId,
+          conversaId: params.conversaId,
+          etapa: e.etapa,
+          status: e.status,
+          mensagem: e.mensagem,
+        });
+      },
+      { email: credenciais.email, password: credenciais.password },
+    );
 
     await persist.atualizarCotacao(cotacaoId, {
       status: "concluida",
