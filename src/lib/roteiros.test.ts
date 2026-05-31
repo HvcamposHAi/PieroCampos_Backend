@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import { ROTEIROS, CHAVES_VALIDAS } from "./roteiros";
 
 const SEGFY: Record<string, boolean> = {
+  cpf: true,
   placa: true,
   profissao: true,
   garagem: false,

@@ -100,10 +100,11 @@ export function mapearParaCotacao(
   cliente: { cpf: string | null; nome?: string | null },
 ): EntradaMapeada {
   const faltando: string[] = [];
-  const cpf = asString(cliente.cpf)?.replace(/\D/g, "");
+  // CPF: aceita do cadastro do cliente OU do que a Bia coletou (dados_coletados).
+  const cpf = (asString(cliente.cpf) ?? asString(dados.cpf) ?? asString(dados.cpf_cnpj))?.replace(/\D/g, "");
   const placa = extrairPlaca(dados);
   const cep = asString(dados.cep) ?? asString(dados.endereco);
-  if (!cpf) faltando.push("cpf (cadastro do cliente)");
+  if (!cpf) faltando.push("cpf");
   if (!placa) faltando.push("placa do veículo");
   if (!cep) faltando.push("cep");
   if (!cpf || !placa || !cep) return { entrada: null, faltando };
@@ -189,13 +190,12 @@ export async function dispararCotacaoSegfy(
     ramo: "auto",
     dadosEntrada: params.dados,
   });
-  await persist.registrarEtapa({
-    cotacaoId,
-    conversaId: params.conversaId,
-    etapa: "token",
-    status: "andamento",
-    mensagem: "Iniciando cotação…",
-  });
+  // NÃO pré-marcamos a etapa "token" como andamento aqui: as validações abaixo
+  // (flag/cliente/LGPD/dados/credenciais) acontecem ANTES da autenticação. Se
+  // alguma falhar, a etapa real de erro é registrada por `falhar(...)` e o passo
+  // "token" continua PENDENTE (sem spinner eterno). Quando a corrida real começa,
+  // `cotarAuto` emite token→andamento→ok via onEtapa. (Bug: spinner travado na
+  // "Autenticação no Segfy" mascarando o erro real de baixo.)
 
   // Helper: marca a etapa/cotação como ERRO e encerra (visível na tela).
   const falhar = async (etapa: "token" | "segurado" | "veiculo" | "calculo" | "coleta" | "salvar", msg: string): Promise<null> => {
@@ -213,7 +213,11 @@ export async function dispararCotacaoSegfy(
   if (!cliente.consentimento_lgpd) return falhar("token", "Sem consentimento LGPD do cliente.");
 
   const { entrada, faltando } = mapearParaCotacao(params.dados, cliente);
-  if (!entrada) return falhar("veiculo", `Dados insuficientes para cotar: ${faltando.join(", ")}.`);
+  if (!entrada) {
+    // CPF falta → falha no passo do segurado; demais (placa/cep) → no veículo.
+    const etapaFalha = faltando.some((f) => f.startsWith("cpf")) ? "segurado" : "veiculo";
+    return falhar(etapaFalha, `Dados insuficientes para cotar: ${faltando.join(", ")}.`);
+  }
 
   // Credenciais do portal: banco (tela Admin) com fallback .env. Sem nenhuma → não cota.
   const credenciais = await obterCredenciaisSegfy();

@@ -42,6 +42,7 @@ export interface Roteiro {
  * ⚠️ Espelhar no front (bot-scripts.ts) — ver nota no topo deste arquivo.
  */
 const PERGUNTAS_SEGFY_AUTO: CampoRoteiro[] = [
+  { chave: "cpf", rotulo: "CPF", obrigatorio: true, dica: "Obrigatório p/ a cotação no Segfy (consulta do segurado). Peça com naturalidade e reforce a LGPD." },
   { chave: "placa", rotulo: "Placa do veículo", obrigatorio: true, dica: "Identifica o veículo e a FIPE automaticamente" },
   { chave: "profissao", rotulo: "Profissão", obrigatorio: true },
   { chave: "garagem", rotulo: "Garagem na residência?", obrigatorio: false, dica: "Tem garagem/portão fechado em casa? sim/não" },
