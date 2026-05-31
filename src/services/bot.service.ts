@@ -95,11 +95,20 @@ async function carregarConversa(conversaId: string): Promise<ConversaAtiva | nul
     cliente_id: data.cliente_id,
     estado: data.estado,
     categoria: (data.categoria as CategoriaConversa | null) ?? null,
-    dados_coletados:
-      (data.dados_coletados as Record<string, unknown> | null) ?? {},
-    dados_bot:
-      ((data as { dados_bot?: Record<string, unknown> | null }).dados_bot) ?? {},
+    // Guard de objeto: em prod sem a migration de default, dados_coletados pode
+    // vir como '[]'::jsonb (array). Spread de array quebra o merge — normaliza p/ {}.
+    dados_coletados: comoObjeto(data.dados_coletados),
+    dados_bot: comoObjeto(
+      (data as { dados_bot?: Record<string, unknown> | null }).dados_bot,
+    ),
   };
+}
+
+/** Normaliza um valor jsonb em objeto plano; array/null/escalar → {}. */
+function comoObjeto(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
 }
 
 async function carregarHistorico(conversaId: string): Promise<MensagemTurno[]> {
@@ -197,6 +206,8 @@ export function decidirAcaoForaDoBot(params: {
  */
 export function decidirModoBia(estado: string): ModoBia {
   if (estado === "bot_ativo") return "ativo";
+  // Coleta concluída: a Bia fica ATIVA para pedir a decisão de cotar ao cliente.
+  if (estado === "aguardando_confirmacao_cotacao") return "ativo";
   if (ESTADOS_EQUIPE_TRABALHANDO.has(estado)) return "espera_equipe";
   if (estado === "humano_assumiu" || estado === "apolice_emitida") return "holding_humano";
   return "mudo"; // bloqueado_vip, encerrado
@@ -215,6 +226,48 @@ export function deveOferecerModalidade(p: {
   if (p.categoria !== "renovacao" && p.categoria !== "seguro_novo") return false;
   if ((p.dadosBot as { modalidade?: unknown })?.modalidade) return false;
   return Object.keys(p.dadosColetados).length === 0;
+}
+
+/** Lê a fila campos_forcados de dados_bot como lista de strings (defensivo). */
+function lerFilaForcada(dadosBot: Record<string, unknown>): string[] {
+  const raw = (dadosBot as { campos_forcados?: unknown }).campos_forcados;
+  return Array.isArray(raw) ? raw.filter((c): c is string => typeof c === "string") : [];
+}
+
+/**
+ * Escolhe o PRIMEIRO campo forçado pelo operador que ainda está pendente e
+ * pertence ao roteiro da categoria. Retorna null se a fila estiver vazia ou
+ * todos os pedidos já estiverem preenchidos. Função pura (testável).
+ */
+export function escolherCampoForcado(
+  dadosBot: Record<string, unknown>,
+  dadosColetados: Record<string, unknown>,
+  categoria: CategoriaConversa | null,
+): import("../lib/roteiros").CampoRoteiro | null {
+  const fila = lerFilaForcada(dadosBot);
+  if (fila.length === 0) return null;
+  const roteiro = getRoteiro(categoria);
+  if (!roteiro) return null;
+  for (const chave of fila) {
+    const v = dadosColetados[chave];
+    if (v != null && v !== "") continue; // já preenchido → ignora
+    const campo = roteiro.campos.find((c) => c.chave === chave);
+    if (campo) return campo;
+  }
+  return null;
+}
+
+/** Remove da fila campos_forcados as chaves já preenchidas. No-op se nada mudou. */
+async function sincronizarFilaForcada(
+  conversaId: string,
+  dadosBot: Record<string, unknown>,
+  dados: Record<string, unknown>,
+): Promise<void> {
+  const fila = lerFilaForcada(dadosBot);
+  if (fila.length === 0) return;
+  const restante = fila.filter((ch) => !(dados[ch] != null && dados[ch] !== ""));
+  if (restante.length === fila.length) return; // nada preenchido nesta rodada
+  await mergeDadosBot(conversaId, dadosBot, { campos_forcados: restante });
 }
 
 async function mergeDadosColetados(
@@ -260,46 +313,65 @@ async function mergeDadosBot(
 }
 
 /**
- * Se o roteiro estiver completo: muda estado p/ aguardando_cotacao, dispara a
- * cotação no Segfy (atrás de SEGFY_ENABLED) e, havendo retorno, envia o
- * comparativo e move para cotacao_enviada. Compartilhado entre o fluxo de texto
- * (processarMensagem) e o de formulário (processarFormularioRecebido).
+ * Se o roteiro estiver completo: NÃO dispara cotação automaticamente — muda o
+ * estado p/ `aguardando_confirmacao_cotacao`, onde a Bia pede a DECISÃO do
+ * cliente ("posso gerar sua cotação agora?"). O disparo real só acontece no
+ * `confirmarEdispararCotacao` (cliente confirma OU operador força pelo painel).
+ * Compartilhado entre o fluxo de texto e o de formulário.
  */
 export async function finalizarSeRoteiroCompleto(p: {
   conversaId: string;
-  clienteId: string;
   categoria: CategoriaConversa | null;
   dados: Record<string, unknown>;
-  enviar: (texto: string) => Promise<void>;
 }): Promise<{ completo: boolean }> {
   if (!p.categoria || !getRoteiro(p.categoria)) return { completo: false };
   const progresso = calcularProgresso(p.categoria, p.dados);
   if (!progresso.completo) return { completo: false };
 
   const sb = getSupabaseAdmin();
+  await sb
+    .from("conversas")
+    .update({ estado: "aguardando_confirmacao_cotacao" })
+    .eq("id", p.conversaId);
+  logger.info("[bot] roteiro completo, estado=aguardando_confirmacao_cotacao", {
+    conversaId: p.conversaId,
+  });
+  return { completo: true };
+}
+
+/**
+ * Dispara a cotação no Segfy (decisão do cliente OU do operador): muda p/
+ * `aguardando_cotacao`, executa o pipeline (registrando etapas) e, havendo
+ * resultado, envia o comparativo (menor preço em destaque) e move p/
+ * `cotacao_enviada`. Se a flag estiver off ou faltarem dados, fica em
+ * `aguardando_cotacao` (a equipe assume). Não-fatal.
+ */
+export async function confirmarEdispararCotacao(p: {
+  conversaId: string;
+  clienteId: string;
+  dados: Record<string, unknown>;
+  enviar: (texto: string) => Promise<void>;
+}): Promise<{ cotou: boolean }> {
+  const sb = getSupabaseAdmin();
   await sb.from("conversas").update({ estado: "aguardando_cotacao" }).eq("id", p.conversaId);
-  logger.info("[bot] roteiro completo, estado=aguardando_cotacao", { conversaId: p.conversaId });
 
   const cotacao = await dispararCotacaoSegfy({
     conversaId: p.conversaId,
     clienteId: p.clienteId,
     dados: p.dados,
   });
-  if (cotacao) {
-    try {
-      await p.enviar(cotacao.texto);
-      await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
-      logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", {
-        conversaId: p.conversaId,
-      });
-    } catch (e) {
-      logger.error("[bot] falha ao enviar comparativo/atualizar estado", {
-        conversaId: p.conversaId,
-        erro: (e as Error).message,
-      });
-    }
+  if (!cotacao) return { cotou: false };
+  try {
+    await p.enviar(cotacao.texto);
+    await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
+    logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", { conversaId: p.conversaId });
+  } catch (e) {
+    logger.error("[bot] falha ao enviar comparativo/atualizar estado", {
+      conversaId: p.conversaId,
+      erro: (e as Error).message,
+    });
   }
-  return { completo: true };
+  return { cotou: true };
 }
 
 /**
@@ -496,7 +568,16 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
 
   const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados);
   const proximoCampo = progresso.pendentesObrigatorios[0] ?? null;
+  // Pedido do operador (fila campos_forcados em dados_bot): prioridade máxima.
+  const campoForcado = escolherCampoForcado(
+    conversa.dados_bot,
+    conversa.dados_coletados,
+    conversa.categoria,
+  );
+  // Coleta concluída: a Bia pede a decisão de cotar (e ganha a tool confirmar_cotacao).
+  const ehConfirmacao = conversa.estado === "aguardando_confirmacao_cotacao";
   const oferecerModalidade =
+    !ehConfirmacao &&
     modo === "ativo" &&
     deveOferecerModalidade({
       categoria: conversa.categoria,
@@ -510,8 +591,10 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     dadosColetados: conversa.dados_coletados,
     pendentesObrigatorios: progresso.pendentesObrigatorios,
     proximoCampo,
+    campoForcado,
     modo,
     oferecerModalidade,
+    pedirConfirmacaoCotacao: ehConfirmacao,
   });
 
   // 4) Histórico (já inclui a mensagem que acabou de chegar, pois persistimos antes).
@@ -524,6 +607,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       systemBase: SYSTEM_PROMPT_BASE,
       systemDinamico,
       historico,
+      permitirConfirmacao: ehConfirmacao,
     });
   } catch (e) {
     logger.error("[bot] Claude falhou", {
@@ -558,8 +642,29 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     );
   }
 
+  // 7.1) Dequeue da fila de campos forçados: remove os que já foram preenchidos
+  //      (pelo operador ou agora pelo cliente). Best-effort, não bloqueia a resposta.
+  await sincronizarFilaForcada(conversa.id, conversa.dados_bot, {
+    ...conversa.dados_coletados,
+    ...resposta.camposExtraidos,
+  });
+
   // 8) Enviar a resposta da Bia ao cliente (se houver texto).
   await enviarRespostaBia(resposta.texto, input.enviar, conversa.id);
+
+  // 8.1) Fase de confirmação: o cliente decidiu cotar AGORA?
+  if (ehConfirmacao) {
+    if (resposta.confirmarCotacao === true) {
+      await confirmarEdispararCotacao({
+        conversaId: conversa.id,
+        clienteId: conversa.cliente_id,
+        dados: conversa.dados_coletados,
+        enviar: input.enviar,
+      });
+    }
+    // confirmado=false/null → a Bia já respondeu; segue em aguardando_confirmacao.
+    return;
+  }
 
   // 9) Modalidade escolhida neste turno: registra e, se "formulário", envia o
   //    questionário .xlsx. O gate fecha o turno (não coleta junto).
@@ -578,15 +683,13 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     return;
   }
 
-  // 10) Roteiro recém-concluído → cotação no Segfy + comparativo (helper
-  //     compartilhado com o fluxo de formulário).
+  // 10) Roteiro recém-concluído → vai p/ a fase de CONFIRMAÇÃO do cliente
+  //     (não dispara cotação automaticamente). Helper compartilhado c/ formulário.
   const dadosMerge = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
   await finalizarSeRoteiroCompleto({
     conversaId: conversa.id,
-    clienteId: conversa.cliente_id,
     categoria: conversa.categoria,
     dados: dadosMerge,
-    enviar: input.enviar,
   });
 }
 
@@ -704,10 +807,8 @@ export async function processarFormularioRecebido(
 
   const { completo } = await finalizarSeRoteiroCompleto({
     conversaId: conversa.id,
-    clienteId: conversa.cliente_id,
     categoria: conversa.categoria,
     dados: dadosMerge,
-    enviar: input.enviar,
   });
 
   if (!completo) {

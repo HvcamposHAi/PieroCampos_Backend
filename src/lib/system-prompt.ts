@@ -66,6 +66,11 @@ export interface BuildSystemPromptInput {
   dadosColetados: Record<string, unknown>;
   pendentesObrigatorios: CampoRoteiro[];
   proximoCampo: CampoRoteiro | null;
+  /**
+   * Campo que o OPERADOR pediu para a Bia perguntar AGORA (fila campos_forcados).
+   * Tem prioridade sobre o próximo campo obrigatório e sobre o gate de modalidade.
+   */
+  campoForcado?: CampoRoteiro | null;
   /** Postura do turno. Default histórico = "ativo". */
   modo?: ModoBia;
   /**
@@ -74,6 +79,12 @@ export interface BuildSystemPromptInput {
    * bot.service (só renovacao/seguro_novo, antes do início da coleta).
    */
   oferecerModalidade?: boolean;
+  /**
+   * Coleta concluída: a Bia deve pedir a DECISÃO do cliente para gerar a cotação
+   * agora e chamar a tool confirmar_cotacao. Calculado pelo bot.service quando
+   * estado = aguardando_confirmacao_cotacao.
+   */
+  pedirConfirmacaoCotacao?: boolean;
 }
 
 const BLOCO_HOLDING = `MODO DE ATENDIMENTO: um corretor humano JÁ ASSUMIU este atendimento.
@@ -105,14 +116,36 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
     return partes.join("\n");
   }
 
+  // Gate de confirmação: coleta concluída; pedir a decisão do cliente p/ cotar.
+  if (input.pedirConfirmacaoCotacao) {
+    partes.push(
+      "COLETA CONCLUÍDA. Antes de gerar a cotação, PEÇA A DECISÃO do cliente: pergunte de forma natural se ele quer que você gere a cotação agora (ex.: \"Posso já buscar as melhores opções para você?\"). Quando ele responder, chame a ferramenta confirmar_cotacao com confirmado=true (se ele topar) ou false (se pedir para esperar). NÃO chame atualizar_dados aqui e NÃO prometa preço — só confirme a intenção.",
+    );
+    partes.push("");
+    partes.push("CONTEXTO DO CLIENTE (RAG):");
+    partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");
+    return partes.join("\n");
+  }
+
   partes.push(LINHA_ABERTURA_ATIVO);
   partes.push("");
   partes.push("CONTEXTO DO CLIENTE (RAG):");
   partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");
   partes.push("");
 
+  // Pedido do operador (fila campos_forcados): prioridade máxima. Anunciado no
+  // topo e repetido como PRÓXIMO CAMPO abaixo. Pula o gate de modalidade.
+  if (input.campoForcado) {
+    const c = input.campoForcado;
+    partes.push(
+      `PEDIDO DO OPERADOR (PRIORIDADE MÁXIMA): pergunte AGORA, de forma natural, o campo "${c.rotulo}" (chave ${c.chave})${c.dica ? `. ${c.dica}` : ""}. Esta deve ser a sua próxima pergunta, mesmo que existam outros campos pendentes.`,
+    );
+    partes.push("");
+  }
+
   // Gate de modalidade: antes de coletar, pergunta 1-a-1 vs formulário.
-  if (input.oferecerModalidade && roteiro) {
+  // Suprimido quando há pedido explícito do operador.
+  if (input.oferecerModalidade && roteiro && !input.campoForcado) {
     partes.push(`TIPO DE ATENDIMENTO: ${roteiro.titulo} (${roteiro.descricao})`);
     partes.push("");
     partes.push(

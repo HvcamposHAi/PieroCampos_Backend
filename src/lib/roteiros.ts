@@ -85,6 +85,7 @@ const SEGURO_NOVO: Roteiro = {
     { chave: "segurado", rotulo: "Segurado", obrigatorio: true },
     { chave: "estado_civil", rotulo: "Estado civil", obrigatorio: true },
     { chave: "endereco", rotulo: "Endereço", obrigatorio: true, dica: "CEP + número" },
+    { chave: "corretor", rotulo: "Corretor", obrigatorio: false, dica: "Inferido do canal / operador" },
     { chave: "comissao", rotulo: "Comissão", obrigatorio: false },
     { chave: "utilizacao_veiculo", rotulo: "Utilização do veículo", obrigatorio: true },
     { chave: "email", rotulo: "E-mail", obrigatorio: true },
@@ -103,6 +104,7 @@ const ENDOSSO: Roteiro = {
   descricao: "Coleta de dados para emissão de endosso.",
   campos: [
     { chave: "segurado", rotulo: "Segurado", obrigatorio: true },
+    { chave: "corretor", rotulo: "Corretor", obrigatorio: false, dica: "Inferido do canal / operador" },
     { chave: "alteracao", rotulo: "Alteração solicitada", obrigatorio: true, dica: "Descrever em texto livre o que precisa mudar" },
     { chave: "utilizacao_veiculo", rotulo: "Utilização do veículo", obrigatorio: false, dica: "Apenas se a alteração envolver uso" },
     { chave: "seguradora", rotulo: "Seguradora", obrigatorio: true },
@@ -116,6 +118,7 @@ const NAO_RENOVADO: Roteiro = {
   descricao: "Cliente com apólice vencida — pesquisa de reativação.",
   campos: [
     { chave: "segurado", rotulo: "Segurado", obrigatorio: true },
+    { chave: "corretor", rotulo: "Corretor", obrigatorio: false, dica: "Inferido do canal / operador" },
     { chave: "apolice_anterior", rotulo: "Apólice anterior", obrigatorio: true, dica: "Número da apólice vencida" },
     { chave: "seguradora_anterior", rotulo: "Seguradora anterior", obrigatorio: true },
     { chave: "interesse_regularizar", rotulo: "Quer reativar?", obrigatorio: true, dica: "Sim → vira renovação. Não → registrar recusa" },

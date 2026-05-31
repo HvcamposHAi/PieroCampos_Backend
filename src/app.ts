@@ -11,6 +11,7 @@ import helmet from "helmet";
 import { getEnv } from "./config/env";
 import { authSupabase } from "./middlewares/authSupabase";
 import { waRouter } from "./integrations/whatsapp/routes";
+import { cotacaoRouter } from "./integrations/cotacao/routes";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
 import { logger } from "./utils/logger";
 
@@ -44,6 +45,7 @@ export function criarApp(): express.Express {
   });
 
   app.use("/api/wa", authSupabase, waRouter);
+  app.use("/api/cotacao", authSupabase, cotacaoRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ erro: "rota_nao_encontrada" });

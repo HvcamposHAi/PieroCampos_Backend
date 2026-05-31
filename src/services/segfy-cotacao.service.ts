@@ -20,6 +20,7 @@ import {
   type QuestionarioSegfy,
 } from "../integrations/segfy/segfy.multicalculo";
 import { formatarComparativoParaWhatsApp } from "../integrations/segfy/segfy.format";
+import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { logger } from "../utils/logger";
 
@@ -157,50 +158,78 @@ export function mapearParaCotacao(
   return { entrada, faltando: [] };
 }
 
+export interface ResultadoDisparo {
+  texto: string;
+  cotacaoId: string | null;
+  /** Seguradora de MENOR PREÇO (resultado destaque ao cliente), ou null. */
+  maisBarata: ResultadoCotacaoItem | null;
+}
+
 /**
- * Dispara a cotação no Segfy e devolve o texto do comparativo pronto p/ WhatsApp,
- * ou null (flag off, faltam dados, ou falha — sempre não-fatal p/ o bot).
+ * Dispara a cotação no Segfy, registrando cada ETAPA do pipeline (observabilidade)
+ * e o resultado (menor preço em destaque). Devolve o texto do comparativo, ou
+ * null (flag off, faltam dados, ou falha — sempre não-fatal p/ o bot).
  */
 export async function dispararCotacaoSegfy(params: {
   conversaId: string;
   clienteId: string;
   dados: Record<string, unknown>;
-}): Promise<{ texto: string } | null> {
+}): Promise<ResultadoDisparo | null> {
   const env = getEnv();
   if (!env.SEGFY_ENABLED) {
-    logger.info("[segfy] SEGFY_ENABLED=false; mantendo aguardando_cotacao", { conversaId: params.conversaId });
+    logger.info("[segfy] SEGFY_ENABLED=false; cotação não disparada", { conversaId: params.conversaId });
+    return null;
+  }
+  const persist = new SupabasePersistence();
+
+  const cliente = await persist.buscarClientePorId(params.clienteId);
+  if (!cliente || !cliente.consentimento_lgpd) {
+    await persist.registrarEtapa({
+      conversaId: params.conversaId,
+      etapa: "token",
+      status: "erro",
+      mensagem: cliente ? "Sem consentimento LGPD do cliente." : "Cliente não encontrado.",
+    });
     return null;
   }
 
-  try {
-    const persist = new SupabasePersistence();
-    const cliente = await persist.buscarClientePorId(params.clienteId);
-    if (!cliente) {
-      logger.warn("[segfy] cliente não encontrado", { conversaId: params.conversaId });
-      return null;
-    }
-    if (!cliente.consentimento_lgpd) {
-      logger.warn("[segfy] sem consentimento LGPD — não cotar", { conversaId: params.conversaId });
-      return null;
-    }
-
-    const { entrada, faltando } = mapearParaCotacao(params.dados, cliente);
-    if (!entrada) {
-      logger.warn("[segfy] dados insuficientes para cotar", { conversaId: params.conversaId, faltando });
-      return null;
-    }
-
-    const { quotationId, resultados } = await cotarAuto(entrada);
-
-    await persist.salvarCotacao({
+  const { entrada, faltando } = mapearParaCotacao(params.dados, cliente);
+  if (!entrada) {
+    await persist.registrarEtapa({
       conversaId: params.conversaId,
-      clienteId: params.clienteId,
-      ramo: "auto",
-      dadosEntrada: { ...params.dados, placa: entrada.placa },
+      etapa: "veiculo",
+      status: "erro",
+      mensagem: `Dados insuficientes para cotar: ${faltando.join(", ")}.`,
+    });
+    return null;
+  }
+
+  // Cria a cotação em 'processando' para as etapas/tela se ligarem.
+  const { cotacaoId } = await persist.iniciarCotacao({
+    conversaId: params.conversaId,
+    clienteId: params.clienteId,
+    ramo: "auto",
+    dadosEntrada: { ...params.dados, placa: entrada.placa },
+  });
+
+  try {
+    const { quotationId, resultados } = await cotarAuto(entrada, undefined, (e) => {
+      void persist.registrarEtapa({
+        cotacaoId,
+        conversaId: params.conversaId,
+        etapa: e.etapa,
+        status: e.status,
+        mensagem: e.mensagem,
+      });
+    });
+
+    await persist.atualizarCotacao(cotacaoId, {
+      status: "concluida",
       resultados,
-      segfyCotacaoId: quotationId ?? `cot_${Date.now()}`,
+      segfyCotacaoId: quotationId ?? undefined,
       validadeAte: new Date(Date.now() + VALIDADE_COTACAO_MS).toISOString(),
     });
+    await persist.registrarEtapa({ cotacaoId, conversaId: params.conversaId, etapa: "salvar", status: "ok", mensagem: "Cotação salva." });
     await persist.registrarLog({
       operacao: "cotacao",
       via: "api",
@@ -209,10 +238,19 @@ export async function dispararCotacaoSegfy(params: {
       detalhe: { total: resultados.length, cotadas: resultados.filter((r) => r.status === "cotado").length },
     });
 
+    const maisBarata = resultados.find((r) => r.status === "cotado") ?? null;
     const nome =
       asString(params.dados.nome) ?? asString(params.dados.segurado) ?? cliente.nome ?? "tudo certo";
-    return { texto: formatarComparativoParaWhatsApp(resultados, nome) };
+    return { texto: formatarComparativoParaWhatsApp(resultados, nome), cotacaoId, maisBarata };
   } catch (e) {
+    await persist.atualizarCotacao(cotacaoId, { status: "erro" });
+    await persist.registrarEtapa({
+      cotacaoId,
+      conversaId: params.conversaId,
+      etapa: "salvar",
+      status: "erro",
+      mensagem: e instanceof Error ? e.message.slice(0, 140) : String(e),
+    });
     logger.error("[segfy] cotação falhou (não-fatal)", {
       conversaId: params.conversaId,
       erro: e instanceof Error ? e.message : String(e),

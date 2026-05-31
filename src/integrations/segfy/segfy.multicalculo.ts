@@ -193,21 +193,69 @@ export interface ResultadoCotacaoAuto {
   resultados: ResultadoCotacaoItem[];
 }
 
+/** Etapa do pipeline Segfy, emitida para observabilidade (área de consulta). */
+export interface EtapaEvento {
+  etapa: "token" | "segurado" | "veiculo" | "calculo" | "coleta";
+  status: "andamento" | "ok" | "erro";
+  mensagem?: string;
+}
+
+/** Mensagem curta de erro — NUNCA token/CPF. */
+function erroCurto(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e);
+  return m.replace(/\b\d{11}\b/g, "***").slice(0, 140);
+}
+
 export async function cotarAuto(
   dados: DadosCotacaoAuto,
   tokens?: SegfyTokens,
+  onEtapa?: (e: EtapaEvento) => void,
 ): Promise<ResultadoCotacaoAuto> {
-  const tk = tokens ?? (await obterTokensSegfy()); // reaproveita o cache p/ várias cotações
-  const { automationToken: token } = tk;
+  const emit = (e: EtapaEvento): void => {
+    try {
+      onEtapa?.(e);
+    } catch {
+      /* observabilidade nunca quebra a cotação */
+    }
+  };
+  async function comEtapa<T>(etapa: EtapaEvento["etapa"], fn: () => Promise<T>, okMsg?: string): Promise<T> {
+    emit({ etapa, status: "andamento" });
+    try {
+      const r = await fn();
+      emit({ etapa, status: "ok", mensagem: okMsg });
+      return r;
+    } catch (e) {
+      emit({ etapa, status: "erro", mensagem: erroCurto(e) });
+      throw e;
+    }
+  }
+
   const insurers = dados.insurers ?? INSURERS_PADRAO;
 
+  // 0) token de automação
+  const tk = tokens ?? (await comEtapa("token", () => obterTokensSegfy(), "autenticado no Segfy"));
+  if (tokens) emit({ etapa: "token", status: "ok", mensagem: "token reutilizado" });
+  const { automationToken: token } = tk;
+
   // 1) segurado + veículo
-  const ins = (await post<InsuredResp>(SEGFY_AUTOMATION_API.insured, { data: { document: dados.cpf }, config: { token } }, tk)).data;
-  if (!ins) throw new Error("Segfy: segurado não encontrado para o CPF informado");
-  const dec = (await post<DecodePlateResp>(SEGFY_AUTOMATION_API.decodePlate, { data: { plate: dados.placa }, config: { token } }, tk)).data;
-  if (!dec || !dec.brands[0] || !dec.models[0]) throw new Error("Segfy: placa não decodificada");
-  const brand = dec.brands[0];
-  const model = dec.models[0];
+  const ins = await comEtapa(
+    "segurado",
+    async () => {
+      const r = (await post<InsuredResp>(SEGFY_AUTOMATION_API.insured, { data: { document: dados.cpf }, config: { token } }, tk)).data;
+      if (!r) throw new Error("segurado não encontrado para o CPF informado");
+      return r;
+    },
+    "segurado localizado",
+  );
+  const { brand, model, dec } = await comEtapa(
+    "veiculo",
+    async () => {
+      const d = (await post<DecodePlateResp>(SEGFY_AUTOMATION_API.decodePlate, { data: { plate: dados.placa }, config: { token } }, tk)).data;
+      if (!d || !d.brands[0] || !d.models[0]) throw new Error("placa não decodificada");
+      return { brand: d.brands[0], model: d.models[0], dec: d };
+    },
+    "veículo identificado (FIPE)",
+  );
 
   // 2) payload do calculate (estrutura confirmada na captura)
   const callback = randomUUID();
@@ -258,11 +306,20 @@ export async function cotarAuto(
   });
 
   await new Promise((r) => setTimeout(r, 1_000)); // garante a conexão antes do disparo
-  const calc = await post<CalcResp>(SEGFY_AUTOMATION_API.calculate, payload, tk);
+  const calc = await comEtapa(
+    "calculo",
+    () => post<CalcResp>(SEGFY_AUTOMATION_API.calculate, payload, tk),
+    `cálculo disparado em ${insurers.length} seguradoras`,
+  ).catch((e) => {
+    socket.close();
+    throw e;
+  });
   logger.info("Segfy: cotação disparada", { quotationId: calc.data?.quotation_id, seguradoras: insurers.length });
 
+  emit({ etapa: "coleta", status: "andamento" });
   await coleta;
   socket.close();
+  emit({ etapa: "coleta", status: "ok", mensagem: `${itens.size} de ${insurers.length} seguradoras responderam` });
 
   // Ordena: cotadas primeiro, por menor prêmio.
   const resultados = [...itens.values()].sort((a, b) => {

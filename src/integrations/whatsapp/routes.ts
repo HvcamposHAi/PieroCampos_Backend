@@ -12,12 +12,46 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin } from "../../middlewares/authSupabase";
+import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import { buscarCanal } from "./persistence";
+import {
+  carregarConversaParaEdicao,
+  editarDadosColetados,
+  enfileirarCampoForcado,
+} from "./conversas.dados";
 import { sessionManager } from "./sessionManager";
 
 const router = Router();
+
+/**
+ * Autoriza o req.user a operar a conversa: admin sempre; senão, operador ATIVO
+ * desde que a conversa esteja sem dono (na fila) ou atribuída a ele próprio.
+ * Responde o status apropriado e retorna null quando não autorizado.
+ */
+async function autorizarConversa(
+  req: Request,
+  res: Response,
+  conversaId: string,
+): Promise<{ email: string | undefined } | null> {
+  const conversa = await carregarConversaParaEdicao(conversaId);
+  if (!conversa) {
+    res.status(404).json({ erro: "conversa_nao_encontrada" });
+    return null;
+  }
+  if (await isAdmin(req)) return { email: req.user?.email };
+
+  const operador = await carregarOperadorAtivo(req);
+  if (!operador) {
+    res.status(403).json({ erro: "operador_required" });
+    return null;
+  }
+  if (conversa.operador_id && conversa.operador_id !== operador.id) {
+    res.status(403).json({ erro: "conversa_de_outro_operador" });
+    return null;
+  }
+  return { email: req.user?.email };
+}
 
 router.post("/canais/:id/connect", exigirAdmin, async (req: Request, res: Response) => {
   const canalId = req.params.id ?? "";
@@ -112,6 +146,82 @@ router.post("/send", exigirAdmin, async (req: Request, res: Response) => {
       erro: (e as Error).message,
     });
     res.status(409).json({ erro: "send_failed", mensagem: (e as Error).message });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Dados coletados da conversa — edição manual e "pedir ao bot" (operador/admin).
+// ----------------------------------------------------------------------------
+
+const editarDadosSchema = z.object({
+  campos: z.record(z.string(), z.string()).refine((o) => Object.keys(o).length > 0, {
+    message: "campos vazio",
+  }),
+});
+
+router.patch("/conversas/:id/dados-coletados", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = editarDadosSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return; // resposta já enviada
+  try {
+    const out = await editarDadosColetados({
+      conversaId,
+      campos: parsed.data.campos,
+      porEmail: autz.email,
+      agoraIso: new Date().toISOString(),
+    });
+    if (!out.ok) {
+      res.status(422).json({ erro: out.erro, ignorados: out.ignorados });
+      return;
+    }
+    res.json({ ok: true, atualizados: out.atualizados, ignorados: out.ignorados });
+  } catch (e) {
+    logger.error("[wa.routes] editar dados falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "editar_failed", mensagem: (e as Error).message });
+  }
+});
+
+const perguntarCampoSchema = z.object({
+  chave: z.string().min(1).max(64),
+});
+
+router.post("/conversas/:id/perguntar-campo", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = perguntarCampoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+  try {
+    const out = await enfileirarCampoForcado({
+      conversaId,
+      chave: parsed.data.chave,
+      porEmail: autz.email,
+      agoraIso: new Date().toISOString(),
+    });
+    if (!out.ok) {
+      res.status(422).json({ erro: out.erro });
+      return;
+    }
+    res.json({ ok: true, fila: out.fila });
+  } catch (e) {
+    logger.error("[wa.routes] perguntar campo falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "perguntar_failed", mensagem: (e as Error).message });
   }
 });
 

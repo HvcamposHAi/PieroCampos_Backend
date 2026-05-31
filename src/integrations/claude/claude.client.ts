@@ -36,6 +36,8 @@ export interface ResultadoBia {
   camposExtraidos: Record<string, unknown>;
   /** Preferência registrada via tool escolher_modalidade neste turno, se houve. */
   modalidadeEscolhida: Modalidade | null;
+  /** Confirmação da cotação pelo cliente (tool confirmar_cotacao), se houve. */
+  confirmarCotacao: boolean | null;
   paradaPorMaxTokens: boolean;
   uso: { input_tokens: number; output_tokens: number };
 }
@@ -44,6 +46,8 @@ export interface ChamarBiaInput {
   systemBase: string;
   systemDinamico: string;
   historico: MensagemTurno[];
+  /** Inclui a tool confirmar_cotacao (fase de confirmação do cliente). */
+  permitirConfirmacao?: boolean;
 }
 
 const TOOL_ATUALIZAR_DADOS = {
@@ -81,6 +85,22 @@ const TOOL_ESCOLHER_MODALIDADE = {
   },
 };
 
+const TOOL_CONFIRMAR_COTACAO = {
+  name: "confirmar_cotacao",
+  description:
+    "Registra a decisão do cliente sobre gerar a cotação AGORA. Chame com confirmado=true SOMENTE quando o cliente disser claramente que sim (ex.: 'pode', 'sim', 'manda', 'quero ver'). Se ele pedir para esperar/recusar, confirmado=false.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      confirmado: {
+        type: "boolean" as const,
+        description: "true = cliente autorizou gerar a cotação agora; false = ainda não.",
+      },
+    },
+    required: ["confirmado"],
+  },
+};
+
 function sanitizarCampos(brutos: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(brutos)) {
@@ -113,9 +133,14 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = input.historico.map((m) => ({ role: m.role, content: m.content }));
 
+  const tools = input.permitirConfirmacao
+    ? [TOOL_ATUALIZAR_DADOS, TOOL_ESCOLHER_MODALIDADE, TOOL_CONFIRMAR_COTACAO]
+    : [TOOL_ATUALIZAR_DADOS, TOOL_ESCOLHER_MODALIDADE];
+
   let textoAcumulado = "";
   const camposExtraidos: Record<string, unknown> = {};
   let modalidadeEscolhida: Modalidade | null = null;
+  let confirmarCotacao: boolean | null = null;
   let inputTokensTotal = 0;
   let outputTokensTotal = 0;
   let cacheReadTotal = 0;
@@ -130,7 +155,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
       model: env.BIA_MODEL,
       max_tokens: env.BIA_MAX_TOKENS,
       system,
-      tools: [TOOL_ATUALIZAR_DADOS, TOOL_ESCOLHER_MODALIDADE],
+      tools,
       messages,
     });
 
@@ -158,6 +183,9 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
         if (args?.modalidade === "um_a_um" || args?.modalidade === "formulario") {
           modalidadeEscolhida = args.modalidade;
         }
+      } else if (block.type === "tool_use" && block.name === "confirmar_cotacao") {
+        const args = block.input as { confirmado?: unknown } | undefined;
+        if (typeof args?.confirmado === "boolean") confirmarCotacao = args.confirmado;
       }
     }
 
@@ -202,6 +230,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     texto: textoAcumulado.trim(),
     camposExtraidos,
     modalidadeEscolhida,
+    confirmarCotacao,
     paradaPorMaxTokens,
     uso: { input_tokens: inputTokensTotal, output_tokens: outputTokensTotal },
   };

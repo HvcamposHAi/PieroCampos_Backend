@@ -10,6 +10,10 @@ describe("decidirModoBia", () => {
     expect(decidirModoBia("bot_ativo")).toBe("ativo");
   });
 
+  it("aguardando_confirmacao_cotacao → ativo (Bia pede a decisão de cotar)", () => {
+    expect(decidirModoBia("aguardando_confirmacao_cotacao")).toBe("ativo");
+  });
+
   it("estados de equipe trabalhando → espera_equipe", () => {
     for (const e of [
       "aguardando_cotacao",

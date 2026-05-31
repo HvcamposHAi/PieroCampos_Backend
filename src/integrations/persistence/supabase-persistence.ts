@@ -11,8 +11,11 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getEnv } from "../../config/env";
 import { logger } from "../../utils/logger";
 import type {
+  AtualizarCotacaoInput,
   ClienteRef,
+  IniciarCotacaoInput,
   PersistencePort,
+  RegistrarEtapaInput,
   SalvarCotacaoInput,
   SegfySyncLogInput,
 } from "../segfy/persistence.port";
@@ -108,6 +111,56 @@ export class SupabasePersistence implements PersistencePort {
     if (error) {
       // Não relançar: falha no log de auditoria não deve abortar o fluxo de negócio.
       logger.warn("supabase: registrarLog falhou", { codigo: error.code });
+    }
+  }
+
+  async iniciarCotacao(input: IniciarCotacaoInput): Promise<{ cotacaoId: string }> {
+    const { data, error } = await this.supabase
+      .from("cotacoes")
+      .insert({
+        cliente_id: input.clienteId,
+        conversa_id: input.conversaId,
+        ramo: input.ramo,
+        dados_entrada: input.dadosEntrada as unknown as Json,
+        status: "processando",
+      })
+      .select("id")
+      .single();
+    if (error || !data) {
+      logger.error("supabase: iniciarCotacao falhou", { codigo: error?.code });
+      throw error ?? new Error("iniciarCotacao: insert sem retorno");
+    }
+    return { cotacaoId: data.id };
+  }
+
+  async atualizarCotacao(cotacaoId: string, patch: AtualizarCotacaoInput): Promise<void> {
+    const update: Record<string, unknown> = {};
+    if (patch.status !== undefined) update.status = patch.status;
+    if (patch.resultados !== undefined) update.resultados = patch.resultados as unknown as Json;
+    if (patch.segfyCotacaoId !== undefined) update.segfy_cotacao_id = patch.segfyCotacaoId;
+    if (patch.validadeAte !== undefined) update.validade_ate = patch.validadeAte;
+    const { error } = await this.supabase
+      .from("cotacoes")
+      .update(update as never)
+      .eq("id", cotacaoId);
+    if (error) {
+      logger.error("supabase: atualizarCotacao falhou", { cotacaoId, codigo: error.code });
+      throw error;
+    }
+  }
+
+  async registrarEtapa(input: RegistrarEtapaInput): Promise<void> {
+    const { error } = await this.supabase.from("cotacao_eventos").insert({
+      cotacao_id: input.cotacaoId ?? null,
+      conversa_id: input.conversaId,
+      etapa: input.etapa,
+      status: input.status,
+      mensagem: input.mensagem ?? null,
+      detalhe: (input.detalhe ?? null) as Json | null,
+    });
+    if (error) {
+      // Não-fatal: observabilidade não pode abortar a cotação.
+      logger.warn("supabase: registrarEtapa falhou", { etapa: input.etapa, codigo: error.code });
     }
   }
 }

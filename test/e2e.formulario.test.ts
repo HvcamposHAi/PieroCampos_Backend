@@ -160,7 +160,8 @@ describe("E2E formulário (renovacao)", () => {
 
     expect(h.conversa.dados_coletados.segurado).toBe("preenchido");
     expect(h.conversa.dados_coletados.email).toBe("preenchido");
-    expect(h.conversa.estado).toBe("aguardando_cotacao"); // SEGFY off → para aqui
+    // Roteiro completo → fase de CONFIRMAÇÃO do cliente (não dispara automático).
+    expect(h.conversa.estado).toBe("aguardando_confirmacao_cotacao");
     expect(h.conversa.dados_bot.formulario.recebido_em).toBeTruthy();
 
     // Reenvio do mesmo arquivo → idempotente (não reprocessa).

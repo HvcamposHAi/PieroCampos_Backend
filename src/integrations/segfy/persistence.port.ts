@@ -42,11 +42,49 @@ export interface SegfySyncLogInput {
   detalhe?: Record<string, unknown>;
 }
 
+/** Cria a cotação ANTES de chamar o Segfy (status 'processando') para que as
+ *  etapas tenham a quem se ligar e a tela mostre "cotando de verdade". */
+export interface IniciarCotacaoInput {
+  conversaId: string | null;
+  clienteId: string;
+  ramo: string;
+  dadosEntrada: Record<string, unknown>;
+}
+
+export type StatusCotacaoDb = "pendente" | "processando" | "concluida" | "erro" | "expirada";
+
+export interface AtualizarCotacaoInput {
+  status?: StatusCotacaoDb;
+  resultados?: ResultadoCotacaoItem[];
+  segfyCotacaoId?: string;
+  validadeAte?: string;
+}
+
+/** Etapas do pipeline Segfy (área de consulta/observabilidade). */
+export type EtapaSegfy = "token" | "segurado" | "veiculo" | "calculo" | "coleta" | "salvar";
+export type StatusEtapa = "andamento" | "ok" | "erro";
+
+export interface RegistrarEtapaInput {
+  cotacaoId?: string | null;
+  conversaId: string | null;
+  etapa: EtapaSegfy;
+  status: StatusEtapa;
+  /** Crítica humano-legível. NUNCA inclua token/CPF. */
+  mensagem?: string;
+  detalhe?: Record<string, unknown>;
+}
+
 export interface PersistencePort {
   buscarClientePorId(id: string): Promise<ClienteRef | null>;
   vincularSegfyIdAoCliente(clienteId: string, segfyId: string): Promise<void>;
   salvarCotacao(input: SalvarCotacaoInput): Promise<{ cotacaoId: string }>;
   registrarLog(input: SegfySyncLogInput): Promise<void>;
+  /** Cria a cotação em 'processando' e devolve o id (para ligar etapas). */
+  iniciarCotacao(input: IniciarCotacaoInput): Promise<{ cotacaoId: string }>;
+  /** Atualiza status/resultados/ids da cotação ao concluir ou falhar. */
+  atualizarCotacao(cotacaoId: string, patch: AtualizarCotacaoInput): Promise<void>;
+  /** Registra uma etapa do pipeline Segfy (observabilidade na tela). */
+  registrarEtapa(input: RegistrarEtapaInput): Promise<void>;
 }
 
 /**
@@ -57,6 +95,9 @@ export class InMemoryPersistence implements PersistencePort {
   private clientes = new Map<string, ClienteRef>();
   readonly cotacoesSalvas: Array<SalvarCotacaoInput & { cotacaoId: string }> = [];
   readonly logs: SegfySyncLogInput[] = [];
+  readonly cotacoesIniciadas: Array<IniciarCotacaoInput & { cotacaoId: string }> = [];
+  readonly cotacoesAtualizadas: Array<{ cotacaoId: string } & AtualizarCotacaoInput> = [];
+  readonly etapas: RegistrarEtapaInput[] = [];
   private seq = 0;
 
   semearCliente(cliente: ClienteRef): void {
@@ -80,5 +121,19 @@ export class InMemoryPersistence implements PersistencePort {
 
   async registrarLog(input: SegfySyncLogInput): Promise<void> {
     this.logs.push(input);
+  }
+
+  async iniciarCotacao(input: IniciarCotacaoInput): Promise<{ cotacaoId: string }> {
+    const cotacaoId = `cot_${++this.seq}`;
+    this.cotacoesIniciadas.push({ ...input, cotacaoId });
+    return { cotacaoId };
+  }
+
+  async atualizarCotacao(cotacaoId: string, patch: AtualizarCotacaoInput): Promise<void> {
+    this.cotacoesAtualizadas.push({ cotacaoId, ...patch });
+  }
+
+  async registrarEtapa(input: RegistrarEtapaInput): Promise<void> {
+    this.etapas.push(input);
   }
 }

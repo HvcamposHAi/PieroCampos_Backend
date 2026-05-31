@@ -86,3 +86,29 @@ export async function exigirAdmin(req: Request, res: Response, next: NextFunctio
   }
   res.status(403).json({ erro: "admin_required" });
 }
+
+export interface OperadorAtivo {
+  id: string;
+  perfil: string;
+}
+
+/**
+ * Carrega o operador ATIVO vinculado ao req.user (via operadores.supabase_user_id,
+ * NÃO operadores.id — ver memória rls-perfil-operador-arquitetura). Retorna null
+ * se não houver vínculo ativo. Base para autorização escopada por conversa.
+ */
+export async function carregarOperadorAtivo(req: Request): Promise<OperadorAtivo | null> {
+  if (!req.user?.id) return null;
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("operadores")
+    .select("id, perfil")
+    .eq("supabase_user_id", req.user.id)
+    .eq("ativo", true)
+    .maybeSingle();
+  if (error) {
+    logger.warn("[auth] lookup operador ativo falhou", { erro: error.message });
+    return null;
+  }
+  return (data as OperadorAtivo | null) ?? null;
+}

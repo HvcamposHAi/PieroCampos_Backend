@@ -115,6 +115,34 @@ export interface Database {
         };
         Relationships: [];
       };
+      cotacao_eventos: {
+        Row: {
+          id: string;
+          cotacao_id: string | null;
+          conversa_id: string | null;
+          etapa: string;
+          status: string;
+          mensagem: string | null;
+          detalhe: Json | null;
+          criado_em: string;
+        };
+        Insert: {
+          id?: string;
+          cotacao_id?: string | null;
+          conversa_id?: string | null;
+          etapa: string;
+          status: string;
+          mensagem?: string | null;
+          detalhe?: Json | null;
+          criado_em?: string;
+        };
+        Update: {
+          status?: string;
+          mensagem?: string | null;
+          detalhe?: Json | null;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
