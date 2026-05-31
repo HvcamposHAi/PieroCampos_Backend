@@ -56,12 +56,12 @@ ENCERRAMENTO (quando completar o roteiro)
  * builder de prompt possa tipá-la sem criar import circular (bot.service já
  * importa deste arquivo).
  *
- *  - ativo          → fluxo normal de coleta; conversa aberta puxando p/ seguros.
- *  - espera_equipe  → NÃO chega ao Claude (acuse fixo no bot.service).
- *  - holding_humano → corretor humano já assumiu; Bia só acolhe, sem coletar.
- *  - mudo           → não responde (não chega ao Claude).
+ *  - ativo   → fluxo normal de coleta; conversa aberta puxando p/ seguros.
+ *  - holding → equipe/corretor cuidando (cotação, humano assumiu, apólice, VIP):
+ *              a Bia SÓ acolhe (nunca fica calada), sem coletar nem dar preço.
+ *  - mudo    → não responde (só `encerrado`; nova msg reabre como conversa nova).
  */
-export type ModoBia = "ativo" | "espera_equipe" | "holding_humano" | "mudo";
+export type ModoBia = "ativo" | "holding" | "mudo";
 
 export interface BuildSystemPromptInput {
   categoria: CategoriaConversa | null;
@@ -77,6 +77,12 @@ export interface BuildSystemPromptInput {
   /** Postura do turno. Default histórico = "ativo". */
   modo?: ModoBia;
   /**
+   * 1ª linha do bloco de holding — explica POR QUE a equipe está cuidando
+   * (cotação em preparo / humano assumiu / apólice / VIP). Calculado no
+   * bot.service a partir do estado. Só usado quando modo === "holding".
+   */
+  contextoHolding?: string;
+  /**
    * Quando true, a Bia deve PRIMEIRO perguntar como o cliente prefere responder
    * (1 a 1 ou formulário) antes de coletar qualquer campo. Calculado pelo
    * bot.service (só renovacao/seguro_novo, antes do início da coleta).
@@ -90,11 +96,12 @@ export interface BuildSystemPromptInput {
   pedirConfirmacaoCotacao?: boolean;
 }
 
-const BLOCO_HOLDING = `MODO DE ATENDIMENTO: um corretor humano JÁ ASSUMIU este atendimento.
-Seu papel agora é APENAS manter o cliente acolhido enquanto o corretor cuida do caso. Regras deste modo:
+const CONTEXTO_HOLDING_PADRAO = "MODO DE ATENDIMENTO: a equipe já está cuidando deste atendimento.";
+
+const BLOCO_HOLDING_REGRAS = `Seu papel agora é APENAS manter o cliente acolhido enquanto a equipe cuida do caso. Regras deste modo:
 - Converse de forma simpática e responda o que der, mas NUNCA fique calada: o cliente nunca pode ficar sem resposta.
-- NUNCA cite preço, valor de cotação, status de proposta ou prazo — quem trata disso é o corretor.
-- NUNCA contradiga, repita ou "atropele" o corretor. Deixe claro, com naturalidade, que um corretor já está cuidando do caso e dará retorno.
+- NUNCA cite preço, valor de cotação, status de proposta ou prazo — quem trata disso é a equipe/o corretor.
+- NUNCA contradiga, repita ou "atropele" a equipe. Deixe claro, com naturalidade, que já estão cuidando do caso e darão retorno.
 - Se o cliente trouxer assunto fora de seguros, responda com leveza e traga gentilmente de volta ao contexto da corretora.
 - NÃO use a ferramenta atualizar_dados neste modo (não estamos coletando roteiro).`;
 
@@ -110,9 +117,11 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
   const modo: ModoBia = input.modo ?? "ativo";
   const partes: string[] = [];
 
-  // Modo holding: corretor humano assumiu. Suprime roteiro e instrui acolhimento.
-  if (modo === "holding_humano") {
-    partes.push(BLOCO_HOLDING);
+  // Modo holding: equipe/corretor cuidando. Suprime roteiro e instrui acolhimento
+  // (a Bia NUNCA fica calada). A 1ª linha varia conforme o estado (contextoHolding).
+  if (modo === "holding") {
+    partes.push(input.contextoHolding || CONTEXTO_HOLDING_PADRAO);
+    partes.push(BLOCO_HOLDING_REGRAS);
     partes.push("");
     partes.push("CONTEXTO DO CLIENTE (RAG):");
     partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");

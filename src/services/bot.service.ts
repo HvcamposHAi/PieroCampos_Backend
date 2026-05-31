@@ -39,19 +39,9 @@ const FALLBACK_ERRO =
   "Desculpe, tive um problema técnico aqui agora. Já estou chamando um corretor para te atender. 🙏";
 
 /**
- * Acuse enviado quando o cliente escreve DEPOIS que a coleta terminou e a
- * conversa está com a equipe (estados de "equipe trabalhando"). Texto fixo
- * (não vai a Claude). A igualdade exata deste texto com a última saída é o que
- * faz o anti-spam: enviamos só 1× por rajada de mensagens do cliente.
- */
-export const AVISO_POS_COLETA =
-  "Recebi sua mensagem! 🙌 Já estou com a equipe preparando sua cotação e te retorno por aqui assim que estiver pronta.";
-
-/**
- * Estados em que a equipe está conduzindo a cotação/proposta. Nesses casos o
- * bot não responde de verdade, mas ACUSA recebimento (1×) para não deixar o
- * cliente no vácuo. Demais estados não-bot_ativo (humano_assumiu, bloqueado_vip,
- * apolice_emitida, encerrado) permanecem em silêncio total.
+ * Estados em que a equipe está conduzindo a cotação/proposta. A Bia NÃO coleta
+ * nesses estados, mas RESPONDE (modo holding/acolhimento) — nunca deixa o
+ * cliente no vácuo. Usado só para derivar a mensagem de contexto do holding.
  */
 export const ESTADOS_EQUIPE_TRABALHANDO: ReadonlySet<string> = new Set([
   "aguardando_cotacao",
@@ -155,62 +145,31 @@ async function carregarHistorico(conversaId: string): Promise<MensagemTurno[]> {
   return compactado;
 }
 
-/** Corpo da última mensagem de saída (bot ou operador) da conversa, ou null. */
-async function carregarUltimaSaida(conversaId: string): Promise<string | null> {
-  const sb = getSupabaseAdmin();
-  const { data, error } = await sb
-    .from("mensagens")
-    .select("corpo")
-    .eq("conversa_id", conversaId)
-    .in("origem", ["bot", "operador"])
-    .order("enviada_em", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) {
-    logger.warn("[bot] ultima saida nao carregada", { conversaId, erro: error.message });
-    return null;
-  }
-  return ((data as { corpo: string | null } | null)?.corpo) ?? null;
-}
-
-/** Decisão para conversas que NÃO estão em bot_ativo. Função pura (testável). */
-export type AcaoForaDoBot =
-  | { tipo: "responder" } // bot_ativo → fluxo normal
-  | { tipo: "handoff"; gatilho?: string } // cliente pediu humano enquanto a equipe trabalha
-  | { tipo: "acusar" } // enviar AVISO_POS_COLETA (1ª mensagem da rajada)
-  | { tipo: "suprimir" } // anti-spam: já acusamos esta rajada
-  | { tipo: "silencio" }; // humano assumiu / VIP / fluxo encerrado
-
-export function decidirAcaoForaDoBot(params: {
-  estado: string;
-  textoCliente: string;
-  /** Corpo da última saída; só relevante p/ estados de equipe trabalhando. */
-  ultimaSaida: string | null;
-}): AcaoForaDoBot {
-  if (params.estado === "bot_ativo") return { tipo: "responder" };
-  if (!ESTADOS_EQUIPE_TRABALHANDO.has(params.estado)) return { tipo: "silencio" };
-  const gatilho = detectarGatilhoHandoff(params.textoCliente);
-  if (gatilho.detectado) return { tipo: "handoff", gatilho: gatilho.gatilho };
-  if ((params.ultimaSaida ?? "").trim() === AVISO_POS_COLETA.trim()) {
-    return { tipo: "suprimir" };
-  }
-  return { tipo: "acusar" };
-}
-
 /**
- * Postura da Bia conforme o estado da conversa. Função pura (testável).
- *  - ativo          → bot_ativo: coleta normal + conversa aberta.
- *  - espera_equipe  → estados de equipe trabalhando: acuse fixo + anti-spam.
- *  - holding_humano → humano/apólice: Bia só acolhe (NUNCA fica calada), sem coletar.
- *  - mudo           → bloqueado_vip/encerrado: não responde.
+ * Postura da Bia conforme o estado. Função pura (testável). A Bia NUNCA fica
+ * calada, exceto em `encerrado` (uma nova mensagem reabre como conversa nova).
+ *  - ativo   → bot_ativo / aguardando_confirmacao_cotacao: coleta + decisão.
+ *  - holding → cotação/equipe, humano assumiu, apólice, VIP: só acolhe.
+ *  - mudo    → encerrado (e qualquer estado desconhecido cai em holding = responde).
  */
 export function decidirModoBia(estado: string): ModoBia {
-  if (estado === "bot_ativo") return "ativo";
-  // Coleta concluída: a Bia fica ATIVA para pedir a decisão de cotar ao cliente.
-  if (estado === "aguardando_confirmacao_cotacao") return "ativo";
-  if (ESTADOS_EQUIPE_TRABALHANDO.has(estado)) return "espera_equipe";
-  if (estado === "humano_assumiu" || estado === "apolice_emitida") return "holding_humano";
-  return "mudo"; // bloqueado_vip, encerrado
+  if (estado === "bot_ativo" || estado === "aguardando_confirmacao_cotacao") return "ativo";
+  if (estado === "encerrado") return "mudo";
+  return "holding"; // cotação/equipe + humano_assumiu + apolice_emitida + bloqueado_vip
+}
+
+/** 1ª linha do bloco de holding, conforme o estado (explica quem está cuidando). */
+export function contextoHoldingPorEstado(estado: string): string {
+  if (ESTADOS_EQUIPE_TRABALHANDO.has(estado)) {
+    return "MODO DE ATENDIMENTO: a equipe já está preparando a cotação deste cliente.";
+  }
+  if (estado === "apolice_emitida") {
+    return "MODO DE ATENDIMENTO: a apólice deste cliente já foi emitida; um corretor cuida de ajustes.";
+  }
+  if (estado === "bloqueado_vip") {
+    return "MODO DE ATENDIMENTO: cliente VIP — um atendente dedicado vai assumir.";
+  }
+  return "MODO DE ATENDIMENTO: um corretor humano já assumiu este atendimento.";
 }
 
 /**
@@ -367,6 +326,15 @@ export async function confirmarEdispararCotacao(p: {
   enviar: (texto: string) => Promise<void>;
 }): Promise<{ cotou: boolean }> {
   const sb = getSupabaseAdmin();
+  // Estado ANTES do disparo — usado para não re-escalar em retries (idempotência):
+  // se a conversa já estava com um humano, uma nova falha não re-notifica.
+  const { data: pre } = await sb
+    .from("conversas")
+    .select("estado")
+    .eq("id", p.conversaId)
+    .maybeSingle();
+  const estadoInicial = (pre as { estado?: string } | null)?.estado;
+
   await sb.from("conversas").update({ estado: "aguardando_cotacao" }).eq("id", p.conversaId);
 
   const cotacao = await dispararCotacaoSegfy({
@@ -374,7 +342,15 @@ export async function confirmarEdispararCotacao(p: {
     clienteId: p.clienteId,
     dados: p.dados,
   });
-  if (!cotacao) return { cotou: false };
+  if (!cotacao) {
+    // Cotação falhou (Segfy off / dados faltando / erro): escala para um humano
+    // (a trigger do banco notifica os operadores). A conversa fica em holding —
+    // a Bia continua respondendo. Só escala se já não estava com humano.
+    if (estadoInicial !== "humano_assumiu") {
+      await executarHandoff({ conversaId: p.conversaId, motivo: "cotacao_falhou" });
+    }
+    return { cotou: false };
+  }
   try {
     await p.enviar(cotacao.texto);
     await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
@@ -478,9 +454,9 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   if (!conversa) return;
 
   // 1) Postura do turno conforme o estado.
-  //    - mudo          → não responde (bloqueado_vip / encerrado).
-  //    - espera_equipe → acuse fixo + anti-spam (comportamento original).
-  //    - ativo/holding → segue para o Claude (coleta normal ou acolhimento).
+  //    - mudo    → não responde (só `encerrado`; nova msg já reabriu como nova conversa).
+  //    - ativo   → fluxo completo (coleta / confirmação).
+  //    - holding → equipe/corretor cuidando: a Bia ACOLHE (nunca cala), sem coletar.
   const modo = decidirModoBia(conversa.estado);
 
   if (modo === "mudo") {
@@ -489,51 +465,6 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       estado: conversa.estado,
     });
     return;
-  }
-
-  if (modo === "espera_equipe") {
-    const ultimaSaida = await carregarUltimaSaida(conversa.id);
-    const acao = decidirAcaoForaDoBot({
-      estado: conversa.estado,
-      textoCliente: input.textoCliente,
-      ultimaSaida,
-    });
-    switch (acao.tipo) {
-      case "handoff":
-        try {
-          await input.enviar(MENSAGEM_HANDOFF);
-          await executarHandoff({
-            conversaId: conversa.id,
-            motivo: `gatilho_espera:${acao.gatilho ?? "?"}`,
-          });
-        } catch (e) {
-          logger.error("[bot] falha no handoff (estado de espera)", {
-            conversaId: conversa.id,
-            erro: (e as Error).message,
-          });
-        }
-        return;
-      case "acusar":
-        try {
-          await input.enviar(AVISO_POS_COLETA);
-          logger.info("[bot] acuse pos-coleta enviado", {
-            conversaId: conversa.id,
-            estado: conversa.estado,
-          });
-        } catch (e) {
-          logger.error("[bot] falha ao enviar acuse pos-coleta", {
-            conversaId: conversa.id,
-            erro: (e as Error).message,
-          });
-        }
-        return;
-      default: // suprimir (anti-spam)
-        logger.info("[bot] acuse pos-coleta suprimido (anti-spam)", {
-          conversaId: conversa.id,
-          estado: conversa.estado,
-        });
-        return;
-    }
   }
 
   // 2) Handoff: detectar gatilho ANTES de chamar Claude (econômico). Vale para
@@ -607,6 +538,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     proximoCampo,
     campoForcado,
     modo,
+    contextoHolding: modo === "holding" ? contextoHoldingPorEstado(conversa.estado) : undefined,
     oferecerModalidade,
     pedirConfirmacaoCotacao: ehConfirmacao,
   });
@@ -846,6 +778,5 @@ export async function processarFormularioRecebido(
 export const _internals = {
   carregarConversa,
   carregarHistorico,
-  carregarUltimaSaida,
   mergeDadosColetados,
 };
