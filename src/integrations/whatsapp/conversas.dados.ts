@@ -134,6 +134,59 @@ export async function editarDadosColetados(input: {
   return { ok: true, atualizados: Object.keys(patch), ignorados, dados: mergedDados };
 }
 
+/** Valida CPF: 11 dígitos + dígitos verificadores. Rejeita repetidos (000…00). */
+export function cpfValido(bruto: string): boolean {
+  const d = (bruto ?? "").replace(/\D/g, "");
+  if (d.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(d)) return false; // todos iguais (placeholder)
+  const dig = (fim: number): number => {
+    let soma = 0;
+    for (let i = 0; i < fim; i++) soma += Number(d[i]) * (fim + 1 - i);
+    const r = (soma * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  return dig(9) === Number(d[9]) && dig(10) === Number(d[10]);
+}
+
+/** Formata 11 dígitos como 000.000.000-00. */
+export function formatarCpf(bruto: string): string {
+  const d = (bruto ?? "").replace(/\D/g, "");
+  return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9, 11)}`;
+}
+
+export type ResultadoCpf =
+  | { ok: true; cpf: string }
+  | { ok: false; erro: "cpf_invalido" | "cliente_nao_encontrado" };
+
+/**
+ * Atualiza o CPF do CADASTRO do cliente (clientes.cpf) — fonte primária usada
+ * pela cotação (mapearParaCotacao lê cliente.cpf antes de dados_coletados).
+ * Valida o CPF (dígitos verificadores) e grava formatado. service_role.
+ */
+export async function editarCpfCliente(input: {
+  conversaId: string;
+  cpf: string;
+  porEmail: string | undefined;
+}): Promise<ResultadoCpf> {
+  if (!cpfValido(input.cpf)) return { ok: false, erro: "cpf_invalido" };
+  const sb = getSupabaseAdmin();
+  const { data: conv } = await sb
+    .from("conversas")
+    .select("cliente_id")
+    .eq("id", input.conversaId)
+    .maybeSingle();
+  const clienteId = (conv as { cliente_id?: string } | null)?.cliente_id;
+  if (!clienteId) return { ok: false, erro: "cliente_nao_encontrado" };
+  const cpf = formatarCpf(input.cpf);
+  const { error } = await sb.from("clientes").update({ cpf }).eq("id", clienteId);
+  if (error) throw new Error(`editarCpfCliente/update: ${error.message}`);
+  logger.info("[conversas.dados] CPF do cliente atualizado", {
+    conversaId: input.conversaId,
+    por: input.porEmail ?? "?",
+  });
+  return { ok: true, cpf };
+}
+
 export type ResultadoFila =
   | { ok: true; fila: string[] }
   | { ok: false; erro: "chave_invalida" | "categoria_sem_roteiro" };

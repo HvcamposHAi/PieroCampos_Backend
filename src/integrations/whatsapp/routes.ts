@@ -19,6 +19,7 @@ import {
   carregarConversaParaEdicao,
   editarDadosColetados,
   enfileirarCampoForcado,
+  editarCpfCliente,
 } from "./conversas.dados";
 import { sessionManager } from "./sessionManager";
 
@@ -187,6 +188,36 @@ router.patch("/conversas/:id/dados-coletados", async (req: Request, res: Respons
   } catch (e) {
     logger.error("[wa.routes] editar dados falhou", { conversaId, erro: (e as Error).message });
     res.status(500).json({ erro: "editar_failed", mensagem: (e as Error).message });
+  }
+});
+
+// CPF do CADASTRO do cliente (clientes.cpf) — editável pelo operador no Resumo.
+const editarCpfSchema = z.object({ cpf: z.string().min(1).max(20) });
+
+router.patch("/conversas/:id/cliente-cpf", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = editarCpfSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+  try {
+    const out = await editarCpfCliente({ conversaId, cpf: parsed.data.cpf, porEmail: autz.email });
+    if (!out.ok) {
+      const msg = out.erro === "cpf_invalido" ? "CPF inválido — verifique os 11 dígitos." : "Cliente não encontrado.";
+      res.status(422).json({ erro: out.erro, mensagem: msg });
+      return;
+    }
+    res.json({ ok: true, cpf: out.cpf });
+  } catch (e) {
+    logger.error("[wa.routes] editar cpf falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "editar_cpf_failed", mensagem: (e as Error).message });
   }
 });
 
