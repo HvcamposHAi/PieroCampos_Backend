@@ -204,6 +204,48 @@ class SessionManager {
     return this.sessoes.get(canalId);
   }
 
+  private esperar(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  /**
+   * Garante que o canal está CONECTADO antes de enviar. Se o socket caiu (ex.:
+   * Render Free hibernou e derrubou o WebSocket em memória), dispara `connect()`
+   * (reabre via wa_auth_state, SEM QR) e aguarda a transição para `conectado`
+   * com timeout. Lança se não reconectar a tempo — a rota traduz em 409 e a UI
+   * mostra "canal desconectado". É a resiliência central ao Free tier
+   * (ver memória render-free-hiberna-baileys). Operação rápida (no-op) quando já
+   * está conectado.
+   */
+  private async garantirConectado(canalId: string, timeoutMs = 25_000): Promise<SessionEntry> {
+    const conectado = this.sessoes.get(canalId);
+    if (conectado) {
+      const canal = await buscarCanal(canalId);
+      if (canal?.status === "conectado") return conectado;
+    }
+    // Dispara (re)conexão; connect() é idempotente e não-bloqueante (junta-se a
+    // uma abertura em andamento, não abre socket duplicado).
+    await this.connect(canalId).catch((e) => {
+      logger.warn("[wa.session] garantirConectado: connect falhou", {
+        canalId,
+        erro: (e as Error).message,
+      });
+    });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await this.esperar(1_000);
+      const entry = this.sessoes.get(canalId);
+      if (entry) {
+        const canal = await buscarCanal(canalId);
+        if (canal?.status === "conectado") return entry;
+        if (canal?.status === "erro" || canal?.status === "banido") {
+          throw new Error(`canal ${canalId} status=${canal.status}`);
+        }
+      }
+    }
+    throw new Error(`canal ${canalId} não conectado (reconexão não concluída a tempo)`);
+  }
+
   /** Envia texto via canal conectado. Persiste mensagem em `mensagens`. */
   async enviarTexto(input: {
     canalId: string;
@@ -212,12 +254,7 @@ class SessionManager {
     texto: string;
     operadorNome?: string;
   }): Promise<{ messageId: string }> {
-    const entry = this.sessoes.get(input.canalId);
-    if (!entry) throw new Error(`canal ${input.canalId} não conectado`);
-    const canal = await buscarCanal(input.canalId);
-    if (!canal || canal.status !== "conectado") {
-      throw new Error(`canal ${input.canalId} status=${canal?.status ?? "?"} (precisa estar conectado)`);
-    }
+    const entry = await this.garantirConectado(input.canalId);
     const resultado = await entry.sock.sendMessage(input.jid, { text: input.texto });
     const messageId = resultado?.key?.id ?? "";
     await registrarMensagemSaida({
@@ -238,8 +275,7 @@ class SessionManager {
    * assim a rota responde erro claro em vez de fingir entrega.
    */
   async resolverJid(canalId: string, numero: string): Promise<string> {
-    const entry = this.sessoes.get(canalId);
-    if (!entry) throw new Error(`canal ${canalId} não conectado`);
+    const entry = await this.garantirConectado(canalId);
     const digitos = (numero ?? "").replace(/\D/g, "");
     if (!digitos) throw new Error("numero_invalido");
     const resultado = await entry.sock.onWhatsApp(digitos);
@@ -258,12 +294,7 @@ class SessionManager {
     jid: string;
     texto: string;
   }): Promise<{ messageId: string }> {
-    const entry = this.sessoes.get(input.canalId);
-    if (!entry) throw new Error(`canal ${input.canalId} não conectado`);
-    const canal = await buscarCanal(input.canalId);
-    if (!canal || canal.status !== "conectado") {
-      throw new Error(`canal ${input.canalId} status=${canal?.status ?? "?"} (precisa estar conectado)`);
-    }
+    const entry = await this.garantirConectado(input.canalId);
     const resultado = await entry.sock.sendMessage(input.jid, { text: input.texto });
     const messageId = resultado?.key?.id ?? "";
     await registrarMensagemSaidaBot({
@@ -288,12 +319,7 @@ class SessionManager {
     mimetype: string;
     caption?: string;
   }): Promise<{ messageId: string }> {
-    const entry = this.sessoes.get(input.canalId);
-    if (!entry) throw new Error(`canal ${input.canalId} não conectado`);
-    const canal = await buscarCanal(input.canalId);
-    if (!canal || canal.status !== "conectado") {
-      throw new Error(`canal ${input.canalId} status=${canal?.status ?? "?"} (precisa estar conectado)`);
-    }
+    const entry = await this.garantirConectado(input.canalId);
     const resultado = await entry.sock.sendMessage(input.jid, {
       document: input.documento,
       fileName: input.fileName,
