@@ -231,6 +231,24 @@ class SessionManager {
   }
 
   /**
+   * Resolve o JID ENTREGÁVEL de um número (E.164/dígitos) via `onWhatsApp`, que
+   * normaliza o 9º dígito BR e devolve o jid canônico registrado. Usado quando a
+   * conversa ainda não tem `wa_jid` autêntico (ex.: conversa só-simulada ou 1º
+   * contato pelo operador). Lança `numero_nao_whatsapp` se a conta não existe —
+   * assim a rota responde erro claro em vez de fingir entrega.
+   */
+  async resolverJid(canalId: string, numero: string): Promise<string> {
+    const entry = this.sessoes.get(canalId);
+    if (!entry) throw new Error(`canal ${canalId} não conectado`);
+    const digitos = (numero ?? "").replace(/\D/g, "");
+    if (!digitos) throw new Error("numero_invalido");
+    const resultado = await entry.sock.onWhatsApp(digitos);
+    const achado = resultado?.[0];
+    if (!achado?.exists || !achado.jid) throw new Error("numero_nao_whatsapp");
+    return achado.jid;
+  }
+
+  /**
    * Variante para o agente Bia: persiste com `origem='bot'`. Idem precondições.
    * Usada pelo bot.service. Em rotas HTTP de operador, use `enviarTexto`.
    */

@@ -213,10 +213,13 @@ export async function registrarMensagemEntrada(
   const { error: errMsg } = await sb.from("mensagens").insert(msg);
   if (errMsg) throw errMsg;
 
-  // Atualiza o cartão da fila com o timestamp da última mensagem.
+  // Atualiza o cartão da fila com o timestamp da última mensagem E grava o JID
+  // AUTÊNTICO que o cliente usou (input.jidRemoto). Esse é o endereço entregável
+  // — reusado em TODO envio out-of-band (operador/IA/simular), evitando remontar
+  // o jid a partir do telefone (que falha p/ 9º dígito BR e contas @lid).
   await sb
     .from("conversas")
-    .update({ ultima_mensagem_em: msg.enviada_em })
+    .update({ ultima_mensagem_em: msg.enviada_em, wa_jid: input.jidRemoto })
     .eq("id", conversa.id);
 
   return {
@@ -225,6 +228,39 @@ export async function registrarMensagemEntrada(
     estado: conversa.estado,
     duplicada: false,
   };
+}
+
+/**
+ * Atualiza o status de ENTREGA de uma mensagem de saída a partir do ack do
+ * Baileys (evento messages.update). `status` é o WAMessageStatus numérico
+ * (2=enviado/server, 3=entregue, 4=lido, 5=reproduzido). Casa por
+ * twilio_message_sid = key.id. Best-effort: não lança (chamado em loop de evento).
+ * Só "avança" o status (não regride: lido não vira entregue).
+ */
+export async function registrarStatusEntrega(
+  providerMsgId: string,
+  status: number,
+): Promise<void> {
+  if (!providerMsgId || !Number.isFinite(status) || status < 2) return;
+  const sb = getSupabaseAdmin();
+  try {
+    const { data } = await sb
+      .from("mensagens")
+      .select("id, status_entrega")
+      .eq("twilio_message_sid", providerMsgId)
+      .maybeSingle();
+    const row = data as { id: string; status_entrega: number | null } | null;
+    if (!row) return; // não é mensagem nossa (ou ainda não persistida)
+    if ((row.status_entrega ?? 0) >= status) return; // não regride
+    const patch: { status_entrega: number; entregue_em?: string } = { status_entrega: status };
+    if (status >= 3) patch.entregue_em = new Date().toISOString();
+    await sb.from("mensagens").update(patch).eq("id", row.id);
+  } catch (e) {
+    logger.warn("[wa.persistence] registrarStatusEntrega falhou", {
+      providerMsgId,
+      erro: (e as Error).message,
+    });
+  }
 }
 
 /**

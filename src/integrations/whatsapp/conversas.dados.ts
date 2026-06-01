@@ -74,6 +74,8 @@ export interface ConversaParaEnvio {
   operador_id: string | null;
   canal_id: string | null;
   telefone: string | null;
+  /** JID autêntico capturado no inbound (endereço entregável). Preferido sobre o telefone. */
+  wa_jid: string | null;
 }
 
 /**
@@ -88,7 +90,7 @@ export async function carregarConversaParaEnvio(
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, estado, operador_id, canal_id, clientes(telefone)")
+    .select("id, estado, operador_id, canal_id, wa_jid, clientes(telefone)")
     .eq("id", conversaId)
     .maybeSingle();
   if (error) {
@@ -104,6 +106,7 @@ export async function carregarConversaParaEnvio(
     estado: string;
     operador_id: string | null;
     canal_id: string | null;
+    wa_jid: string | null;
     clientes: { telefone: string | null } | { telefone: string | null }[] | null;
   };
   // PostgREST devolve o join 1:1 como objeto, mas tipamos defensivamente p/ array.
@@ -114,12 +117,23 @@ export async function carregarConversaParaEnvio(
     operador_id: row.operador_id ?? null,
     canal_id: row.canal_id ?? null,
     telefone: cliente?.telefone ?? null,
+    wa_jid: row.wa_jid ?? null,
   };
 }
 
+/** Persiste o JID resolvido (via onWhatsApp) na conversa, para cache e reuso. */
+export async function gravarWaJid(conversaId: string, waJid: string): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const { error } = await sb.from("conversas").update({ wa_jid: waJid }).eq("id", conversaId);
+  if (error) throw new Error(`gravarWaJid/update: ${error.message}`);
+}
+
 /**
- * Transiciona o estado de atendimento de uma conversa (assumir/devolver) e,
- * opcionalmente, grava o dono. Usado pelas rotas /assumir e /devolver.
+ * Transiciona o estado de atendimento de uma conversa (assumir/devolver) e
+ * opcionalmente grava o dono. Semântica de `operadorId`:
+ *   - undefined (omitido) → não toca em operador_id;
+ *   - string              → assumir: grava o dono;
+ *   - null                → devolver: LIMPA o dono (coerência na Fila).
  * service_role.
  */
 export async function definirEstadoConversa(input: {
@@ -128,10 +142,8 @@ export async function definirEstadoConversa(input: {
   operadorId?: string | null;
 }): Promise<void> {
   const sb = getSupabaseAdmin();
-  const patch: { estado: string; operador_id?: string } = { estado: input.estado };
-  // Só gravamos operador_id quando informado (assumir). No devolver mantemos o
-  // dono por auditoria/Fila.
-  if (input.operadorId) patch.operador_id = input.operadorId;
+  const patch: { estado: string; operador_id?: string | null } = { estado: input.estado };
+  if (input.operadorId !== undefined) patch.operador_id = input.operadorId; // string OU null
   const { error } = await sb.from("conversas").update(patch).eq("id", input.conversaId);
   if (error) throw new Error(`definirEstadoConversa/update: ${error.message}`);
 }

@@ -21,6 +21,7 @@ import {
   atualizarCanal,
   jidParaE164,
   registrarMensagemEntrada,
+  registrarStatusEntrega,
 } from "./persistence";
 import { sessionManager } from "./sessionManager";
 import { apagarAuthState } from "./supabaseAuthState";
@@ -326,6 +327,26 @@ export function registrarHandlers(
         logger.error("[wa.handlers] messages.upsert item falhou", {
           canalId,
           msgId: m.key.id,
+          erro: (e as Error).message,
+        });
+      }
+    }
+  });
+
+  // Ack de ENTREGA: o WhatsApp informa o avanço do status das mensagens que
+  // ENVIAMOS (fromMe). Mapeamos o WAMessageStatus numérico (2=enviado, 3=entregue,
+  // 4=lido, 5=reproduzido) para mensagens.status_entrega — alimenta os checkmarks
+  // REAIS na timeline. Best-effort: erros só logam.
+  sock.ev.on("messages.update", async (updates) => {
+    for (const u of updates) {
+      try {
+        if (!u.key?.fromMe || !u.key.id) continue; // só nossas mensagens de saída
+        const status = u.update?.status;
+        if (typeof status !== "number") continue;
+        await registrarStatusEntrega(u.key.id, status);
+      } catch (e) {
+        logger.warn("[wa.handlers] messages.update item falhou", {
+          canalId,
           erro: (e as Error).message,
         });
       }

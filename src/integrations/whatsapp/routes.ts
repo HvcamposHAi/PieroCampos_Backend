@@ -14,11 +14,13 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
-import { buscarCanal, e164ParaJid, registrarMensagemEntradaManual } from "./persistence";
+import { buscarCanal, registrarMensagemEntradaManual } from "./persistence";
 import {
   carregarConversaParaEdicao,
   carregarConversaParaEnvio,
+  type ConversaParaEnvio,
   definirEstadoConversa,
+  gravarWaJid,
   editarDadosColetados,
   enfileirarCampoForcado,
   editarCpfCliente,
@@ -55,6 +57,33 @@ async function autorizarConversa(
     return null;
   }
   return { email: req.user?.email };
+}
+
+/**
+ * Resolve o JID ENTREGÁVEL de uma conversa para envio out-of-band (operador/IA/
+ * simular). Prioriza o `wa_jid` autêntico (capturado no inbound); se ausente,
+ * resolve via onWhatsApp e cacheia. Lança: "destino_indisponivel" (sem canal/
+ * telefone) ou "numero_nao_whatsapp" (conta não existe). Retorna { canalId, jid }.
+ */
+async function resolverDestino(
+  conversa: ConversaParaEnvio,
+): Promise<{ canalId: string; jid: string }> {
+  if (!conversa.canal_id) throw new Error("destino_indisponivel");
+  if (conversa.wa_jid) return { canalId: conversa.canal_id, jid: conversa.wa_jid };
+  if (!conversa.telefone) throw new Error("destino_indisponivel");
+  const jid = await sessionManager.resolverJid(conversa.canal_id, conversa.telefone);
+  await gravarWaJid(conversa.id, jid).catch(() => {}); // cache best-effort
+  return { canalId: conversa.canal_id, jid };
+}
+
+/** Traduz o erro de resolverDestino em status/erro HTTP e responde. */
+function responderErroDestino(res: Response, e: unknown): void {
+  const msg = e instanceof Error ? e.message : "destino";
+  if (msg === "numero_nao_whatsapp") {
+    res.status(409).json({ erro: "numero_nao_whatsapp" });
+    return;
+  }
+  res.status(409).json({ erro: "destino_indisponivel", mensagem: msg });
 }
 
 router.post("/canais/:id/connect", exigirAdmin, async (req: Request, res: Response) => {
@@ -186,8 +215,9 @@ router.post("/conversas/:id/assumir", async (req: Request, res: Response) => {
   }
 });
 
-// Operador devolve ao robô: estado -> bot_ativo (mantém operador_id por auditoria).
-// Reativa a Bia.
+// Operador devolve ao robô: estado -> bot_ativo e LIMPA o dono (operador_id=null)
+// para coerência na Fila (sem dono = do bot). Reativa a Bia (responde no próximo
+// inbound). O histórico do atendimento fica em mensagens/notificacoes.
 router.post("/conversas/:id/devolver", async (req: Request, res: Response) => {
   const conversaId = req.params.id ?? "";
   if (!conversaId) {
@@ -197,7 +227,7 @@ router.post("/conversas/:id/devolver", async (req: Request, res: Response) => {
   const autz = await autorizarConversa(req, res, conversaId);
   if (!autz) return;
   try {
-    await definirEstadoConversa({ conversaId, estado: "bot_ativo" });
+    await definirEstadoConversa({ conversaId, estado: "bot_ativo", operadorId: null });
     res.json({ ok: true, estado: "bot_ativo" });
   } catch (e) {
     logger.error("[wa.routes] devolver falhou", { conversaId, erro: (e as Error).message });
@@ -232,9 +262,11 @@ router.post("/conversas/:id/responder", async (req: Request, res: Response) => {
     res.status(409).json({ erro: "conversa_nao_assumida" });
     return;
   }
-  const jid = conversa.telefone ? e164ParaJid(conversa.telefone) : null;
-  if (!conversa.canal_id || !jid) {
-    res.status(409).json({ erro: "destino_indisponivel" });
+  let destino: { canalId: string; jid: string };
+  try {
+    destino = await resolverDestino(conversa);
+  } catch (e) {
+    responderErroDestino(res, e);
     return;
   }
   // Claim-on-send: se a conversa chegou em humano_assumiu por handoff automático
@@ -259,9 +291,9 @@ router.post("/conversas/:id/responder", async (req: Request, res: Response) => {
   }
   try {
     const out = await sessionManager.enviarTexto({
-      canalId: conversa.canal_id,
+      canalId: destino.canalId,
       conversaId,
-      jid,
+      jid: destino.jid,
       texto: parsed.data.texto,
       operadorNome: autz.email,
     });
@@ -297,12 +329,14 @@ router.post("/conversas/:id/simular-cliente", async (req: Request, res: Response
     res.status(404).json({ erro: "conversa_nao_encontrada" });
     return;
   }
-  const jid = conversa.telefone ? e164ParaJid(conversa.telefone) : null;
-  const canalId = conversa.canal_id;
-  if (!canalId || !jid) {
-    res.status(409).json({ erro: "destino_indisponivel" });
+  let destino: { canalId: string; jid: string };
+  try {
+    destino = await resolverDestino(conversa);
+  } catch (e) {
+    responderErroDestino(res, e);
     return;
   }
+  const { canalId, jid } = destino;
   try {
     await registrarMensagemEntradaManual(conversaId, parsed.data.texto);
     await processarMensagem({
@@ -355,10 +389,11 @@ router.post("/conversas/:id/bia-gerar", async (req: Request, res: Response) => {
     res.status(404).json({ erro: "conversa_nao_encontrada" });
     return;
   }
-  const jid = conversa.telefone ? e164ParaJid(conversa.telefone) : null;
-  const canalId = conversa.canal_id;
-  if (!canalId || !jid) {
-    res.status(409).json({ erro: "destino_indisponivel" });
+  let destino: { canalId: string; jid: string };
+  try {
+    destino = await resolverDestino(conversa);
+  } catch (e) {
+    responderErroDestino(res, e);
     return;
   }
   let texto: string | null;
@@ -377,7 +412,12 @@ router.post("/conversas/:id/bia-gerar", async (req: Request, res: Response) => {
     return;
   }
   try {
-    const out = await sessionManager.enviarTextoBot({ canalId, conversaId, jid, texto });
+    const out = await sessionManager.enviarTextoBot({
+      canalId: destino.canalId,
+      conversaId,
+      jid: destino.jid,
+      texto,
+    });
     res.json({ ok: true, texto, ...out });
   } catch (e) {
     logger.error("[wa.routes] bia-gerar (envio) falhou", {
