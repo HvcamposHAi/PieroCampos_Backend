@@ -9,6 +9,7 @@
  */
 import { getRoteiro } from "../../lib/roteiros";
 import { cpfValido, formatarCpf } from "../../lib/cpf";
+import { normalizarTelefoneBr } from "../../lib/telefone";
 import { logger } from "../../utils/logger";
 import { getSupabaseAdmin } from "./supabase";
 
@@ -279,6 +280,39 @@ export async function editarCpfCliente(input: {
     por: input.porEmail ?? "?",
   });
   return { ok: true, cpf };
+}
+
+export type ResultadoTelefone =
+  | { ok: true; telefone: string }
+  | { ok: false; erro: "telefone_invalido" | "cliente_nao_encontrado" };
+
+/**
+ * Atualiza o TELEFONE do cadastro (clientes.telefone) — edição manual do operador
+ * quando o número veio errado (ex.: contato @lid). Valida/normaliza BR para E.164.
+ * NÃO altera o `conversas.wa_jid` (esse é o endereço de envio, autêntico).
+ */
+export async function editarTelefoneCliente(input: {
+  conversaId: string;
+  telefone: string;
+  porEmail: string | undefined;
+}): Promise<ResultadoTelefone> {
+  const tel = normalizarTelefoneBr(input.telefone);
+  if (!tel) return { ok: false, erro: "telefone_invalido" };
+  const sb = getSupabaseAdmin();
+  const { data } = await sb
+    .from("conversas")
+    .select("cliente_id")
+    .eq("id", input.conversaId)
+    .maybeSingle();
+  const clienteId = (data as { cliente_id?: string } | null)?.cliente_id;
+  if (!clienteId) return { ok: false, erro: "cliente_nao_encontrado" };
+  const { error } = await sb.from("clientes").update({ telefone: tel }).eq("id", clienteId);
+  if (error) throw new Error(`editarTelefoneCliente/update: ${error.message}`);
+  logger.info("[conversas.dados] telefone do cliente atualizado", {
+    conversaId: input.conversaId,
+    por: input.porEmail ?? "?",
+  });
+  return { ok: true, telefone: tel };
 }
 
 export type ResultadoFila =

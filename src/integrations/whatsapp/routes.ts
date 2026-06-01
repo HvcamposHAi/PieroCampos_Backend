@@ -24,6 +24,7 @@ import {
   editarDadosColetados,
   enfileirarCampoForcado,
   editarCpfCliente,
+  editarTelefoneCliente,
 } from "./conversas.dados";
 import { sessionManager } from "./sessionManager";
 import { processarMensagem, gerarMensagemBia } from "../../services/bot.service";
@@ -496,6 +497,44 @@ router.patch("/conversas/:id/cliente-cpf", async (req: Request, res: Response) =
   } catch (e) {
     logger.error("[wa.routes] editar cpf falhou", { conversaId, erro: (e as Error).message });
     res.status(500).json({ erro: "editar_cpf_failed", mensagem: (e as Error).message });
+  }
+});
+
+// TELEFONE do cadastro (clientes.telefone) — editável pelo operador (corrige
+// número errado vindo de contato @lid). Não altera o wa_jid (endereço de envio).
+const editarTelefoneSchema = z.object({ telefone: z.string().min(1).max(30) });
+
+router.patch("/conversas/:id/cliente-telefone", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = editarTelefoneSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+  try {
+    const out = await editarTelefoneCliente({
+      conversaId,
+      telefone: parsed.data.telefone,
+      porEmail: autz.email,
+    });
+    if (!out.ok) {
+      const msg =
+        out.erro === "telefone_invalido"
+          ? "Telefone inválido — use DDD + número (ex.: 41 99999-9999)."
+          : "Cliente não encontrado.";
+      res.status(422).json({ erro: out.erro, mensagem: msg });
+      return;
+    }
+    res.json({ ok: true, telefone: out.telefone });
+  } catch (e) {
+    logger.error("[wa.routes] editar telefone falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "editar_telefone_failed", mensagem: (e as Error).message });
   }
 });
 

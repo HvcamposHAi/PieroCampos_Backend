@@ -152,6 +152,12 @@ export interface MensagemEntradaInput {
   pushName?: string;
   providerMsgId?: string;
   enviadaEm?: Date;
+  /**
+   * Telefone REAL (E.164) resolvido pelo handler quando o jid é `@lid` (LID). Se
+   * presente, vira o `clientes.telefone`; senão, caímos no jidParaE164(jidRemoto)
+   * — que p/ LID é um número falso (corrigido depois via bot perguntando/edição).
+   */
+  telefoneReal?: string | null;
 }
 
 export interface RegistroEntradaResultado {
@@ -171,7 +177,10 @@ export async function registrarMensagemEntrada(
   input: MensagemEntradaInput,
 ): Promise<RegistroEntradaResultado | null> {
   const sb = getSupabaseAdmin();
-  const telefone = jidParaE164(input.jidRemoto);
+  // Preferimos o telefone REAL resolvido pelo handler (quando o jid é @lid);
+  // senão derivamos do jid (p/ @s.whatsapp.net é exato; p/ @lid é um fallback
+  // que será corrigido depois). wa_jid (gravado abaixo) é a chave de ENVIO.
+  const telefone = input.telefoneReal ?? jidParaE164(input.jidRemoto);
   if (!telefone) {
     logger.warn("[wa.persistence] jid sem telefone (ignorado)", { jid: input.jidRemoto });
     return null;

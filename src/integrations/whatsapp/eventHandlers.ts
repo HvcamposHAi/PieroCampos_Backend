@@ -11,12 +11,14 @@
 import {
   DisconnectReason,
   downloadMediaMessage,
+  isLidUser,
   type WASocket,
   type WAMessage,
 } from "@whiskeysockets/baileys";
 import { getEnv } from "../../config/env";
 import { processarFormularioRecebido, processarMensagem } from "../../services/bot.service";
 import { logger } from "../../utils/logger";
+import { enfileirarCampoForcado } from "./conversas.dados";
 import {
   atualizarCanal,
   jidParaE164,
@@ -48,6 +50,62 @@ function extrairTexto(m: WAMessage): string | null {
     msg.videoMessage?.caption ??
     null
   );
+}
+
+/**
+ * Quando o remetente chega como `@lid` (privacidade do WhatsApp), o jid NÃO
+ * contém o telefone real — `jidParaE164` produziria um número falso. Tenta
+ * resolver o PN real de forma best-effort (APIs instáveis no Baileys 6.7.x, daí
+ * o acesso 100% defensivo): (1) `m.key.senderPn`; (2) `signalRepository.
+ * lidMapping.getPNForLID`. Retorna E.164 ou null. Para jids `@s.whatsapp.net`
+ * retorna null (o caller usa jidParaE164, que já é exato).
+ */
+async function resolverTelefoneReal(
+  sock: WASocket,
+  m: WAMessage,
+  jidRemoto: string,
+): Promise<string | null> {
+  if (!isLidUser(jidRemoto)) return null;
+  const senderPn = (m.key as unknown as { senderPn?: string }).senderPn;
+  if (senderPn && senderPn.endsWith("@s.whatsapp.net")) {
+    const tel = jidParaE164(senderPn);
+    if (tel) return tel;
+  }
+  try {
+    const lm = (
+      sock as unknown as {
+        signalRepository?: {
+          lidMapping?: { getPNForLID?: (j: string) => Promise<string | undefined> | string | undefined };
+        };
+      }
+    ).signalRepository?.lidMapping;
+    const pn = await lm?.getPNForLID?.(jidRemoto);
+    if (pn && pn.endsWith("@s.whatsapp.net")) {
+      const tel = jidParaE164(pn);
+      if (tel) return tel;
+    }
+  } catch {
+    /* lidMapping é instável nessa versão — ignora e cai no "bot pergunta". */
+  }
+  return null;
+}
+
+/**
+ * Quando não foi possível obter o telefone real (jid `@lid` sem PN), pede ao bot
+ * para perguntar o telefone ao cliente: enfileira o campo do roteiro. Tenta as
+ * duas chaves possíveis (seguro_novo: `telefone_contato`; renovação: `telefone`)
+ * — `enfileirarCampoForcado` valida contra o roteiro e ignora a inválida. Best-
+ * effort: não bloqueia o fluxo do bot.
+ */
+async function pedirTelefoneSeNecessario(conversaId: string): Promise<void> {
+  const agoraIso = new Date().toISOString();
+  for (const chave of ["telefone_contato", "telefone"]) {
+    try {
+      await enfileirarCampoForcado({ conversaId, chave, porEmail: "sistema:lid", agoraIso });
+    } catch {
+      /* chave fora do roteiro da categoria — ignora */
+    }
+  }
 }
 
 /**
@@ -227,6 +285,8 @@ export function registrarHandlers(
         const enviadaEm = m.messageTimestamp
           ? new Date(Number(m.messageTimestamp) * 1000)
           : undefined;
+        // Telefone real (best-effort) quando o jid é @lid; null mantém o fallback.
+        const telefoneReal = await resolverTelefoneReal(sock, m, jidRemoto);
 
         // (A) Questionário .xlsx devolvido pelo cliente → fluxo de formulário.
         const docXlsx = extrairDocumentoXlsx(m);
@@ -238,6 +298,7 @@ export function registrarHandlers(
             pushName: m.pushName ?? undefined,
             providerMsgId: m.key.id ?? undefined,
             enviadaEm,
+            telefoneReal,
           });
           if (!registro || registro.duplicada) continue;
 
@@ -292,9 +353,15 @@ export function registrarHandlers(
           pushName: m.pushName ?? undefined,
           providerMsgId: m.key.id ?? undefined,
           enviadaEm,
+          telefoneReal,
         });
 
         if (!registro || registro.duplicada) continue;
+
+        // Telefone real indisponível (jid @lid sem PN) → pede ao bot perguntar.
+        if (isLidUser(jidRemoto) && !telefoneReal) {
+          await pedirTelefoneSeNecessario(registro.conversaId);
+        }
 
         // Aciona o agente Bia. Funções `enviar`/`enviarDocumento` injetadas para
         // evitar acoplar o bot.service ao sessionManager (testes podem mockar).

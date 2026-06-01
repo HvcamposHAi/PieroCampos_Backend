@@ -35,6 +35,7 @@ import {
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
 import { dispararCotacaoSegfy, mapearParaCotacao } from "./segfy-cotacao.service";
 import { cpfValido, formatarCpf } from "../lib/cpf";
+import { normalizarTelefoneBr } from "../lib/telefone";
 
 const FALLBACK_ERRO =
   "Desculpe, tive um problema técnico aqui agora. Já estou chamando um corretor para te atender. 🙏";
@@ -695,6 +696,14 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     if (typeof cpfColetado === "string" && cpfValido(cpfColetado)) {
       const sb = getSupabaseAdmin();
       await sb.from("clientes").update({ cpf: formatarCpf(cpfColetado) }).eq("id", conversa.cliente_id);
+    }
+    // Telefone: quando o cliente informa (porque o jid era @lid e pedimos), grava
+    // o número REAL normalizado no cadastro — corrige o fallback derivado do LID.
+    const telColetado = resposta.camposExtraidos.telefone_contato ?? resposta.camposExtraidos.telefone;
+    const telNorm = typeof telColetado === "string" ? normalizarTelefoneBr(telColetado) : null;
+    if (telNorm) {
+      const sb = getSupabaseAdmin();
+      await sb.from("clientes").update({ telefone: telNorm }).eq("id", conversa.cliente_id);
     }
   }
 

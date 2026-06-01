@@ -25,6 +25,8 @@ interface ConversaCotacao {
   canal_id: string | null;
   cliente_id: string;
   dados_coletados: Record<string, unknown>;
+  /** JID autêntico capturado no inbound (preferido sobre o telefone — entrega p/ @lid). */
+  wa_jid: string | null;
   clientes: { nome: string | null; telefone: string | null } | null;
 }
 
@@ -32,28 +34,32 @@ async function carregar(conversaId: string): Promise<ConversaCotacao | null> {
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, canal_id, cliente_id, dados_coletados, clientes(nome, telefone)")
+    .select("id, canal_id, cliente_id, dados_coletados, wa_jid, clientes(nome, telefone)")
     .eq("id", conversaId)
     .maybeSingle();
   if (error || !data) return null;
   return data as unknown as ConversaCotacao;
 }
 
-/** jid do cliente p/ Baileys: dígitos do telefone + @s.whatsapp.net. */
-function jidDoTelefone(telefone: string | null | undefined): string | null {
-  const digitos = (telefone ?? "").replace(/\D/g, "");
-  return digitos.length >= 8 ? `${digitos}@s.whatsapp.net` : null;
-}
-
+/**
+ * Callback de envio ao cliente. Resolve o destino preferindo o `wa_jid` autêntico
+ * (entrega p/ contatos @lid; o telefone reconstruído NÃO entrega). Sem wa_jid,
+ * resolve via onWhatsApp (sessionManager.resolverJid). Best-effort: o envio falho
+ * não derruba a cotação (ela continua visível na tela), mas o motivo é logado.
+ */
 function enviarParaCliente(conv: ConversaCotacao, conversaId: string, operadorNome?: string) {
-  const jid = jidDoTelefone(conv.clientes?.telefone);
+  let jidCache: string | null = null;
   return async (texto: string): Promise<void> => {
-    if (!conv.canal_id || !jid) {
-      logger.warn("[cotacao.routes] sem canal/jid; comparativo não enviado ao cliente", { conversaId });
+    if (!conv.canal_id) {
+      logger.warn("[cotacao.routes] sem canal; comparativo não enviado", { conversaId });
       return;
     }
     try {
-      await sessionManager.enviarTexto({ canalId: conv.canal_id, conversaId, jid, texto, operadorNome });
+      if (!jidCache) {
+        jidCache =
+          conv.wa_jid ?? (await sessionManager.resolverJid(conv.canal_id, conv.clientes?.telefone ?? ""));
+      }
+      await sessionManager.enviarTexto({ canalId: conv.canal_id, conversaId, jid: jidCache, texto, operadorNome });
     } catch (e) {
       logger.warn("[cotacao.routes] envio ao cliente falhou (não-fatal)", {
         conversaId,
