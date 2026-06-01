@@ -705,6 +705,23 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       const sb = getSupabaseAdmin();
       await sb.from("clientes").update({ telefone: telNorm }).eq("id", conversa.cliente_id);
     }
+    // Endereço: quando o cliente passa CEP/número/complemento (ou a consulta de
+    // CEP resolve o logradouro), espelha o endereço ESTRUTURADO no cadastro
+    // (clientes.endereco JSONB). Monta a partir do merge cumulativo dos dados —
+    // nunca grava endereço pela metade, só inclui chaves presentes. Best-effort.
+    const CHAVES_ENDERECO = ["cep", "numero", "complemento", "logradouro", "bairro", "cidade", "uf"] as const;
+    if (CHAVES_ENDERECO.some((k) => k in resposta.camposExtraidos)) {
+      const merged = { ...conversa.dados_coletados, ...resposta.camposExtraidos } as Record<string, unknown>;
+      const endereco: Record<string, string> = {};
+      for (const k of CHAVES_ENDERECO) {
+        const v = merged[k];
+        if (typeof v === "string" && v.trim() !== "") endereco[k] = v.trim();
+      }
+      if (Object.keys(endereco).length > 0) {
+        const sb = getSupabaseAdmin();
+        await sb.from("clientes").update({ endereco }).eq("id", conversa.cliente_id);
+      }
+    }
   }
 
   // 7.1) Dequeue da fila de campos forçados: remove os que já foram preenchidos

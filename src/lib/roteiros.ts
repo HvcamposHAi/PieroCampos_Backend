@@ -73,7 +73,9 @@ const RENOVACAO: Roteiro = {
     { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true },
     { chave: "bonus", rotulo: "Bônus", obrigatorio: false, dica: "0 a 10, está na apólice atual" },
     { chave: "estado_civil", rotulo: "Estado civil", obrigatorio: true },
-    { chave: "cep", rotulo: "CEP", obrigatorio: true, dica: "CEP onde o carro pernoita" },
+    { chave: "cep", rotulo: "CEP", obrigatorio: true, dica: "CEP onde o carro pernoita. Consulte (tool consultar_cep) e CONFIRME o logradouro com o cliente." },
+    { chave: "numero", rotulo: "Número", obrigatorio: true, dica: "Número do endereço." },
+    { chave: "complemento", rotulo: "Complemento", obrigatorio: false, dica: "Pergunte sempre (apto/bloco/casa); aceite 'sem complemento'." },
     ...PERGUNTAS_SEGFY_AUTO,
   ],
 };
@@ -85,7 +87,9 @@ const SEGURO_NOVO: Roteiro = {
   campos: [
     { chave: "segurado", rotulo: "Segurado", obrigatorio: true },
     { chave: "estado_civil", rotulo: "Estado civil", obrigatorio: true },
-    { chave: "endereco", rotulo: "Endereço", obrigatorio: true, dica: "CEP + número" },
+    { chave: "cep", rotulo: "CEP", obrigatorio: true, dica: "Peça o CEP; consulte (tool consultar_cep) e CONFIRME o logradouro com o cliente." },
+    { chave: "numero", rotulo: "Número", obrigatorio: true, dica: "Número do endereço." },
+    { chave: "complemento", rotulo: "Complemento", obrigatorio: false, dica: "Pergunte sempre (apto/bloco/casa); aceite 'sem complemento'." },
     { chave: "corretor", rotulo: "Corretor", obrigatorio: false, dica: "Inferido do canal / operador" },
     { chave: "comissao", rotulo: "Comissão", obrigatorio: false },
     { chave: "utilizacao_veiculo", rotulo: "Utilização do veículo", obrigatorio: true },
@@ -151,9 +155,24 @@ export function calcularProgresso(
   return { preenchidos, total: obrig.length, pendentesObrigatorios, completo: pendentesObrigatorios.length === 0 };
 }
 
-/** Chaves válidas de TODOS os roteiros (whitelist para validar o tool_use do Claude). */
-export const CHAVES_VALIDAS: ReadonlySet<string> = new Set(
-  Object.values(ROTEIROS)
+/**
+ * Chaves preenchidas AUTOMATICAMENTE pela consulta de CEP (tool consultar_cep) —
+ * não são perguntadas no roteiro, mas precisam passar pela whitelist para serem
+ * persistidas. `endereco` permanece válido só por RETROCOMPATIBILIDADE (conversas
+ * antigas + fallback manual no mapeamento Segfy).
+ */
+export const CHAVES_AUTO: ReadonlySet<string> = new Set([
+  "logradouro",
+  "bairro",
+  "cidade",
+  "uf",
+  "endereco",
+]);
+
+/** Chaves válidas de TODOS os roteiros + auto-preenchidas (whitelist do tool_use). */
+export const CHAVES_VALIDAS: ReadonlySet<string> = new Set([
+  ...Object.values(ROTEIROS)
     .filter((r): r is Roteiro => !!r)
     .flatMap((r) => r.campos.map((c) => c.chave)),
-);
+  ...CHAVES_AUTO,
+]);

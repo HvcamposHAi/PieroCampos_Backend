@@ -13,6 +13,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getEnv } from "../../config/env";
 import { CHAVES_VALIDAS } from "../../lib/roteiros";
+import { consultarCep } from "../../lib/cep";
 import { logger } from "../../utils/logger";
 
 let cache: Anthropic | null = null;
@@ -103,6 +104,22 @@ const TOOL_CONFIRMAR_COTACAO = {
   },
 };
 
+const TOOL_CONSULTAR_CEP = {
+  name: "consultar_cep",
+  description:
+    "Consulta um CEP brasileiro e retorna o endereço (logradouro, bairro, cidade, UF). Chame assim que o cliente informar o CEP. Depois MOSTRE o endereço ao cliente e PEÇA CONFIRMAÇÃO antes de prosseguir. Se retornar 'não encontrado', peça o logradouro manualmente.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      cep: {
+        type: "string" as const,
+        description: "O CEP informado pelo cliente (com ou sem máscara).",
+      },
+    },
+    required: ["cep"],
+  },
+};
+
 const TOOL_CONSENTIMENTO_LGPD = {
   name: "registrar_consentimento_lgpd",
   description:
@@ -154,6 +171,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   const tools = [
     TOOL_ATUALIZAR_DADOS,
     TOOL_ESCOLHER_MODALIDADE,
+    TOOL_CONSULTAR_CEP,
     TOOL_CONSENTIMENTO_LGPD,
     ...(input.permitirConfirmacao ? [TOOL_CONFIRMAR_COTACAO] : []),
   ];
@@ -226,10 +244,33 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     const toolUseBlocks = resp.content.filter(
       (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use",
     );
+    // consultar_cep: resolve o endereço (ViaCEP/BrasilAPI), grava os campos auto
+    // em camposExtraidos (dado confiável do servidor) e devolve o endereço no
+    // tool_result para a Bia confirmar com o cliente. Demais tools → "ok".
+    const conteudoPorId = new Map<string, string>();
+    for (const b of toolUseBlocks) {
+      if (b.name !== "consultar_cep") continue;
+      const args = b.input as { cep?: unknown } | undefined;
+      const cepBruto = typeof args?.cep === "string" ? args.cep : "";
+      const endereco = await consultarCep(cepBruto);
+      if (endereco) {
+        camposExtraidos.cep = endereco.cep;
+        if (endereco.logradouro) camposExtraidos.logradouro = endereco.logradouro;
+        if (endereco.bairro) camposExtraidos.bairro = endereco.bairro;
+        if (endereco.cidade) camposExtraidos.cidade = endereco.cidade;
+        if (endereco.uf) camposExtraidos.uf = endereco.uf;
+        conteudoPorId.set(b.id, JSON.stringify(endereco));
+      } else {
+        conteudoPorId.set(
+          b.id,
+          "CEP não encontrado. Peça ao cliente o logradouro, bairro, cidade e UF manualmente.",
+        );
+      }
+    }
     const toolResults = toolUseBlocks.map((b) => ({
       type: "tool_result" as const,
       tool_use_id: b.id,
-      content: "ok",
+      content: conteudoPorId.get(b.id) ?? "ok",
     }));
     messages.push({ role: "assistant", content: resp.content });
     messages.push({ role: "user", content: toolResults });

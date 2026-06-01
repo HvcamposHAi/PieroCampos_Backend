@@ -57,7 +57,7 @@ describe("chamarBia + escolher_modalidade", () => {
     // Tools base oferecidas ao modelo (sem confirmar_cotacao fora da fase).
     const toolsArg = mockCreate.mock.calls[0]![0].tools as Array<{ name: string }>;
     expect(toolsArg.map((t) => t.name).sort()).toEqual(
-      ["atualizar_dados", "escolher_modalidade", "registrar_consentimento_lgpd"].sort(),
+      ["atualizar_dados", "consultar_cep", "escolher_modalidade", "registrar_consentimento_lgpd"].sort(),
     );
   });
 
