@@ -284,9 +284,14 @@ export async function cotarAuto(
 
   const insurers = dados.insurers ?? INSURERS_PADRAO;
 
-  // 0) token de automação
-  const tk = tokens ?? (await comEtapa("token", () => obterTokensSegfy(false, credenciais), "autenticado no Segfy"));
-  if (tokens) emit({ etapa: "token", status: "ok", mensagem: "token reutilizado" });
+  // 0) token de automação. Emite SEMPRE andamento→ok (inclusive no reuso de
+  // token) via comEtapa — emissão simétrica evita "ok sem andamento" que
+  // confundia a leitura da etapa "Autenticação no Segfy".
+  const tk = await comEtapa(
+    "token",
+    async () => tokens ?? (await obterTokensSegfy(false, credenciais)),
+    tokens ? "token reutilizado" : "autenticado no Segfy",
+  );
   const { automationToken: token } = tk;
 
   // 1) segurado + veículo
