@@ -13,6 +13,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
+import { getRoteiro } from "../../lib/roteiros";
 import { logger } from "../../utils/logger";
 import { buscarCanal, registrarMensagemEntradaManual } from "./persistence";
 import {
@@ -556,6 +557,7 @@ router.post("/conversas/:id/perguntar-campo", async (req: Request, res: Response
   const autz = await autorizarConversa(req, res, conversaId);
   if (!autz) return;
   try {
+    // 1) Enfileira (fonte de verdade p/ o follow-up no próximo inbound). Mantido.
     const out = await enfileirarCampoForcado({
       conversaId,
       chave: parsed.data.chave,
@@ -566,7 +568,42 @@ router.post("/conversas/:id/perguntar-campo", async (req: Request, res: Response
       res.status(422).json({ erro: out.erro });
       return;
     }
-    res.json({ ok: true, fila: out.fila });
+
+    // 2) Dispara a pergunta da Bia ao cliente AGORA (best-effort): a Bia compõe
+    //    e o backend entrega via Baileys (origem='bot'). Se algo falhar, o campo
+    //    continua na fila e o bot pergunta no próximo inbound — não derruba.
+    let enviado = false;
+    let motivo: string | undefined;
+    try {
+      const conversa = await carregarConversaParaEnvio(conversaId);
+      if (!conversa) throw new Error("conversa_nao_encontrada");
+      const destino = await resolverDestino(conversa);
+      const campo = getRoteiro(conversa.categoria as Parameters<typeof getRoteiro>[0])?.campos.find(
+        (c) => c.chave === parsed.data.chave,
+      );
+      const alvo = campo?.rotulo ?? parsed.data.chave;
+      const instrucao =
+        `Pergunte ao cliente, de forma natural e curta, o seguinte dado que ainda falta: ` +
+        `"${alvo}"${campo?.dica ? ` — ${campo.dica}` : ""}. Faça só essa pergunta.`;
+      const texto = await gerarMensagemBia(conversaId, instrucao);
+      if (!texto) throw new Error("bia_sem_texto");
+      await sessionManager.enviarTextoBot({
+        canalId: destino.canalId,
+        conversaId,
+        jid: destino.jid,
+        texto,
+      });
+      enviado = true;
+    } catch (e) {
+      motivo = e instanceof Error ? e.message : "envio_falhou";
+      logger.warn("[wa.routes] perguntar-campo: disparo proativo falhou (fica na fila)", {
+        conversaId,
+        chave: parsed.data.chave,
+        erro: motivo,
+      });
+    }
+
+    res.json({ ok: true, fila: out.fila, enviado, ...(motivo ? { motivo } : {}) });
   } catch (e) {
     logger.error("[wa.routes] perguntar campo falhou", { conversaId, erro: (e as Error).message });
     res.status(500).json({ erro: "perguntar_failed", mensagem: (e as Error).message });

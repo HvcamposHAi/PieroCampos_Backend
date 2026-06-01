@@ -74,6 +74,7 @@ export interface ConversaParaEnvio {
   estado: string;
   operador_id: string | null;
   canal_id: string | null;
+  categoria: string | null;
   telefone: string | null;
   /** JID autêntico capturado no inbound (endereço entregável). Preferido sobre o telefone. */
   wa_jid: string | null;
@@ -91,7 +92,7 @@ export async function carregarConversaParaEnvio(
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, estado, operador_id, canal_id, wa_jid, clientes(telefone)")
+    .select("id, estado, operador_id, canal_id, categoria, wa_jid, clientes(telefone)")
     .eq("id", conversaId)
     .maybeSingle();
   if (error) {
@@ -107,6 +108,7 @@ export async function carregarConversaParaEnvio(
     estado: string;
     operador_id: string | null;
     canal_id: string | null;
+    categoria: string | null;
     wa_jid: string | null;
     clientes: { telefone: string | null } | { telefone: string | null }[] | null;
   };
@@ -117,6 +119,7 @@ export async function carregarConversaParaEnvio(
     estado: row.estado,
     operador_id: row.operador_id ?? null,
     canal_id: row.canal_id ?? null,
+    categoria: row.categoria ?? null,
     telefone: cliente?.telefone ?? null,
     wa_jid: row.wa_jid ?? null,
   };
