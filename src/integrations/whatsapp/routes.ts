@@ -14,7 +14,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
-import { buscarCanal, e164ParaJid } from "./persistence";
+import { buscarCanal, e164ParaJid, registrarMensagemEntradaManual } from "./persistence";
 import {
   carregarConversaParaEdicao,
   carregarConversaParaEnvio,
@@ -24,6 +24,7 @@ import {
   editarCpfCliente,
 } from "./conversas.dados";
 import { sessionManager } from "./sessionManager";
+import { processarMensagem, gerarMensagemBia } from "../../services/bot.service";
 
 const router = Router();
 
@@ -267,6 +268,122 @@ router.post("/conversas/:id/responder", async (req: Request, res: Response) => {
     res.json({ ok: true, ...out });
   } catch (e) {
     logger.error("[wa.routes] responder falhou", { conversaId, erro: (e as Error).message });
+    res.status(409).json({ erro: "send_failed", mensagem: (e as Error).message });
+  }
+});
+
+// Simulador: injeta uma fala do cliente no fluxo REAL do bot (mesmo brain do
+// inbound Baileys). O bot responde via sessionManager.enviarTextoBot — entrega
+// no WhatsApp se o canal estiver conectado e o número for real. Substitui o
+// simulador antigo do frontend (responderBot), que só persistia.
+const simularSchema = z.object({ texto: z.string().min(1).max(4000) });
+
+router.post("/conversas/:id/simular-cliente", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = simularSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+
+  const conversa = await carregarConversaParaEnvio(conversaId);
+  if (!conversa) {
+    res.status(404).json({ erro: "conversa_nao_encontrada" });
+    return;
+  }
+  const jid = conversa.telefone ? e164ParaJid(conversa.telefone) : null;
+  const canalId = conversa.canal_id;
+  if (!canalId || !jid) {
+    res.status(409).json({ erro: "destino_indisponivel" });
+    return;
+  }
+  try {
+    await registrarMensagemEntradaManual(conversaId, parsed.data.texto);
+    await processarMensagem({
+      canalId,
+      conversaId,
+      jidRemoto: jid,
+      textoCliente: parsed.data.texto,
+      enviar: async (t) => {
+        await sessionManager.enviarTextoBot({ canalId, conversaId, jid, texto: t });
+      },
+      enviarDocumento: async (doc) => {
+        await sessionManager.enviarDocumentoBot({
+          canalId,
+          conversaId,
+          jid,
+          documento: doc.documento,
+          fileName: doc.fileName,
+          mimetype: doc.mimetype,
+          caption: doc.caption,
+        });
+      },
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    logger.error("[wa.routes] simular-cliente falhou", { conversaId, erro: (e as Error).message });
+    res.status(500).json({ erro: "simular_failed", mensagem: (e as Error).message });
+  }
+});
+
+// IA gera e envia: a Bia compõe UMA mensagem proativa (instrução opcional do
+// operador) e o backend entrega via Baileys (origem='bot'). Exige canal conectado.
+const biaGerarSchema = z.object({ instrucao: z.string().max(1000).optional() });
+
+router.post("/conversas/:id/bia-gerar", async (req: Request, res: Response) => {
+  const conversaId = req.params.id ?? "";
+  if (!conversaId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = biaGerarSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const autz = await autorizarConversa(req, res, conversaId);
+  if (!autz) return;
+
+  const conversa = await carregarConversaParaEnvio(conversaId);
+  if (!conversa) {
+    res.status(404).json({ erro: "conversa_nao_encontrada" });
+    return;
+  }
+  const jid = conversa.telefone ? e164ParaJid(conversa.telefone) : null;
+  const canalId = conversa.canal_id;
+  if (!canalId || !jid) {
+    res.status(409).json({ erro: "destino_indisponivel" });
+    return;
+  }
+  let texto: string | null;
+  try {
+    texto = await gerarMensagemBia(conversaId, parsed.data.instrucao);
+  } catch (e) {
+    logger.error("[wa.routes] bia-gerar (claude) falhou", {
+      conversaId,
+      erro: (e as Error).message,
+    });
+    res.status(502).json({ erro: "bia_falhou", mensagem: (e as Error).message });
+    return;
+  }
+  if (!texto) {
+    res.status(422).json({ erro: "bia_sem_texto" });
+    return;
+  }
+  try {
+    const out = await sessionManager.enviarTextoBot({ canalId, conversaId, jid, texto });
+    res.json({ ok: true, texto, ...out });
+  } catch (e) {
+    logger.error("[wa.routes] bia-gerar (envio) falhou", {
+      conversaId,
+      erro: (e as Error).message,
+    });
     res.status(409).json({ erro: "send_failed", mensagem: (e as Error).message });
   }
 });

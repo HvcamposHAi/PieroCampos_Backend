@@ -185,6 +185,64 @@ export function contextoHoldingPorEstado(estado: string): string {
 }
 
 /**
+ * Gera (via Claude) UMA mensagem proativa da Bia para o cliente, seguindo uma
+ * instrução opcional do operador (ex.: "peça os documentos do veículo"). NÃO
+ * envia nem persiste — devolve só o texto; quem entrega é a rota /bia-gerar via
+ * sessionManager.enviarTextoBot. Reaproveita o mesmo brain (system prompt +
+ * chamarBia) do fluxo reativo, então a voz da Bia é a mesma. Retorna null se a
+ * conversa não existir ou a Claude não produzir texto.
+ */
+export async function gerarMensagemBia(
+  conversaId: string,
+  instrucao?: string,
+): Promise<string | null> {
+  const conversa = await carregarConversa(conversaId);
+  if (!conversa) return null;
+
+  const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados);
+  const systemDinamico = buildSystemPromptDinamico({
+    categoria: conversa.categoria,
+    contextoRAG: "",
+    dadosColetados: conversa.dados_coletados,
+    pendentesObrigatorios: progresso.pendentesObrigatorios,
+    proximoCampo: progresso.pendentesObrigatorios[0] ?? null,
+    campoForcado: null,
+    modo: "holding",
+    contextoHolding:
+      "MODO DE ATENDIMENTO: o operador pediu que você (Bia) envie uma mensagem proativa ao cliente AGORA.",
+    oferecerModalidade: false,
+    pedirConfirmacaoCotacao: false,
+  });
+
+  const instr =
+    instrucao && instrucao.trim()
+      ? instrucao.trim()
+      : "Envie uma mensagem proativa, cordial e curta retomando o atendimento com o cliente.";
+  const turno =
+    `[INSTRUÇÃO DO OPERADOR — escreva UMA mensagem de WhatsApp ao cliente seguindo isto. ` +
+    `Não faça perguntas de roteiro nem use ferramentas, a menos que a instrução peça]: ${instr}`;
+
+  // Anthropic exige histórico alternado começando por user; carregarHistorico já
+  // devolve compactado. Anexa a instrução: concatena se o último turno for user,
+  // senão acrescenta um turno user (ou cria um, se o histórico estiver vazio).
+  const historico = await carregarHistorico(conversaId);
+  const msgs: MensagemTurno[] = [...historico];
+  const ultimo = msgs[msgs.length - 1];
+  if (ultimo && ultimo.role === "user") {
+    msgs[msgs.length - 1] = { role: "user", content: `${ultimo.content}\n\n${turno}` };
+  } else {
+    msgs.push({ role: "user", content: turno });
+  }
+
+  const resposta = await chamarBia({
+    systemBase: SYSTEM_PROMPT_BASE,
+    systemDinamico,
+    historico: msgs,
+  });
+  return resposta.texto?.trim() || null;
+}
+
+/**
  * A Bia deve oferecer a escolha "1 a 1 ou formulário" neste turno? Só para os
  * roteiros longos (renovacao/seguro_novo), antes de qualquer coleta e enquanto
  * a modalidade ainda não foi escolhida. Função pura (testável).

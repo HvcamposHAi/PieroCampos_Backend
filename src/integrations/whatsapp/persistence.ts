@@ -227,6 +227,30 @@ export async function registrarMensagemEntrada(
   };
 }
 
+/**
+ * Insere uma fala do cliente DIRETO numa conversa existente (origem='cliente',
+ * direcao='entrada'), sem passar por obterOuCriarConversa — usado pelo endpoint
+ * de SIMULAÇÃO (operador injeta a fala do cliente no fluxo real do bot). Não faz
+ * dedup por providerMsgId (é manual, não vem do Baileys). service_role.
+ */
+export async function registrarMensagemEntradaManual(
+  conversaId: string,
+  texto: string,
+): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const enviadaEm = new Date().toISOString();
+  const msg: MensagemInsert = {
+    conversa_id: conversaId,
+    direcao: "entrada",
+    origem: "cliente",
+    corpo: texto,
+    enviada_em: enviadaEm,
+  };
+  const { error } = await sb.from("mensagens").insert(msg);
+  if (error) throw error;
+  await sb.from("conversas").update({ ultima_mensagem_em: enviadaEm }).eq("id", conversaId);
+}
+
 export interface MensagemSaidaInput {
   canalId: string;
   conversaId: string;
