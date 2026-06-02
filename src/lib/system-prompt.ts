@@ -10,6 +10,7 @@
  */
 import type { CategoriaConversa, CampoRoteiro } from "./roteiros";
 import { getRoteiro } from "./roteiros";
+import type { ConfigEfetiva, TomVoz } from "../services/agente-config.service";
 
 export const SYSTEM_PROMPT_BASE = `Você é a Bia, assistente virtual da Corretora de Seguros Piero de Campos, de Curitiba-PR. A Piero de Campos cuida dos seguros das famílias curitibanas há mais de 20 anos com proximidade e atenção.
 
@@ -210,6 +211,54 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
         partes.push(`PRÓXIMO CAMPO A PERGUNTAR: ${input.proximoCampo.chave} — ${input.proximoCampo.rotulo}${input.proximoCampo.dica ? `. ${input.proximoCampo.dica}` : ""}`);
       }
     }
+  }
+
+  return partes.join("\n");
+}
+
+/**
+ * Descrição de cada tom de voz configurável. Texto que entra no bloco de
+ * PERSONALIZAÇÃO (bloco 2 do system prompt) — só ajusta forma, nunca conteúdo.
+ */
+const TOM_DESCRICAO: Record<TomVoz, string> = {
+  proximo_caloroso: "próximo, caloroso e acolhedor, como uma amiga da família curitibana",
+  formal_profissional: "formal e profissional, cortês e objetivo",
+  direto_objetivo: "direto e objetivo, sem rodeios, mas sempre educado",
+  entusiasta: "entusiasta e animado, transmitindo energia positiva",
+};
+
+/**
+ * Monta o bloco 2 (PERSONALIZAÇÃO por canal), concatenado entre a BASE e a
+ * DINÂMICA pelo claude.client. Só ajusta ESTILO (tom/persona/saudação/exemplos);
+ * o cabeçalho deixa explícito que NÃO sobrepõe as REGRAS ABSOLUTAS da BASE.
+ * Função pura (testável). Devolve "" se não houver nada de estilo a acrescentar.
+ */
+export function buildBlocoPersonalizacao(config: ConfigEfetiva): string {
+  const partes: string[] = [
+    "AJUSTE DE ESTILO DESTA LINHA (apenas tom e forma; NUNCA sobrepõe as REGRAS ABSOLUTAS acima — preço, aprovação, dados de terceiros e LGPD seguem valendo):",
+    `- Tom de voz: ${TOM_DESCRICAO[config.tomVoz] ?? TOM_DESCRICAO.proximo_caloroso}.`,
+  ];
+
+  if (config.persona) {
+    partes.push(`- Abordagem/personalidade: ${config.persona}`);
+  }
+  if (config.saudacao) {
+    partes.push(
+      `- Ao iniciar uma conversa nova, use esta saudação como referência (adapte ao nome do cliente quando souber): "${config.saudacao}"`,
+    );
+  }
+  if (config.exemplos) {
+    partes.push(
+      "- Exemplos do jeito de escrever (referência de ESTILO, não copie literalmente nem invente conteúdo):",
+    );
+    for (const linha of config.exemplos.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      partes.push(`  • ${linha}`);
+    }
+  }
+  if (config.variarTexto) {
+    partes.push(
+      "- Varie as frases entre as mensagens; evite repetir as mesmas construções e aberturas.",
+    );
   }
 
   return partes.join("\n");

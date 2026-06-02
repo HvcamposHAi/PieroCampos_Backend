@@ -1,0 +1,85 @@
+/**
+ * Rotas HTTP da CONFIGURAÇÃO de comportamento da Bia (Admin > Bia). Admin-only.
+ *   - GET    /api/agente/config              → padrão + override de cada linha.
+ *   - PUT    /api/agente/config {canal_id,…} → salva padrão (canal_id null) ou override.
+ *   - DELETE /api/agente/config/:canalId     → remove o override (volta ao padrão).
+ *
+ * Só ajusta ESTILO (tom/persona/saudação/exemplos/criatividade) — nunca as
+ * regras absolutas de compliance. `exigirAdmin` é a defesa real (não a UI).
+ */
+import { Router, type Request, type Response } from "express";
+import { z } from "zod";
+import { exigirAdmin } from "../../middlewares/authSupabase";
+import { logger } from "../../utils/logger";
+import {
+  obterConfigAdmin,
+  removerOverride,
+  salvarConfig,
+} from "../../services/agente-config.service";
+
+const router = Router();
+
+router.get("/config", exigirAdmin, async (_req: Request, res: Response) => {
+  try {
+    const dados = await obterConfigAdmin();
+    res.json({ ok: true, ...dados });
+  } catch (e) {
+    logger.error("[agente.routes] obter falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
+  }
+});
+
+const putSchema = z.object({
+  canal_id: z.string().uuid().nullable(),
+  tom_voz: z.enum(["proximo_caloroso", "formal_profissional", "direto_objetivo", "entusiasta"]),
+  persona: z.string().trim().max(4000).nullish(),
+  saudacao: z.string().trim().max(500).nullish(),
+  exemplos: z.string().trim().max(4000).nullish(),
+  variar_texto: z.boolean(),
+  criatividade: z.enum(["consistente", "equilibrado", "criativo"]),
+  ativo: z.boolean().optional(),
+});
+
+router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
+  const parsed = putSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    await salvarConfig({
+      canalId: parsed.data.canal_id,
+      tom_voz: parsed.data.tom_voz,
+      persona: parsed.data.persona ?? null,
+      saudacao: parsed.data.saudacao ?? null,
+      exemplos: parsed.data.exemplos ?? null,
+      variar_texto: parsed.data.variar_texto,
+      criatividade: parsed.data.criatividade,
+      ativo: parsed.data.ativo,
+      porEmail: req.user?.email ?? null,
+    });
+    const dados = await obterConfigAdmin();
+    res.json({ ok: true, ...dados });
+  } catch (e) {
+    logger.error("[agente.routes] salvar falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "save_failed", mensagem: (e as Error).message });
+  }
+});
+
+router.delete("/config/:canalId", exigirAdmin, async (req: Request, res: Response) => {
+  const canalId = z.string().uuid().safeParse(req.params.canalId);
+  if (!canalId.success) {
+    res.status(422).json({ erro: "canal_invalido" });
+    return;
+  }
+  try {
+    await removerOverride(canalId.data);
+    const dados = await obterConfigAdmin();
+    res.json({ ok: true, ...dados });
+  } catch (e) {
+    logger.error("[agente.routes] remover override falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "delete_failed", mensagem: (e as Error).message });
+  }
+});
+
+export const agenteRouter = router;

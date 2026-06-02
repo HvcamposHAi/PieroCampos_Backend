@@ -14,6 +14,7 @@ import { waRouter } from "./integrations/whatsapp/routes";
 import { cotacaoRouter } from "./integrations/cotacao/routes";
 import { segfyRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
+import { agenteRouter } from "./integrations/agente/agente.routes";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
 import { logger } from "./utils/logger";
 
@@ -72,6 +73,7 @@ export function criarApp(): express.Express {
   app.use("/api/cotacao", authSupabase, cotacaoRouter);
   app.use("/api/segfy", authSupabase, segfyRouter);
   app.use("/api/usuarios", authSupabase, usuariosRouter);
+  app.use("/api/agente", authSupabase, agenteRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ erro: "rota_nao_encontrada" });

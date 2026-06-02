@@ -25,7 +25,13 @@ import { gerarQuestionarioXlsx, parseQuestionarioXlsx } from "../integrations/fo
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
 import type { CategoriaConversa } from "../lib/roteiros";
 import { calcularProgresso, getRoteiro } from "../lib/roteiros";
-import { buildSystemPromptDinamico, SYSTEM_PROMPT_BASE, type ModoBia } from "../lib/system-prompt";
+import {
+  buildBlocoPersonalizacao,
+  buildSystemPromptDinamico,
+  SYSTEM_PROMPT_BASE,
+  type ModoBia,
+} from "../lib/system-prompt";
+import { obterConfigEfetiva } from "./agente-config.service";
 import { logger } from "../utils/logger";
 import {
   detectarGatilhoHandoff,
@@ -62,6 +68,8 @@ const CAPTION_FORMULARIO =
 interface ConversaAtiva {
   id: string;
   cliente_id: string;
+  /** Linha de WhatsApp da conversa — chave da config de comportamento da Bia. */
+  canal_id: string | null;
   estado: string;
   /** Operador dono (setado por "Assumir"). null = handoff automático sem dono ainda. */
   operador_id: string | null;
@@ -76,7 +84,7 @@ async function carregarConversa(conversaId: string): Promise<ConversaAtiva | nul
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, cliente_id, estado, operador_id, categoria, dados_coletados, dados_bot")
+    .select("id, cliente_id, canal_id, estado, operador_id, categoria, dados_coletados, dados_bot")
     .eq("id", conversaId)
     .maybeSingle();
   if (error) {
@@ -87,6 +95,7 @@ async function carregarConversa(conversaId: string): Promise<ConversaAtiva | nul
   return {
     id: data.id,
     cliente_id: data.cliente_id,
+    canal_id: (data as { canal_id?: string | null }).canal_id ?? null,
     estado: data.estado,
     operador_id: (data as { operador_id?: string | null }).operador_id ?? null,
     categoria: (data.categoria as CategoriaConversa | null) ?? null,
@@ -645,6 +654,19 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   // 4) Histórico (já inclui a mensagem que acabou de chegar, pois persistimos antes).
   const historico = await carregarHistorico(conversa.id);
 
+  // 4.1) Comportamento configurável por linha (Admin > Bia): tom/persona/saudação/
+  //      exemplos + temperatura. Degrada com segurança: erro/ausência → null → a
+  //      Bia roda exatamente como antes (sem bloco de personalização nem temperature).
+  let configAgente = null;
+  try {
+    configAgente = await obterConfigEfetiva(conversa.canal_id);
+  } catch (e) {
+    logger.warn("[bot] config do agente falhou; seguindo sem personalização", {
+      conversaId: conversa.id,
+      erro: (e as Error).message,
+    });
+  }
+
   // 5) Chama Claude.
   let resposta;
   try {
@@ -653,6 +675,8 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       systemDinamico,
       historico,
       permitirConfirmacao: ehConfirmacao,
+      systemPersonalizacao: configAgente ? buildBlocoPersonalizacao(configAgente) : undefined,
+      temperature: configAgente?.temperature,
     });
   } catch (e) {
     logger.error("[bot] Claude falhou", {

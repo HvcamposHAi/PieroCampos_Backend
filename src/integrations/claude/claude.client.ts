@@ -51,6 +51,16 @@ export interface ChamarBiaInput {
   historico: MensagemTurno[];
   /** Inclui a tool confirmar_cotacao (fase de confirmação do cliente). */
   permitirConfirmacao?: boolean;
+  /**
+   * Bloco 2 (PERSONALIZAÇÃO por canal). Entra entre a BASE e a DINÂMICA e é
+   * cacheado por canal. Ausente → comportamento idêntico ao anterior (2 blocos).
+   */
+  systemPersonalizacao?: string;
+  /**
+   * Temperatura de amostragem. Só enviada à API quando definida — ausente
+   * preserva o default da Anthropic (comportamento atual, sem temperature).
+   */
+  temperature?: number;
 }
 
 const TOOL_ATUALIZAR_DADOS = {
@@ -156,9 +166,20 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   const env = getEnv();
   const client = getClient();
 
-  // System prompt em DOIS blocos: o primeiro (BASE) marcado para cache.
+  // System prompt em blocos: BASE (cacheado) + PERSONALIZAÇÃO opcional por canal
+  // (cacheado) + DINÂMICO (varia por turno, não cacheado). Sem personalização,
+  // o array fica idêntico ao histórico de 2 blocos.
   const system = [
     { type: "text" as const, text: input.systemBase, cache_control: { type: "ephemeral" as const } },
+    ...(input.systemPersonalizacao
+      ? [
+          {
+            type: "text" as const,
+            text: input.systemPersonalizacao,
+            cache_control: { type: "ephemeral" as const },
+          },
+        ]
+      : []),
     { type: "text" as const, text: input.systemDinamico },
   ];
 
@@ -194,6 +215,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     const resp = await client.messages.create({
       model: env.BIA_MODEL,
       max_tokens: env.BIA_MAX_TOKENS,
+      ...(input.temperature != null ? { temperature: input.temperature } : {}),
       system,
       tools,
       messages,
