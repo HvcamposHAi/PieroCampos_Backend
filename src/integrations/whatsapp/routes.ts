@@ -133,10 +133,13 @@ router.post("/canais/:id/disconnect", exigirAdmin, async (req: Request, res: Res
  * Liga/desliga a Bia NESTA linha (master switch por canal). NÃO toca na conexão
  * WhatsApp: só grava `canais.bot_ativo`. A sessão Baileys segue conectada e os
  * operadores continuam enviando pela linha — só a Bia fica muda. Livre demanda.
+ *
+ * Autz: admin alterna QUALQUER linha (toggle do Admin desktop). Operador ativo
+ * só alterna a SUA linha (operadores.canal_padrao_id) — base da página móvel /bot.
  */
 const botAtivoSchema = z.object({ bot_ativo: z.boolean() });
 
-router.patch("/canais/:id/bot-ativo", exigirAdmin, async (req: Request, res: Response) => {
+router.patch("/canais/:id/bot-ativo", async (req: Request, res: Response) => {
   const canalId = req.params.id ?? "";
   if (!canalId) {
     res.status(400).json({ erro: "id_invalido" });
@@ -146,6 +149,18 @@ router.patch("/canais/:id/bot-ativo", exigirAdmin, async (req: Request, res: Res
   if (!parsed.success) {
     res.status(422).json({ erro: "input_invalido" });
     return;
+  }
+  // admin: qualquer linha. operador ativo: só a linha dele (canal_padrao_id).
+  if (!(await isAdmin(req))) {
+    const op = await carregarOperadorAtivo(req);
+    if (!op) {
+      res.status(403).json({ erro: "operador_required" });
+      return;
+    }
+    if (op.canal_padrao_id !== canalId) {
+      res.status(403).json({ erro: "operador_nao_dono_da_linha" });
+      return;
+    }
   }
   try {
     const canal = await buscarCanal(canalId);

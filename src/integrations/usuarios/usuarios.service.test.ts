@@ -39,7 +39,13 @@ const h = vi.hoisted(() => {
 
 vi.mock("../whatsapp/supabase", () => ({ getSupabaseAdmin: () => h.sb }));
 
-import { ErroUsuario, atualizarUsuario, criarUsuario, definirSenha } from "./usuarios.service";
+import {
+  ErroUsuario,
+  atualizarUsuario,
+  criarUsuario,
+  definirCanalPadrao,
+  definirSenha,
+} from "./usuarios.service";
 
 beforeEach(() => {
   h.fromResults.length = 0;
@@ -186,5 +192,39 @@ describe("atualizarUsuario", () => {
   it("id inexistente → ErroUsuario('nao_encontrado')", async () => {
     h.fromResults.push({ data: null, error: null });
     await expect(atualizarUsuario({ operadorId: "nope", ativo: false })).rejects.toBeInstanceOf(ErroUsuario);
+  });
+});
+
+describe("definirCanalPadrao (self-service /me/canal)", () => {
+  it("linha ativa → grava canal_padrao_id na própria row do operador", async () => {
+    h.fromResults.push({ data: { id: "canal-1", ativo: true }, error: null }); // valida canal
+    h.fromResults.push({ data: null, error: null }); // update operadores
+    const r = await definirCanalPadrao({ operadorId: "op-1", canalId: "canal-1" });
+    expect(h.rec.update[0][0]).toMatchObject({ canal_padrao_id: "canal-1" });
+    expect(h.rec.eq[h.rec.eq.length - 1]).toEqual(["id", "op-1"]); // só a própria row
+    expect(r).toEqual({ canal_padrao_id: "canal-1" });
+  });
+
+  it("canalId=null limpa a escolha sem validar canal", async () => {
+    h.fromResults.push({ data: null, error: null }); // update direto (sem checagem de canal)
+    const r = await definirCanalPadrao({ operadorId: "op-1", canalId: null });
+    expect(h.rec.update[0][0]).toMatchObject({ canal_padrao_id: null });
+    expect(r).toEqual({ canal_padrao_id: null });
+  });
+
+  it("linha inexistente → ErroUsuario('nao_encontrado'), sem update", async () => {
+    h.fromResults.push({ data: null, error: null }); // canal não encontrado
+    await expect(
+      definirCanalPadrao({ operadorId: "op-1", canalId: "nope" }),
+    ).rejects.toBeInstanceOf(ErroUsuario);
+    expect(h.rec.update.length).toBe(0);
+  });
+
+  it("linha inativa → ErroUsuario('nao_encontrado'), sem update", async () => {
+    h.fromResults.push({ data: { id: "canal-2", ativo: false }, error: null });
+    await expect(
+      definirCanalPadrao({ operadorId: "op-1", canalId: "canal-2" }),
+    ).rejects.toBeInstanceOf(ErroUsuario);
+    expect(h.rec.update.length).toBe(0);
   });
 });

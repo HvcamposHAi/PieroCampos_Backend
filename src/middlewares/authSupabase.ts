@@ -90,6 +90,8 @@ export async function exigirAdmin(req: Request, res: Response, next: NextFunctio
 export interface OperadorAtivo {
   id: string;
   perfil: string;
+  /** Linha WhatsApp que o operador opera (escolhida na página móvel /bot). */
+  canal_padrao_id: string | null;
 }
 
 /**
@@ -102,7 +104,7 @@ export async function carregarOperadorAtivo(req: Request): Promise<OperadorAtivo
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("operadores")
-    .select("id, perfil")
+    .select("id, perfil, canal_padrao_id")
     .eq("supabase_user_id", req.user.id)
     .eq("ativo", true)
     .maybeSingle();

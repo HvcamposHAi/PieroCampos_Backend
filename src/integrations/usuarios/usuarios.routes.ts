@@ -11,12 +11,13 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin } from "../../middlewares/authSupabase";
+import { exigirAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import {
   ErroUsuario,
   atualizarUsuario,
   criarUsuario,
+  definirCanalPadrao,
   definirSenha,
   desativarUsuario,
   listarUsuarios,
@@ -46,6 +47,9 @@ const patchSchema = z
   });
 
 const senhaBodySchema = z.object({ senha: senhaSchema });
+
+// Self-service (não admin): a linha que o operador opera na página móvel /bot.
+const meCanalSchema = z.object({ canal_id: z.string().uuid().nullable() });
 
 /** Mapeia erros de domínio para o status HTTP correto. */
 function tratarErro(res: Response, contexto: string, e: unknown): void {
@@ -130,6 +134,30 @@ router.post("/:id/desativar", exigirAdmin, async (req: Request, res: Response) =
     res.json({ ok: true, usuario });
   } catch (e) {
     tratarErro(res, "desativar", e);
+  }
+});
+
+/**
+ * SELF-SERVICE (operador ativo, NÃO admin): grava a linha que o próprio operador
+ * opera (página móvel /bot). Só toca a própria row (id resolvido do JWT). Base do
+ * escopo do toggle em /api/wa/canais/:id/bot-ativo (operador só a sua linha).
+ */
+router.put("/me/canal", async (req: Request, res: Response) => {
+  const op = await carregarOperadorAtivo(req);
+  if (!op) {
+    res.status(403).json({ erro: "operador_required" });
+    return;
+  }
+  const parsed = meCanalSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const r = await definirCanalPadrao({ operadorId: op.id, canalId: parsed.data.canal_id });
+    res.json({ ok: true, canal_padrao_id: r.canal_padrao_id });
+  } catch (e) {
+    tratarErro(res, "definir_canal", e);
   }
 });
 

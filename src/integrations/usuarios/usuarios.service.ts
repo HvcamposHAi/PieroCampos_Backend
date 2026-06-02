@@ -235,3 +235,37 @@ export async function desativarUsuario(operadorId: string): Promise<UsuarioAdmin
   logger.info("[usuarios] usuario desativado", { email: u.email });
   return u;
 }
+
+/**
+ * SELF-SERVICE (não admin): define qual linha o operador opera (página móvel
+ * /bot). Grava `operadores.canal_padrao_id`. Valida que a linha existe e está
+ * ATIVA. `canalId=null` limpa a escolha. Quem chama já resolveu o operadorId a
+ * partir do JWT (carregarOperadorAtivo) — aqui não há checagem de dono.
+ */
+export async function definirCanalPadrao(input: {
+  operadorId: string;
+  canalId: string | null;
+}): Promise<{ canal_padrao_id: string | null }> {
+  const sb = getSupabaseAdmin();
+  if (input.canalId) {
+    const { data: canal, error: errC } = await sb
+      .from("canais")
+      .select("id, ativo")
+      .eq("id", input.canalId)
+      .maybeSingle();
+    if (errC) throw new Error(`definirCanalPadrao.canal: ${errC.message}`);
+    if (!canal) throw new ErroUsuario("nao_encontrado", "Linha não encontrada.");
+    if (!(canal as { ativo: boolean }).ativo)
+      throw new ErroUsuario("nao_encontrado", "Linha inativa.");
+  }
+  const { error } = await sb
+    .from("operadores")
+    .update({ canal_padrao_id: input.canalId, atualizado_em: new Date().toISOString() })
+    .eq("id", input.operadorId);
+  if (error) throw new Error(`definirCanalPadrao.update: ${error.message}`);
+  logger.info("[usuarios] canal padrão definido", {
+    operadorId: input.operadorId,
+    canalId: input.canalId,
+  });
+  return { canal_padrao_id: input.canalId };
+}
