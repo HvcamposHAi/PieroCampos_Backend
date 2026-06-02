@@ -37,6 +37,7 @@ const putSchema = z.object({
   exemplos: z.string().trim().max(4000).nullish(),
   variar_texto: z.boolean(),
   criatividade: z.enum(["consistente", "equilibrado", "criativo"]),
+  objetivo: z.enum(["cotacao", "atendimento", "aquecer", "venda"]),
   ativo: z.boolean().optional(),
 });
 
@@ -55,6 +56,7 @@ router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
       exemplos: parsed.data.exemplos ?? null,
       variar_texto: parsed.data.variar_texto,
       criatividade: parsed.data.criatividade,
+      objetivo: parsed.data.objetivo,
       ativo: parsed.data.ativo,
       porEmail: req.user?.email ?? null,
     });

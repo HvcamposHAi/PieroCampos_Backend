@@ -10,7 +10,7 @@
  */
 import type { CategoriaConversa, CampoRoteiro } from "./roteiros";
 import { getRoteiro } from "./roteiros";
-import type { ConfigEfetiva, TomVoz } from "../services/agente-config.service";
+import type { ConfigEfetiva, Objetivo, TomVoz } from "../services/agente-config.service";
 
 export const SYSTEM_PROMPT_BASE = `Você é a Bia, assistente virtual da Corretora de Seguros Piero de Campos, de Curitiba-PR. A Piero de Campos cuida dos seguros das famílias curitibanas há mais de 20 anos com proximidade e atenção.
 
@@ -228,6 +228,18 @@ const TOM_DESCRICAO: Record<TomVoz, string> = {
 };
 
 /**
+ * Objetivo/postura da Bia nesta linha. É uma ORIENTAÇÃO de intenção — não muda
+ * o roteiro de coleta nem libera citar preço/aprovar (isso fica na BASE).
+ */
+const OBJETIVO_DESCRICAO: Record<Objetivo, string> = {
+  cotacao: "coletar os dados necessários e encaminhar a cotação o quanto antes, sem burocracia",
+  atendimento: "atender e tirar as dúvidas do cliente com excelência, sem pressa de cotar",
+  aquecer: "aquecer e estreitar o relacionamento com o cliente, mantendo-o engajado e bem cuidado",
+  venda:
+    "conduzir o cliente a avançar na contratação, destacando os benefícios — sempre sem citar preço nem prometer aprovação",
+};
+
+/**
  * Monta o bloco 2 (PERSONALIZAÇÃO por canal), concatenado entre a BASE e a
  * DINÂMICA pelo claude.client. Só ajusta ESTILO (tom/persona/saudação/exemplos);
  * o cabeçalho deixa explícito que NÃO sobrepõe as REGRAS ABSOLUTAS da BASE.
@@ -237,6 +249,7 @@ export function buildBlocoPersonalizacao(config: ConfigEfetiva): string {
   const partes: string[] = [
     "AJUSTE DE ESTILO DESTA LINHA (apenas tom e forma; NUNCA sobrepõe as REGRAS ABSOLUTAS acima — preço, aprovação, dados de terceiros e LGPD seguem valendo):",
     `- Tom de voz: ${TOM_DESCRICAO[config.tomVoz] ?? TOM_DESCRICAO.proximo_caloroso}.`,
+    `- Objetivo nesta linha: ${OBJETIVO_DESCRICAO[config.objetivo] ?? OBJETIVO_DESCRICAO.cotacao}.`,
   ];
 
   if (config.persona) {

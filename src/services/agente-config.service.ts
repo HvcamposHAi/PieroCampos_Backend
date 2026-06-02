@@ -26,6 +26,9 @@ export type TomVoz =
 
 export type Criatividade = "consistente" | "equilibrado" | "criativo";
 
+/** Objetivo/postura da Bia na linha — orienta a intenção (não muda o roteiro). */
+export type Objetivo = "cotacao" | "atendimento" | "aquecer" | "venda";
+
 /** Mapa puro preset → temperature da Anthropic. Testável isoladamente. */
 export const CRIATIVIDADE_TEMPERATURA: Record<Criatividade, number> = {
   consistente: 0.3,
@@ -44,6 +47,12 @@ const CRIATIVIDADES_VALIDAS: ReadonlySet<string> = new Set<Criatividade>([
   "equilibrado",
   "criativo",
 ]);
+const OBJETIVOS_VALIDOS: ReadonlySet<string> = new Set<Objetivo>([
+  "cotacao",
+  "atendimento",
+  "aquecer",
+  "venda",
+]);
 
 /** Linha crua da tabela (forma devolvida à tela do Admin). */
 export interface AgenteConfigRow {
@@ -55,6 +64,7 @@ export interface AgenteConfigRow {
   exemplos: string | null;
   variar_texto: boolean;
   criatividade: Criatividade;
+  objetivo: Objetivo;
   atualizado_em: string | null;
   atualizado_por: string | null;
 }
@@ -67,6 +77,7 @@ export interface ConfigEfetiva {
   exemplos: string | null;
   variarTexto: boolean;
   criatividade: Criatividade;
+  objetivo: Objetivo;
   temperature: number;
 }
 
@@ -76,7 +87,7 @@ export interface AgenteConfigAdmin {
 }
 
 const COLUNAS =
-  "canal_id, ativo, tom_voz, persona, saudacao, exemplos, variar_texto, criatividade, atualizado_em, atualizado_por";
+  "canal_id, ativo, tom_voz, persona, saudacao, exemplos, variar_texto, criatividade, objetivo, atualizado_em, atualizado_por";
 
 /** Texto vazio/só-espaços vira null (para não atropelar o fallback do padrão). */
 function nuloSeVazio(v: string | null | undefined): string | null {
@@ -99,6 +110,7 @@ export function mergeConfig(
   const tomVoz = override?.tom_voz ?? padrao?.tom_voz ?? "proximo_caloroso";
   const criatividade = override?.criatividade ?? padrao?.criatividade ?? "equilibrado";
   const variarTexto = override?.variar_texto ?? padrao?.variar_texto ?? true;
+  const objetivo = override?.objetivo ?? padrao?.objetivo ?? "cotacao";
   return {
     tomVoz,
     persona: preferir(override?.persona, padrao?.persona),
@@ -106,6 +118,7 @@ export function mergeConfig(
     exemplos: preferir(override?.exemplos, padrao?.exemplos),
     variarTexto,
     criatividade,
+    objetivo,
     temperature: CRIATIVIDADE_TEMPERATURA[criatividade],
   };
 }
@@ -169,6 +182,7 @@ export interface SalvarConfigInput {
   exemplos?: string | null;
   variar_texto: boolean;
   criatividade: Criatividade;
+  objetivo: Objetivo;
   ativo?: boolean;
   porEmail?: string | null;
 }
@@ -190,6 +204,7 @@ async function acharIdLinha(canalId: string | null): Promise<string | null> {
 export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
   if (!TONS_VALIDOS.has(input.tom_voz)) throw new Error("tom_voz inválido");
   if (!CRIATIVIDADES_VALIDAS.has(input.criatividade)) throw new Error("criatividade inválida");
+  if (!OBJETIVOS_VALIDOS.has(input.objetivo)) throw new Error("objetivo inválido");
 
   const sb = getSupabaseAdmin();
   const payload = {
@@ -201,6 +216,7 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
     exemplos: nuloSeVazio(input.exemplos),
     variar_texto: input.variar_texto,
     criatividade: input.criatividade,
+    objetivo: input.objetivo,
     atualizado_em: new Date().toISOString(),
     atualizado_por: input.porEmail ?? null,
   };

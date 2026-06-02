@@ -100,6 +100,7 @@ function configRow(over: Record<string, unknown>) {
     exemplos: null,
     variar_texto: true,
     criatividade: "equilibrado",
+    objetivo: "cotacao",
     atualizado_em: null,
     atualizado_por: null,
     ...over,

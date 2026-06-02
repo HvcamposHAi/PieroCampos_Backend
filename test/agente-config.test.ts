@@ -57,6 +57,7 @@ function row(over: Partial<AgenteConfigRow> = {}): AgenteConfigRow {
     exemplos: null,
     variar_texto: true,
     criatividade: "equilibrado",
+    objetivo: "cotacao",
     atualizado_em: null,
     atualizado_por: null,
     ...over,
@@ -76,12 +77,19 @@ beforeEach(() => {
 
 describe("mergeConfig + criatividade→temperature", () => {
   it("override vence; texto nulo cai no padrão", () => {
-    const padrao = row({ persona: "padrão persona", criatividade: "equilibrado" });
-    const override = row({ canal_id: "c1", tom_voz: "entusiasta", persona: null, criatividade: "criativo" });
+    const padrao = row({ persona: "padrão persona", criatividade: "equilibrado", objetivo: "cotacao" });
+    const override = row({
+      canal_id: "c1",
+      tom_voz: "entusiasta",
+      persona: null,
+      criatividade: "criativo",
+      objetivo: "venda",
+    });
     const m = mergeConfig(padrao, override);
     expect(m.tomVoz).toBe("entusiasta");
     expect(m.persona).toBe("padrão persona"); // override null → herda padrão
     expect(m.criatividade).toBe("criativo");
+    expect(m.objetivo).toBe("venda");
     expect(m.temperature).toBe(CRIATIVIDADE_TEMPERATURA.criativo);
   });
 
@@ -101,12 +109,14 @@ describe("buildBlocoPersonalizacao", () => {
           exemplos: "Perfeito!\nJá anotei",
           variar_texto: true,
           criatividade: "criativo",
+          objetivo: "venda",
         }),
         null,
       ),
     );
     expect(bloco).toContain("NUNCA sobrepõe as REGRAS ABSOLUTAS");
     expect(bloco).toContain("entusiasta");
+    expect(bloco).toContain("Objetivo nesta linha");
     expect(bloco).toContain("seja animada");
     expect(bloco).toContain("Oi! Sou a Bia");
     expect(bloco).toContain("Já anotei");
