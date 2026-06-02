@@ -15,6 +15,8 @@ import { cotacaoRouter } from "./integrations/cotacao/routes";
 import { segfyRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
+import { auditoriaRouter, auditoriaPublicoRouter } from "./integrations/auditoria/auditoria.routes";
+import { auditarMutacoes } from "./middlewares/auditoria";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
 import { logger } from "./utils/logger";
 
@@ -44,6 +46,10 @@ export function criarApp(): express.Express {
   const env = getEnv();
   const app = express();
 
+  // Render fica atrás de 1 proxy: sem isto, req.ip traz o IP do proxy (não do
+  // cliente) — a trilha de auditoria registraria sempre o mesmo IP interno.
+  app.set("trust proxy", 1);
+
   app.use(helmet());
   app.use(
     cors({
@@ -69,11 +75,15 @@ export function criarApp(): express.Express {
     res.json({ status: "ok", service: "PieroCampos Backend", bootstrap_pronto: true });
   });
 
-  app.use("/api/wa", authSupabase, waRouter);
-  app.use("/api/cotacao", authSupabase, cotacaoRouter);
-  app.use("/api/segfy", authSupabase, segfyRouter);
-  app.use("/api/usuarios", authSupabase, usuariosRouter);
-  app.use("/api/agente", authSupabase, agenteRouter);
+  // Pública (sem JWT): o front reporta tentativas de login que falharam.
+  app.use("/api/auditoria/acesso-falho", auditoriaPublicoRouter);
+
+  app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
+  app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);
+  app.use("/api/segfy", authSupabase, auditarMutacoes("segfy"), segfyRouter);
+  app.use("/api/usuarios", authSupabase, auditarMutacoes("usuarios"), usuariosRouter);
+  app.use("/api/agente", authSupabase, auditarMutacoes("agente"), agenteRouter);
+  app.use("/api/auditoria", authSupabase, auditoriaRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ erro: "rota_nao_encontrada" });
