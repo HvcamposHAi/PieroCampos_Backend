@@ -20,6 +20,8 @@ export interface CanalRow {
   id: string;
   apelido: string;
   ativo: boolean;
+  /** Master switch da Bia nesta linha. false = silêncio total (só humanos). */
+  bot_ativo: boolean;
   provider: string;
   status: StatusCanal;
   numero_e164: string | null;
@@ -33,6 +35,7 @@ export interface CanalRow {
 
 export interface CanalUpdate {
   status?: StatusCanal;
+  bot_ativo?: boolean;
   qr_code?: string | null;
   qr_expires_at?: string | null;
   numero_e164?: string | null;

@@ -77,12 +77,45 @@ export async function buscarCanal(canalId: string): Promise<CanalRow | null> {
   const { data, error } = await sb
     .from("canais")
     .select(
-      "id, apelido, ativo, provider, status, numero_e164, numero_twilio, display_name, qr_code, qr_expires_at, last_connected_at, last_disconnect_reason",
+      "id, apelido, ativo, bot_ativo, provider, status, numero_e164, numero_twilio, display_name, qr_code, qr_expires_at, last_connected_at, last_disconnect_reason",
     )
     .eq("id", canalId)
     .maybeSingle();
   if (error) throw error;
   return (data as CanalRow | null) ?? null;
+}
+
+/**
+ * Lê apenas o master switch da Bia para a linha (gate barato chamado a cada
+ * mensagem). FAIL-OPEN: qualquer erro de leitura ou coluna ausente devolve
+ * `true` — nunca calar a Bia por uma falha de infra. Só `bot_ativo === false`
+ * explícito silencia a linha.
+ */
+export async function lerBotAtivoCanal(canalId: string): Promise<boolean> {
+  if (!canalId) return true;
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("canais")
+      .select("bot_ativo")
+      .eq("id", canalId)
+      .maybeSingle();
+    if (error) {
+      logger.warn("[wa.persistence] lerBotAtivoCanal falhou; fail-open", {
+        canalId,
+        erro: error.message,
+      });
+      return true;
+    }
+    const v = (data as { bot_ativo?: boolean | null } | null)?.bot_ativo;
+    return v === false ? false : true;
+  } catch (e) {
+    logger.warn("[wa.persistence] lerBotAtivoCanal exceção; fail-open", {
+      canalId,
+      erro: (e as Error).message,
+    });
+    return true;
+  }
 }
 
 /**

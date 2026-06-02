@@ -23,6 +23,7 @@ import { getEnv } from "../config/env";
 import { chamarBia, type MensagemTurno } from "../integrations/claude/claude.client";
 import { gerarQuestionarioXlsx, parseQuestionarioXlsx } from "../integrations/formulario";
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
+import { lerBotAtivoCanal } from "../integrations/whatsapp/persistence";
 import type { CategoriaConversa } from "../lib/roteiros";
 import { calcularProgresso, getRoteiro } from "../lib/roteiros";
 import {
@@ -545,6 +546,18 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   if (!env.BIA_ENABLED) {
     logger.info("[bot] BIA_ENABLED=false; ignorando mensagem", {
       conversaId: input.conversaId,
+    });
+    return;
+  }
+
+  // Master switch da LINHA (canal). bot_ativo=false → silêncio total: a Bia não
+  // responde, não acolhe, não detecta handoff nesta linha (só humanos). Gate
+  // anterior a tudo, por canalId (independe de a conversa já existir).
+  // FAIL-OPEN: erro de leitura devolve true (ver lerBotAtivoCanal).
+  if (!(await lerBotAtivoCanal(input.canalId))) {
+    logger.info("[bot] bot_ativo=false na linha; silêncio total", {
+      conversaId: input.conversaId,
+      canalId: input.canalId,
     });
     return;
   }

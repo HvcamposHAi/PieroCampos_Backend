@@ -15,7 +15,12 @@ import { z } from "zod";
 import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { getRoteiro } from "../../lib/roteiros";
 import { logger } from "../../utils/logger";
-import { buscarCanal, registrarMensagemEntradaManual } from "./persistence";
+import {
+  buscarCanal,
+  atualizarCanal,
+  lerBotAtivoCanal,
+  registrarMensagemEntradaManual,
+} from "./persistence";
 import {
   carregarConversaParaEdicao,
   carregarConversaParaEnvio,
@@ -121,6 +126,38 @@ router.post("/canais/:id/disconnect", exigirAdmin, async (req: Request, res: Res
   } catch (e) {
     logger.error("[wa.routes] disconnect falhou", { canalId, erro: (e as Error).message });
     res.status(500).json({ erro: "disconnect_failed", mensagem: (e as Error).message });
+  }
+});
+
+/**
+ * Liga/desliga a Bia NESTA linha (master switch por canal). NÃO toca na conexão
+ * WhatsApp: só grava `canais.bot_ativo`. A sessão Baileys segue conectada e os
+ * operadores continuam enviando pela linha — só a Bia fica muda. Livre demanda.
+ */
+const botAtivoSchema = z.object({ bot_ativo: z.boolean() });
+
+router.patch("/canais/:id/bot-ativo", exigirAdmin, async (req: Request, res: Response) => {
+  const canalId = req.params.id ?? "";
+  if (!canalId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = botAtivoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido" });
+    return;
+  }
+  try {
+    const canal = await buscarCanal(canalId);
+    if (!canal) {
+      res.status(404).json({ erro: "canal_nao_encontrado" });
+      return;
+    }
+    await atualizarCanal(canalId, { bot_ativo: parsed.data.bot_ativo });
+    res.json({ ok: true, bot_ativo: parsed.data.bot_ativo });
+  } catch (e) {
+    logger.error("[wa.routes] bot-ativo falhou", { canalId, erro: (e as Error).message });
+    res.status(500).json({ erro: "bot_ativo_failed", mensagem: (e as Error).message });
   }
 });
 
@@ -260,7 +297,12 @@ router.post("/conversas/:id/responder", async (req: Request, res: Response) => {
     res.status(404).json({ erro: "conversa_nao_encontrada" });
     return;
   }
-  if (conversa.estado !== "humano_assumiu") {
+  // Normalmente só responde em humano_assumiu. EXCEÇÃO: linha com a Bia desligada
+  // (canais.bot_ativo=false) — aí o operador conduz tudo e a conversa pode seguir
+  // em bot_ativo; liberamos o envio e o claim-on-send abaixo a transiciona para
+  // humano_assumiu (a Bia já está muda pelo gate de linha, sem conflito).
+  const linhaBotOff = !(await lerBotAtivoCanal(conversa.canal_id ?? ""));
+  if (conversa.estado !== "humano_assumiu" && !linhaBotOff) {
     res.status(409).json({ erro: "conversa_nao_assumida" });
     return;
   }
