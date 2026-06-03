@@ -64,6 +64,18 @@ const schema = z
     // Token compartilhado p/ o endpoint /api/aprendizado/cron (pinger externo).
     // Vazio → endpoint cron desabilitado (só o botão do Admin dispara).
     APRENDIZADO_CRON_TOKEN: z.string().optional().default(""),
+    // Transcrição de notas de voz (STT). Desligado por padrão: enquanto false,
+    // áudio sem caption é ignorado como hoje (zero HTTP / zero escrita nova). O
+    // Claude NÃO transcreve áudio (Messages API só aceita texto/imagem), por isso
+    // usamos um provedor dedicado. `local` é um slot reservado p/ um futuro
+    // microserviço whisper.cpp próprio (troca por env, sem mexer no código).
+    TRANSCRICAO_ENABLED: boolDeString.default(false),
+    TRANSCRICAO_PROVIDER: z.enum(["openai", "groq", "local"]).default("openai"),
+    TRANSCRICAO_API_KEY: z.string().optional().default(""),
+    TRANSCRICAO_MODEL: z.string().default("gpt-4o-mini-transcribe"),
+    TRANSCRICAO_MAX_SEG: numComPadrao(300),
+    TRANSCRICAO_MAX_BYTES: numComPadrao(25 * 1024 * 1024),
+    TRANSCRICAO_TIMEOUT_MS: numComPadrao(30_000),
     // HTTP.
     PORT: numComPadrao(3000),
     FRONT_ORIGIN: z.string().optional().default(""),
@@ -101,6 +113,13 @@ const schema = z
           message: "obrigatório quando BIA_ENABLED=true (chave da Anthropic — Claude Sonnet)",
         });
       }
+    }
+    if (val.TRANSCRICAO_ENABLED && !val.TRANSCRICAO_API_KEY) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["TRANSCRICAO_API_KEY"],
+        message: "obrigatório quando TRANSCRICAO_ENABLED=true (chave do provedor de transcrição)",
+      });
     }
   });
 

@@ -347,6 +347,10 @@ export interface MensagemEntradaInput {
    * — que p/ LID é um número falso (corrigido depois via bot perguntando/edição).
    */
   telefoneReal?: string | null;
+  /** Tipo de mídia da entrada (ex.: "audio"). Ausente → null (texto puro, como hoje). */
+  midiaTipo?: string | null;
+  /** Path no Storage da mídia original (ex.: áudio). Ausente → null. */
+  midiaUrl?: string | null;
 }
 
 export interface RegistroEntradaResultado {
@@ -404,6 +408,8 @@ export async function registrarMensagemEntrada(
     direcao: "entrada",
     origem: "cliente",
     corpo: input.texto,
+    midia_tipo: input.midiaTipo ?? null,
+    midia_url: input.midiaUrl ?? null,
     twilio_message_sid: input.providerMsgId ?? null,
     enviada_em: (input.enviadaEm ?? new Date()).toISOString(),
   };

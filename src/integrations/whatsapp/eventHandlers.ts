@@ -16,9 +16,11 @@ import {
   type WAMessage,
 } from "@whiskeysockets/baileys";
 import { getEnv } from "../../config/env";
+import { transcreverAudio } from "../../lib/transcricao";
 import { processarFormularioRecebido, processarMensagem } from "../../services/bot.service";
 import { montarMensagemAlerta, type MotivoHandoff } from "../../services/handoff.service";
 import { logger } from "../../utils/logger";
+import { subirAudioWhatsapp } from "./audio-storage";
 import { enfileirarCampoForcado } from "./conversas.dados";
 import {
   atualizarCanal,
@@ -169,6 +171,21 @@ function extrairDocumentoXlsx(m: WAMessage): { fileName: string } | null {
     mimetype.includes("ms-excel") ||
     fileName.toLowerCase().endsWith(".xlsx");
   return ehXlsx ? { fileName } : null;
+}
+
+/**
+ * Detecta uma nota de voz / áudio inbound (`audioMessage`). Cobre PTT (nota de
+ * voz) e áudio comum — as guardas de duração/tamanho da transcrição cuidam dos
+ * limites. Retorna mimetype/ptt/seconds, ou null se não houver áudio.
+ */
+function extrairAudio(m: WAMessage): { mimetype: string; ptt: boolean; seconds?: number } | null {
+  const a = m.message?.audioMessage;
+  if (!a) return null;
+  return {
+    mimetype: a.mimetype ?? "audio/ogg",
+    ptt: a.ptt === true,
+    seconds: typeof a.seconds === "number" ? a.seconds : undefined,
+  };
 }
 
 /**
@@ -381,6 +398,128 @@ export function registrarHandlers(
             jidRemoto,
             documento: buffer,
             enviar: enviarTexto,
+          });
+          continue;
+        }
+
+        // (A2) Nota de voz / áudio inbound → baixa, transcreve e trata como TEXTO.
+        // O bloco INTEIRO é gated em TRANSCRICAO_ENABLED: desligado ⇒ áudio sem
+        // caption cai em (B) e é ignorado (`continue`), exatamente como hoje.
+        const audio = extrairAudio(m);
+        if (audio && getEnv().TRANSCRICAO_ENABLED) {
+          // Download do áudio (mesmo helper/args do bloco .xlsx acima).
+          let bufferAudio: Buffer | null = null;
+          try {
+            bufferAudio = (await downloadMediaMessage(
+              m,
+              "buffer",
+              {},
+              {
+                logger: baileysLoggerSilencioso,
+                reuploadRequest: sock.updateMediaMessage,
+              },
+            )) as Buffer;
+          } catch (e) {
+            logger.warn("[wa.handlers] download de áudio falhou", { canalId, erro: (e as Error).message });
+          }
+
+          if (!bufferAudio) {
+            // Sem o áudio não há o que transcrever: persiste placeholder p/ o
+            // operador ver que chegou um áudio, e pede texto ao cliente.
+            const reg = await registrarMensagemEntrada({
+              canalId,
+              jidRemoto,
+              texto: "[áudio recebido]",
+              midiaTipo: "audio",
+              pushName: m.pushName ?? undefined,
+              providerMsgId: m.key.id ?? undefined,
+              enviadaEm,
+              telefoneReal,
+            });
+            if (reg && !reg.duplicada) {
+              await sessionManager
+                .enviarTextoBot({
+                  canalId,
+                  conversaId: reg.conversaId,
+                  jid: jidRemoto,
+                  texto: "Recebi seu áudio, mas não consegui processá-lo agora 😕 Pode me escrever por aqui, por favor?",
+                })
+                .catch(() => {});
+            }
+            continue;
+          }
+
+          // Guarda o áudio original (best-effort) e transcreve.
+          const up = await subirAudioWhatsapp({
+            providerMsgId: m.key.id ?? undefined,
+            audio: bufferAudio,
+            mimetype: audio.mimetype,
+          });
+          const transcricao = await transcreverAudio({
+            audio: bufferAudio,
+            mimetype: audio.mimetype,
+            duracaoSeg: audio.seconds,
+          });
+
+          // Persiste a entrada com o transcript no corpo (ou placeholder em falha).
+          const registro = await registrarMensagemEntrada({
+            canalId,
+            jidRemoto,
+            texto: transcricao?.texto?.trim() || "[áudio recebido]",
+            midiaTipo: "audio",
+            midiaUrl: up?.path ?? null,
+            pushName: m.pushName ?? undefined,
+            providerMsgId: m.key.id ?? undefined,
+            enviadaEm,
+            telefoneReal,
+          });
+          if (!registro || registro.duplicada) continue;
+
+          if (isLidUser(jidRemoto) && !telefoneReal) {
+            await pedirTelefoneSeNecessario(registro.conversaId).catch(() => {});
+          }
+
+          // Transcrição vazia/falha → não aciona o Claude com vazio; pede texto.
+          if (!transcricao || !transcricao.texto.trim()) {
+            await sessionManager
+              .enviarTextoBot({
+                canalId,
+                conversaId: registro.conversaId,
+                jid: jidRemoto,
+                texto: "Recebi seu áudio! 🎧 No momento consigo te atender melhor por texto — pode me escrever sua mensagem?",
+              })
+              .catch(() => {});
+            continue;
+          }
+
+          // MESMO caminho do texto: aciona a Bia com o transcript.
+          await processarMensagem({
+            canalId,
+            conversaId: registro.conversaId,
+            jidRemoto,
+            textoCliente: transcricao.texto.trim(),
+            enviar: async (respostaTexto) => {
+              await sessionManager.enviarTextoBot({
+                canalId,
+                conversaId: registro.conversaId,
+                jid: jidRemoto,
+                texto: respostaTexto,
+              });
+            },
+            enviarDocumento: async (doc) => {
+              await sessionManager.enviarDocumentoBot({
+                canalId,
+                conversaId: registro.conversaId,
+                jid: jidRemoto,
+                documento: doc.documento,
+                fileName: doc.fileName,
+                mimetype: doc.mimetype,
+                caption: doc.caption,
+              });
+            },
+            alertarOperador: async (motivo) => {
+              await enviarAlertaHandoff({ canalId, jidRemoto, motivo });
+            },
           });
           continue;
         }
