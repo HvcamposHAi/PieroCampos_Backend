@@ -17,11 +17,14 @@ import {
 } from "@whiskeysockets/baileys";
 import { getEnv } from "../../config/env";
 import { processarFormularioRecebido, processarMensagem } from "../../services/bot.service";
+import { montarMensagemAlerta, type MotivoHandoff } from "../../services/handoff.service";
 import { logger } from "../../utils/logger";
 import { enfileirarCampoForcado } from "./conversas.dados";
 import {
   atualizarCanal,
+  buscarCanal,
   jidParaE164,
+  lerAlertaConfigCanal,
   registrarMensagemEntrada,
   registrarStatusEntrega,
 } from "./persistence";
@@ -166,6 +169,45 @@ function extrairDocumentoXlsx(m: WAMessage): { fileName: string } | null {
     mimetype.includes("ms-excel") ||
     fileName.toLowerCase().endsWith(".xlsx");
   return ehXlsx ? { fileName } : null;
+}
+
+/**
+ * Envia o alerta de handoff ao operador (best-effort). Lê a config da linha
+ * (fail-safe desligado), monta o texto e despacha via sessionManager para o
+ * número configurado OU o próprio número da linha. Nunca lança: erros são
+ * logados e engolidos — o handoff do cliente já aconteceu e não depende disto.
+ */
+async function enviarAlertaHandoff(input: {
+  canalId: string;
+  jidRemoto: string;
+  motivo: MotivoHandoff;
+}): Promise<void> {
+  try {
+    const cfg = await lerAlertaConfigCanal(input.canalId);
+    if (!cfg.ativo) return;
+    const canal = await buscarCanal(input.canalId);
+    const texto = montarMensagemAlerta({
+      motivo: input.motivo,
+      apelidoLinha: canal?.apelido ?? "WhatsApp",
+      telefoneCliente: jidParaE164(input.jidRemoto),
+    });
+    await sessionManager.enviarAlerta({
+      canalId: input.canalId,
+      numeroDestino: cfg.numero,
+      texto,
+    });
+    logger.info("[alerta] handoff enviado ao operador", {
+      canalId: input.canalId,
+      motivo: input.motivo,
+      destino: cfg.numero ? "configurado" : "propria_linha",
+    });
+  } catch (e) {
+    logger.warn("[alerta] falha ao enviar alerta de handoff", {
+      canalId: input.canalId,
+      motivo: input.motivo,
+      erro: (e as Error).message,
+    });
+  }
 }
 
 function classificarMotivo(reasonCode: number | undefined): {
@@ -388,6 +430,9 @@ export function registrarHandlers(
               mimetype: doc.mimetype,
               caption: doc.caption,
             });
+          },
+          alertarOperador: async (motivo) => {
+            await enviarAlertaHandoff({ canalId, jidRemoto, motivo });
           },
         });
       } catch (e) {

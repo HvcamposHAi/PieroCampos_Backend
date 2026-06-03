@@ -43,7 +43,8 @@ import {
   obterConfigEfetiva,
   type AgenteConfigRow,
 } from "../src/services/agente-config.service";
-import { buildBlocoPersonalizacao } from "../src/lib/system-prompt";
+import { buildBlocoPersonalizacao, buildSystemPromptDinamico } from "../src/lib/system-prompt";
+import { getRoteiroEfetivo } from "../src/lib/roteiros";
 import { chamarBia, _resetClaudeClient } from "../src/integrations/claude/claude.client";
 import { _resetEnvCache } from "../src/config/env";
 
@@ -58,6 +59,8 @@ function row(over: Partial<AgenteConfigRow> = {}): AgenteConfigRow {
     variar_texto: true,
     criatividade: "equilibrado",
     objetivo: "cotacao",
+    campos_excluidos: {},
+    perguntas_customizadas: {},
     atualizado_em: null,
     atualizado_por: null,
     ...over,
@@ -95,6 +98,20 @@ describe("mergeConfig + criatividade→temperature", () => {
 
   it("mapa de temperatura é o esperado", () => {
     expect(CRIATIVIDADE_TEMPERATURA).toEqual({ consistente: 0.3, equilibrado: 0.6, criativo: 0.9 });
+  });
+
+  it("campos da cotação: override substitui os mapas inteiros", () => {
+    const padrao = row({ campos_excluidos: { renovacao: ["bonus"] } });
+    const override = row({
+      canal_id: "c1",
+      campos_excluidos: { seguro_novo: ["telefone_contato"] },
+      perguntas_customizadas: {
+        seguro_novo: [{ id: "x", chave: "custom_x", pergunta: "Tem filhos?" }],
+      },
+    });
+    const m = mergeConfig(padrao, override);
+    expect(m.camposExcluidos).toEqual({ seguro_novo: ["telefone_contato"] });
+    expect(m.perguntasCustomizadas.seguro_novo?.[0]?.chave).toBe("custom_x");
   });
 });
 
@@ -190,5 +207,86 @@ describe("chamarBia: personalização e temperature", () => {
     expect(arg.system[1].text).toBe("BLOCO-PERSONA");
     expect(arg.system[1].cache_control).toEqual({ type: "ephemeral" });
     expect(arg.temperature).toBe(0.9);
+  });
+
+  it("chavesExtras: aceita chave custom_ no atualizar_dados; descarta fora dela", async () => {
+    mockCreate
+      .mockResolvedValueOnce({
+        stop_reason: "tool_use",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "atualizar_dados",
+            input: { campos: { custom_filhos: "2", custom_intruso: "x" } },
+          },
+        ],
+      })
+      .mockResolvedValueOnce(respFinal);
+    const r = await chamarBia({
+      systemBase: "b",
+      systemDinamico: "d",
+      historico: [{ role: "user", content: "tenho 2 filhos" }],
+      chavesExtras: ["custom_filhos"],
+    });
+    expect(r.camposExtraidos.custom_filhos).toBe("2");
+    expect(r.camposExtraidos.custom_intruso).toBeUndefined(); // fora da whitelist
+  });
+});
+
+describe("getRoteiroEfetivo", () => {
+  it("remove opcional excluído, mantém TODOS os obrigatórios e anexa custom", () => {
+    const base = getRoteiroEfetivo("seguro_novo")!;
+    const obrigatorios = base.campos.filter((c) => c.obrigatorio).map((c) => c.chave);
+
+    const efetivo = getRoteiroEfetivo(
+      "seguro_novo",
+      ["bonus"],
+      [{ id: "x", chave: "custom_x", pergunta: "Tem filhos?" }],
+    )!;
+    const chaves = efetivo.campos.map((c) => c.chave);
+
+    // obrigatórios preservados
+    for (const ch of obrigatorios) expect(chaves).toContain(ch);
+    // opcional excluído sumiu
+    expect(chaves).not.toContain("bonus");
+    // custom anexado como opcional
+    const custom = efetivo.campos.find((c) => c.chave === "custom_x");
+    expect(custom?.obrigatorio).toBe(false);
+    expect(custom?.rotulo).toBe("Tem filhos?");
+  });
+
+  it("não deixa excluir campo obrigatório", () => {
+    const efetivo = getRoteiroEfetivo("seguro_novo", ["cpf"])!;
+    expect(efetivo.campos.some((c) => c.chave === "cpf")).toBe(true);
+  });
+
+  it("categoria sem roteiro → null", () => {
+    expect(getRoteiroEfetivo("duvida")).toBeNull();
+  });
+});
+
+describe("buildSystemPromptDinamico: campos da cotação", () => {
+  const baseInput = {
+    contextoRAG: "",
+    dadosColetados: {},
+    pendentesObrigatorios: [],
+    proximoCampo: null,
+    modo: "ativo" as const,
+  };
+
+  it("omite o opcional excluído e inclui a pergunta custom", () => {
+    const prompt = buildSystemPromptDinamico({
+      ...baseInput,
+      categoria: "seguro_novo",
+      camposExcluidos: ["bonus"],
+      camposCustom: [{ id: "x", chave: "custom_x", pergunta: "Tem filhos?" }],
+    });
+    expect(prompt).not.toContain("bonus (");
+    expect(prompt).toContain("custom_x");
+    expect(prompt).toContain("Tem filhos?");
+    // obrigatório segue listado
+    expect(prompt).toContain("cpf");
   });
 });

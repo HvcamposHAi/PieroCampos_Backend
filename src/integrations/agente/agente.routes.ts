@@ -29,6 +29,13 @@ router.get("/config", exigirAdmin, async (_req: Request, res: Response) => {
   }
 });
 
+const perguntaCustomSchema = z.object({
+  id: z.string().max(80).optional(),
+  chave: z.string().regex(/^custom_[a-z0-9_]{1,40}$/, "chave custom inválida"),
+  pergunta: z.string().trim().min(1).max(200),
+  dica: z.string().trim().max(200).nullish(),
+});
+
 const putSchema = z.object({
   canal_id: z.string().uuid().nullable(),
   tom_voz: z.enum(["proximo_caloroso", "formal_profissional", "direto_objetivo", "entusiasta"]),
@@ -38,6 +45,9 @@ const putSchema = z.object({
   variar_texto: z.boolean(),
   criatividade: z.enum(["consistente", "equilibrado", "criativo"]),
   objetivo: z.enum(["cotacao", "atendimento", "aquecer", "venda"]),
+  // Mapas por categoria; o serviço saneia (descarta obrigatórios / chaves inválidas).
+  campos_excluidos: z.record(z.string(), z.array(z.string())).optional(),
+  perguntas_customizadas: z.record(z.string(), z.array(perguntaCustomSchema)).optional(),
   ativo: z.boolean().optional(),
 });
 
@@ -57,6 +67,8 @@ router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
       variar_texto: parsed.data.variar_texto,
       criatividade: parsed.data.criatividade,
       objetivo: parsed.data.objetivo,
+      campos_excluidos: parsed.data.campos_excluidos,
+      perguntas_customizadas: parsed.data.perguntas_customizadas,
       ativo: parsed.data.ativo,
       porEmail: req.user?.email ?? null,
     });

@@ -101,6 +101,8 @@ function configRow(over: Record<string, unknown>) {
     variar_texto: true,
     criatividade: "equilibrado",
     objetivo: "cotacao",
+    campos_excluidos: {},
+    perguntas_customizadas: {},
     atualizado_em: null,
     atualizado_por: null,
     ...over,
@@ -172,5 +174,35 @@ describe("E2E — comportamento da Bia por linha", () => {
     const arg = h.chamarBia.mock.calls[0]![0];
     expect(arg.temperature).toBeUndefined();
     expect(arg.systemPersonalizacao).toBeUndefined();
+  });
+
+  it("campos da cotação: omite opcional excluído, inclui custom e passa chavesExtras", async () => {
+    h.conversa = {
+      id: "conv1",
+      cliente_id: "cli1",
+      canal_id: "canalX",
+      estado: "bot_ativo",
+      categoria: "seguro_novo",
+      dados_coletados: {},
+      // modalidade já escolhida → passa o gate e a Bia lista os campos do roteiro.
+      dados_bot: { modalidade: "um_a_um" },
+    };
+    h.configRows = [
+      configRow({
+        canal_id: "canalX",
+        campos_excluidos: { seguro_novo: ["bonus"] },
+        perguntas_customizadas: {
+          seguro_novo: [{ id: "x", chave: "custom_filhos", pergunta: "Tem filhos?" }],
+        },
+      }),
+    ];
+
+    await mandar();
+
+    const arg = h.chamarBia.mock.calls[0]![0];
+    expect(arg.systemDinamico).not.toContain("bonus (");
+    expect(arg.systemDinamico).toContain("Tem filhos?");
+    expect(arg.systemDinamico).toContain("cpf"); // obrigatório intacto
+    expect(arg.chavesExtras).toEqual(["custom_filhos"]);
   });
 });

@@ -17,6 +17,8 @@ import { registrarHandlers } from "./eventHandlers";
 import {
   atualizarCanal,
   buscarCanal,
+  e164ParaJid,
+  jidParaE164,
   lerCanaisParaBootstrap,
   registrarMensagemSaida,
   registrarMensagemSaidaBot,
@@ -282,6 +284,33 @@ class SessionManager {
     const achado = resultado?.[0];
     if (!achado?.exists || !achado.jid) throw new Error("numero_nao_whatsapp");
     return achado.jid;
+  }
+
+  /**
+   * Envia um ALERTA operacional (handoff) ao operador. NÃO persiste em
+   * `mensagens` — é um aviso fora do thread do cliente, então não polui a
+   * conversa nem entra em relatórios. Destino: o `numeroDestino` configurado OU,
+   * quando ausente, o PRÓPRIO número conectado da linha (`sock.user.id`) — a Bia
+   * "manda mensagem pra si mesma". O eco `fromMe` é ignorado no eventHandlers,
+   * então não há loop de reprocessamento.
+   */
+  async enviarAlerta(input: {
+    canalId: string;
+    numeroDestino: string | null;
+    texto: string;
+  }): Promise<void> {
+    const entry = await this.garantirConectado(input.canalId);
+    let jid: string | null;
+    if (input.numeroDestino) {
+      jid = await this.resolverJid(input.canalId, input.numeroDestino);
+    } else {
+      // Próprio número da linha. `sock.user.id` pode vir com device tag
+      // (ex.: "5541...:42@s.whatsapp.net"); normalizamos para o JID de usuário.
+      const proprioE164 = entry.sock.user?.id ? jidParaE164(entry.sock.user.id) : null;
+      jid = proprioE164 ? e164ParaJid(proprioE164) : null;
+    }
+    if (!jid) throw new Error("alerta_sem_destino");
+    await entry.sock.sendMessage(jid, { text: input.texto });
   }
 
   /**

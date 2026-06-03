@@ -35,9 +35,11 @@ import {
 import { obterConfigEfetiva } from "./agente-config.service";
 import { logger } from "../utils/logger";
 import {
+  classificarMotivoHandoff,
   detectarGatilhoHandoff,
   executarHandoff,
   MENSAGEM_HANDOFF,
+  type MotivoHandoff,
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
 import { dispararCotacaoSegfy, mapearParaCotacao } from "./segfy-cotacao.service";
@@ -539,6 +541,34 @@ export interface ProcessarMensagemInput {
   enviar: (texto: string) => Promise<void>;
   /** Envio de documento (opcional; ausente em rotas/testes só-texto). */
   enviarDocumento?: EnviarDocumento;
+  /**
+   * Dispara o alerta de handoff ao operador (best-effort, fora do thread do
+   * cliente). Opcional: ausente em rotas/testes; quando ausente, nada acontece.
+   * Nunca deve lançar de forma a interromper o handoff.
+   */
+  alertarOperador?: (motivo: MotivoHandoff) => Promise<void>;
+}
+
+/**
+ * Dispara o alerta de handoff ao operador sem nunca propagar erro. Isolado do
+ * `executarHandoff` de propósito: o alerta é um efeito colateral opcional e a
+ * transferência do cliente jamais pode falhar por causa dele.
+ */
+async function dispararAlerta(
+  input: ProcessarMensagemInput,
+  motivo: MotivoHandoff,
+  conversaId: string,
+): Promise<void> {
+  if (!input.alertarOperador) return;
+  try {
+    await input.alertarOperador(motivo);
+  } catch (e) {
+    logger.warn("[bot] alerta de handoff falhou (handoff preservado)", {
+      conversaId,
+      motivo,
+      erro: (e as Error).message,
+    });
+  }
 }
 
 export async function processarMensagem(input: ProcessarMensagemInput): Promise<void> {
@@ -604,6 +634,9 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
         erro: (e as Error).message,
       });
     }
+    // Alerta ao operador (best-effort, SEMPRE o último passo): falha aqui não
+    // pode desfazer nem interromper o handoff já executado acima.
+    await dispararAlerta(input, classificarMotivoHandoff(gatilho.gatilho ?? ""), conversa.id);
     return;
   }
 
@@ -623,6 +656,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
         "Olá! Aqui é a Bia 😊 Vou te direcionar direto para seu atendente. Já avisei a equipe!",
       );
       await executarHandoff({ conversaId: conversa.id, motivo: "cliente_vip" });
+      await dispararAlerta(input, "vip", conversa.id);
       return;
     }
   } catch (e) {
@@ -651,6 +685,23 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       dadosColetados: conversa.dados_coletados,
     });
 
+  // 3.1) Comportamento configurável por linha (Admin > Bia): tom/persona/saudação/
+  //       exemplos/temperatura + campos da cotação (quais perguntar + customizadas).
+  //       Degrada com segurança: erro/ausência → null → a Bia roda como antes.
+  let configAgente = null;
+  try {
+    configAgente = await obterConfigEfetiva(conversa.canal_id);
+  } catch (e) {
+    logger.warn("[bot] config do agente falhou; seguindo sem personalização", {
+      conversaId: conversa.id,
+      erro: (e as Error).message,
+    });
+  }
+  // Campos da cotação resolvidos para ESTA categoria (vazio em duvida/outro).
+  const catKey = conversa.categoria ?? "";
+  const camposExcluidos = configAgente?.camposExcluidos?.[catKey] ?? [];
+  const camposCustom = configAgente?.perguntasCustomizadas?.[catKey] ?? [];
+
   const systemDinamico = buildSystemPromptDinamico({
     categoria: conversa.categoria,
     contextoRAG: contextoTexto,
@@ -662,23 +713,12 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     contextoHolding: modo === "holding" ? contextoHoldingPorEstado(conversa.estado) : undefined,
     oferecerModalidade,
     pedirConfirmacaoCotacao: ehConfirmacao,
+    camposExcluidos,
+    camposCustom,
   });
 
   // 4) Histórico (já inclui a mensagem que acabou de chegar, pois persistimos antes).
   const historico = await carregarHistorico(conversa.id);
-
-  // 4.1) Comportamento configurável por linha (Admin > Bia): tom/persona/saudação/
-  //      exemplos + temperatura. Degrada com segurança: erro/ausência → null → a
-  //      Bia roda exatamente como antes (sem bloco de personalização nem temperature).
-  let configAgente = null;
-  try {
-    configAgente = await obterConfigEfetiva(conversa.canal_id);
-  } catch (e) {
-    logger.warn("[bot] config do agente falhou; seguindo sem personalização", {
-      conversaId: conversa.id,
-      erro: (e as Error).message,
-    });
-  }
 
   // 5) Chama Claude.
   let resposta;
@@ -690,6 +730,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       permitirConfirmacao: ehConfirmacao,
       systemPersonalizacao: configAgente ? buildBlocoPersonalizacao(configAgente) : undefined,
       temperature: configAgente?.temperature,
+      chavesExtras: camposCustom.map((c) => c.chave),
     });
   } catch (e) {
     logger.error("[bot] Claude falhou", {

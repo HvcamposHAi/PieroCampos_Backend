@@ -61,6 +61,11 @@ export interface ChamarBiaInput {
    * preserva o default da Anthropic (comportamento atual, sem temperature).
    */
   temperature?: number;
+  /**
+   * Chaves extras aceitas no tool atualizar_dados além das do roteiro — usado
+   * pelas perguntas customizadas (custom_*) da linha. Ausente → só CHAVES_VALIDAS.
+   */
+  chavesExtras?: string[];
 }
 
 const TOOL_ATUALIZAR_DADOS = {
@@ -146,10 +151,13 @@ const TOOL_CONSENTIMENTO_LGPD = {
   },
 };
 
-function sanitizarCampos(brutos: Record<string, unknown>): Record<string, unknown> {
+function sanitizarCampos(
+  brutos: Record<string, unknown>,
+  whitelist: ReadonlySet<string>,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(brutos)) {
-    if (!CHAVES_VALIDAS.has(k)) {
+    if (!whitelist.has(k)) {
       logger.warn("[claude] chave fora do roteiro descartada", { chave: k });
       continue;
     }
@@ -197,6 +205,12 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     ...(input.permitirConfirmacao ? [TOOL_CONFIRMAR_COTACAO] : []),
   ];
 
+  // Whitelist do tool atualizar_dados: chaves do roteiro + extras da linha (custom_*).
+  const whitelist: ReadonlySet<string> =
+    input.chavesExtras && input.chavesExtras.length > 0
+      ? new Set([...CHAVES_VALIDAS, ...input.chavesExtras])
+      : CHAVES_VALIDAS;
+
   let textoAcumulado = "";
   const camposExtraidos: Record<string, unknown> = {};
   let modalidadeEscolhida: Modalidade | null = null;
@@ -237,7 +251,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
       } else if (block.type === "tool_use" && block.name === "atualizar_dados") {
         const args = block.input as { campos?: Record<string, unknown> } | undefined;
         if (args?.campos && typeof args.campos === "object") {
-          const sanitizados = sanitizarCampos(args.campos);
+          const sanitizados = sanitizarCampos(args.campos, whitelist);
           for (const [k, v] of Object.entries(sanitizados)) camposExtraidos[k] = v;
         }
       } else if (block.type === "tool_use" && block.name === "escolher_modalidade") {

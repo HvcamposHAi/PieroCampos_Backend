@@ -61,6 +61,70 @@ function normalizar(s: string): string {
     .trim();
 }
 
+/** Famílias de motivo do handoff, para o alerta legível ao operador. */
+export type MotivoHandoff = "pedido_humano" | "insatisfacao" | "urgencia" | "vip";
+
+const GATILHOS_INSATISFACAO: ReadonlyArray<string> = [
+  "absurdo",
+  "ridiculo",
+  "pessimo",
+  "horrivel",
+  "reclamacao",
+  "reclamar",
+  "cancelar",
+  "cancelamento",
+];
+
+const GATILHOS_URGENCIA: ReadonlyArray<string> = [
+  "sinistro",
+  "acidente",
+  "bati o carro",
+  "bati meu carro",
+  "roubaram",
+  "roubo",
+  "furto",
+];
+
+/**
+ * Classifica a palavra-chave de gatilho na família de motivo correspondente.
+ * Default = "pedido_humano" (os demais gatilhos são pedidos explícitos de humano).
+ * Recebe a palavra-chave já normalizada que `detectarGatilhoHandoff` retorna.
+ */
+export function classificarMotivoHandoff(gatilho: string): MotivoHandoff {
+  const g = normalizar(gatilho);
+  if (GATILHOS_INSATISFACAO.some((k) => g.includes(k))) return "insatisfacao";
+  if (GATILHOS_URGENCIA.some((k) => g.includes(k))) return "urgencia";
+  return "pedido_humano";
+}
+
+const LABEL_MOTIVO: Record<MotivoHandoff, string> = {
+  pedido_humano: "Cliente pediu para falar com um humano",
+  insatisfacao: "Possível insatisfação / rispidez do cliente",
+  urgencia: "Urgência (sinistro/acidente/roubo)",
+  vip: "Cliente VIP",
+};
+
+export interface MontarMensagemAlertaInput {
+  motivo: MotivoHandoff;
+  apelidoLinha: string;
+  telefoneCliente: string | null;
+  nomeCliente?: string | null;
+}
+
+/**
+ * Texto fixo do alerta que a Bia envia ao operador (não vai a Claude). Identifica
+ * a linha, o cliente (nome ou telefone) e o motivo.
+ */
+export function montarMensagemAlerta(input: MontarMensagemAlertaInput): string {
+  const cliente = input.nomeCliente?.trim() || input.telefoneCliente || "cliente (sem identificação)";
+  return [
+    `🔔 Atendimento precisa de você — linha ${input.apelidoLinha}`,
+    `Cliente: ${cliente}`,
+    `Motivo: ${LABEL_MOTIVO[input.motivo]}`,
+    "A Bia pausou e a conversa está aguardando um corretor.",
+  ].join("\n");
+}
+
 export function detectarGatilhoHandoff(texto: string): { detectado: boolean; gatilho?: string } {
   const t = normalizar(texto);
   // Casos de uma palavra só: "humano", "humano." etc.

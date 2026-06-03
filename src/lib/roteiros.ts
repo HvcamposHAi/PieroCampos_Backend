@@ -143,6 +143,62 @@ export function getRoteiro(categoria: CategoriaConversa | null | undefined): Rot
   return ROTEIROS[categoria] ?? null;
 }
 
+/** Categorias que têm roteiro estruturado (as configuráveis na tela). */
+export const CATEGORIAS_COM_ROTEIRO: CategoriaConversa[] = [
+  "renovacao",
+  "seguro_novo",
+  "endosso",
+  "nao_renovado",
+];
+
+export interface CatalogoCategoria {
+  id: CategoriaConversa;
+  titulo: string;
+  campos: CampoRoteiro[];
+}
+
+/**
+ * Catálogo dos campos por categoria, para a tela do Admin escolher o que a Bia
+ * pergunta. Fonte ÚNICA — o front consome daqui (não duplica em bot-scripts).
+ * Inclui PERGUNTAS_SEGFY_AUTO (já embutidas em cada roteiro auto).
+ */
+export function getCatalogoCampos(): CatalogoCategoria[] {
+  return CATEGORIAS_COM_ROTEIRO.map((id) => {
+    const r = ROTEIROS[id]!;
+    return { id, titulo: r.titulo, campos: r.campos };
+  });
+}
+
+/** Campo extra (pergunta customizada do admin). A `chave` deve começar com `custom_`. */
+export interface PerguntaCustom {
+  id: string;
+  chave: string;
+  pergunta: string;
+  dica?: string | null;
+}
+
+/**
+ * Roteiro EFETIVO de uma linha: parte do roteiro da categoria, REMOVE os campos
+ * OPCIONAIS cuja chave está em `excluidos` (obrigatórios nunca saem — Segfy/LGPD)
+ * e ANEXA as perguntas customizadas como campos opcionais. Retorna null se a
+ * categoria não tem roteiro.
+ */
+export function getRoteiroEfetivo(
+  categoria: CategoriaConversa | null | undefined,
+  excluidos: readonly string[] = [],
+  custom: readonly PerguntaCustom[] = [],
+): Roteiro | null {
+  const base = getRoteiro(categoria);
+  if (!base) return null;
+  const fora = new Set(excluidos);
+  const campos = base.campos.filter((c) => c.obrigatorio || !fora.has(c.chave));
+  for (const q of custom) {
+    if (!q.chave) continue;
+    campos.push({ chave: q.chave, rotulo: q.pergunta, obrigatorio: false, dica: q.dica ?? undefined });
+  }
+  return { ...base, campos };
+}
+
 export function calcularProgresso(
   categoria: CategoriaConversa | null | undefined,
   dados: Record<string, unknown>,

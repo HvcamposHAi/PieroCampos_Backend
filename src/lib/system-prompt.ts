@@ -8,8 +8,8 @@
  *
  * O claude.client passa as duas partes e marca a BASE com cache_control.
  */
-import type { CategoriaConversa, CampoRoteiro } from "./roteiros";
-import { getRoteiro } from "./roteiros";
+import type { CategoriaConversa, CampoRoteiro, PerguntaCustom } from "./roteiros";
+import { getRoteiroEfetivo } from "./roteiros";
 import type { ConfigEfetiva, Objetivo, TomVoz } from "../services/agente-config.service";
 
 export const SYSTEM_PROMPT_BASE = `Você é a Bia, assistente virtual da Corretora de Seguros Piero de Campos, de Curitiba-PR. A Piero de Campos cuida dos seguros das famílias curitibanas há mais de 20 anos com proximidade e atenção.
@@ -98,6 +98,13 @@ export interface BuildSystemPromptInput {
    * estado = aguardando_confirmacao_cotacao.
    */
   pedirConfirmacaoCotacao?: boolean;
+  /**
+   * Chaves de campos OPCIONAIS que a linha desligou (Admin > Bia). Filtrados da
+   * lista de campos a perguntar. Obrigatórios nunca saem. Default = [].
+   */
+  camposExcluidos?: string[];
+  /** Perguntas customizadas da linha (anexadas como campos opcionais). Default = []. */
+  camposCustom?: PerguntaCustom[];
 }
 
 const CONTEXTO_HOLDING_PADRAO = "MODO DE ATENDIMENTO: a equipe já está cuidando deste atendimento.";
@@ -117,7 +124,7 @@ const LINHA_ABERTURA_ATIVO =
  * claude.client. Esta parte muda a cada turno e por isso NÃO é cacheada.
  */
 export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string {
-  const roteiro = getRoteiro(input.categoria);
+  const roteiro = getRoteiroEfetivo(input.categoria, input.camposExcluidos, input.camposCustom);
   const modo: ModoBia = input.modo ?? "ativo";
   const partes: string[] = [];
 

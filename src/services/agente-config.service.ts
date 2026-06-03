@@ -16,7 +16,24 @@
  * bloco de personalização nem temperatura (comportamento idêntico ao atual).
  */
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
+import {
+  CATEGORIAS_COM_ROTEIRO,
+  getCatalogoCampos,
+  getRoteiro,
+  type CatalogoCategoria,
+  type PerguntaCustom,
+} from "../lib/roteiros";
 import { logger } from "../utils/logger";
+
+/** Mapa por categoria → chaves de campos opcionais desligados. */
+export type CamposExcluidos = Record<string, string[]>;
+/** Mapa por categoria → perguntas customizadas da linha. */
+export type PerguntasCustomizadas = Record<string, PerguntaCustom[]>;
+/** Forma frouxa aceita na ENTRADA (id é opcional; o serviço normaliza). */
+export type PerguntasCustomizadasInput = Record<
+  string,
+  Array<{ id?: string; chave?: string; pergunta?: string; dica?: string | null }>
+>;
 
 export type TomVoz =
   | "proximo_caloroso"
@@ -65,6 +82,8 @@ export interface AgenteConfigRow {
   variar_texto: boolean;
   criatividade: Criatividade;
   objetivo: Objetivo;
+  campos_excluidos: CamposExcluidos;
+  perguntas_customizadas: PerguntasCustomizadas;
   atualizado_em: string | null;
   atualizado_por: string | null;
 }
@@ -78,16 +97,25 @@ export interface ConfigEfetiva {
   variarTexto: boolean;
   criatividade: Criatividade;
   objetivo: Objetivo;
+  camposExcluidos: CamposExcluidos;
+  perguntasCustomizadas: PerguntasCustomizadas;
   temperature: number;
 }
 
 export interface AgenteConfigAdmin {
   padrao: AgenteConfigRow | null;
   linhas: Array<{ canal_id: string; apelido: string; config: AgenteConfigRow | null }>;
+  /** Catálogo de campos por categoria (fonte: roteiros.ts) para a tela. */
+  catalogo: CatalogoCategoria[];
 }
 
 const COLUNAS =
-  "canal_id, ativo, tom_voz, persona, saudacao, exemplos, variar_texto, criatividade, objetivo, atualizado_em, atualizado_por";
+  "canal_id, ativo, tom_voz, persona, saudacao, exemplos, variar_texto, criatividade, objetivo, campos_excluidos, perguntas_customizadas, atualizado_em, atualizado_por";
+
+/** Normaliza um jsonb que deveria ser objeto { categoria: [...] }; senão {}. */
+function comoMapa<T>(v: unknown): Record<string, T> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, T>) : {};
+}
 
 /** Texto vazio/só-espaços vira null (para não atropelar o fallback do padrão). */
 function nuloSeVazio(v: string | null | undefined): string | null {
@@ -111,6 +139,9 @@ export function mergeConfig(
   const criatividade = override?.criatividade ?? padrao?.criatividade ?? "equilibrado";
   const variarTexto = override?.variar_texto ?? padrao?.variar_texto ?? true;
   const objetivo = override?.objetivo ?? padrao?.objetivo ?? "cotacao";
+  // Campos da cotação: o override (quando existe) substitui o objeto inteiro — a
+  // UI pré-semeia o override a partir do padrão, então é coerente.
+  const fonteCampos = override ?? padrao;
   return {
     tomVoz,
     persona: preferir(override?.persona, padrao?.persona),
@@ -119,6 +150,8 @@ export function mergeConfig(
     variarTexto,
     criatividade,
     objetivo,
+    camposExcluidos: comoMapa<string[]>(fonteCampos?.campos_excluidos),
+    perguntasCustomizadas: comoMapa<PerguntaCustom[]>(fonteCampos?.perguntas_customizadas),
     temperature: CRIATIVIDADE_TEMPERATURA[criatividade],
   };
 }
@@ -171,7 +204,53 @@ export async function obterConfigAdmin(): Promise<AgenteConfigAdmin> {
     apelido: k.apelido,
     config: configs.find((c) => c.canal_id === k.id) ?? null,
   }));
-  return { padrao, linhas };
+  return { padrao, linhas, catalogo: getCatalogoCampos() };
+}
+
+/**
+ * Saneia os mapas por categoria antes de gravar:
+ *  - campos_excluidos: mantém só categorias com roteiro e só chaves de campos
+ *    OPCIONAIS conhecidos (obrigatórios NUNCA podem ser desligados — Segfy/LGPD).
+ *  - perguntas_customizadas: força prefixo custom_, dedup por chave, limites.
+ */
+function sanearCamposExcluidos(bruto: CamposExcluidos | undefined): CamposExcluidos {
+  const out: CamposExcluidos = {};
+  for (const cat of CATEGORIAS_COM_ROTEIRO) {
+    const roteiro = getRoteiro(cat);
+    if (!roteiro) continue;
+    const opcionais = new Set(roteiro.campos.filter((c) => !c.obrigatorio).map((c) => c.chave));
+    const pedidos = Array.isArray(bruto?.[cat]) ? bruto![cat] : [];
+    const validos = [...new Set(pedidos)].filter((ch) => opcionais.has(ch));
+    if (validos.length > 0) out[cat] = validos;
+  }
+  return out;
+}
+
+const RE_CHAVE_CUSTOM = /^custom_[a-z0-9_]{1,40}$/;
+const MAX_CUSTOM_POR_CATEGORIA = 10;
+
+function sanearPerguntasCustom(bruto: PerguntasCustomizadasInput | undefined): PerguntasCustomizadas {
+  const out: PerguntasCustomizadas = {};
+  for (const cat of CATEGORIAS_COM_ROTEIRO) {
+    const lista = Array.isArray(bruto?.[cat]) ? bruto![cat] : [];
+    const vistos = new Set<string>();
+    const limpas: PerguntaCustom[] = [];
+    for (const q of lista) {
+      const pergunta = (q?.pergunta ?? "").trim();
+      const chave = (q?.chave ?? "").trim();
+      if (!pergunta || !RE_CHAVE_CUSTOM.test(chave) || vistos.has(chave)) continue;
+      vistos.add(chave);
+      limpas.push({
+        id: q.id || chave,
+        chave,
+        pergunta: pergunta.slice(0, 200),
+        dica: q.dica ? String(q.dica).slice(0, 200) : null,
+      });
+      if (limpas.length >= MAX_CUSTOM_POR_CATEGORIA) break;
+    }
+    if (limpas.length > 0) out[cat] = limpas;
+  }
+  return out;
 }
 
 export interface SalvarConfigInput {
@@ -183,6 +262,8 @@ export interface SalvarConfigInput {
   variar_texto: boolean;
   criatividade: Criatividade;
   objetivo: Objetivo;
+  campos_excluidos?: CamposExcluidos;
+  perguntas_customizadas?: PerguntasCustomizadasInput;
   ativo?: boolean;
   porEmail?: string | null;
 }
@@ -217,6 +298,8 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
     variar_texto: input.variar_texto,
     criatividade: input.criatividade,
     objetivo: input.objetivo,
+    campos_excluidos: sanearCamposExcluidos(input.campos_excluidos),
+    perguntas_customizadas: sanearPerguntasCustom(input.perguntas_customizadas),
     atualizado_em: new Date().toISOString(),
     atualizado_por: input.porEmail ?? null,
   };

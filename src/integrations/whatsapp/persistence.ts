@@ -77,12 +77,51 @@ export async function buscarCanal(canalId: string): Promise<CanalRow | null> {
   const { data, error } = await sb
     .from("canais")
     .select(
-      "id, apelido, ativo, bot_ativo, provider, status, numero_e164, numero_twilio, display_name, qr_code, qr_expires_at, last_connected_at, last_disconnect_reason",
+      "id, apelido, ativo, bot_ativo, alerta_handoff_ativo, alerta_numero_e164, provider, status, numero_e164, numero_twilio, display_name, qr_code, qr_expires_at, last_connected_at, last_disconnect_reason",
     )
     .eq("id", canalId)
     .maybeSingle();
   if (error) throw error;
   return (data as CanalRow | null) ?? null;
+}
+
+/**
+ * Lê a config do alerta de handoff da linha. FAIL-SAFE = DESLIGADO: qualquer
+ * erro de leitura ou coluna ausente devolve `{ ativo: false }` — ao contrário de
+ * `lerBotAtivoCanal` (fail-open), aqui o alerta é um efeito colateral opcional e
+ * NUNCA deve disparar em dúvida nem bloquear o handoff. `numero` null/'' significa
+ * "enviar para o próprio número da linha" (resolvido no sessionManager).
+ */
+export async function lerAlertaConfigCanal(
+  canalId: string,
+): Promise<{ ativo: boolean; numero: string | null }> {
+  const desligado = { ativo: false, numero: null };
+  if (!canalId) return desligado;
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("canais")
+      .select("alerta_handoff_ativo, alerta_numero_e164")
+      .eq("id", canalId)
+      .maybeSingle();
+    if (error) {
+      logger.warn("[wa.persistence] lerAlertaConfigCanal falhou; fail-safe desligado", {
+        canalId,
+        erro: error.message,
+      });
+      return desligado;
+    }
+    const row = data as { alerta_handoff_ativo?: boolean | null; alerta_numero_e164?: string | null } | null;
+    if (!row || row.alerta_handoff_ativo !== true) return desligado;
+    const numero = (row.alerta_numero_e164 ?? "").trim();
+    return { ativo: true, numero: numero || null };
+  } catch (e) {
+    logger.warn("[wa.persistence] lerAlertaConfigCanal exceção; fail-safe desligado", {
+      canalId,
+      erro: (e as Error).message,
+    });
+    return desligado;
+  }
 }
 
 /**

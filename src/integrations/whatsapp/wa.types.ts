@@ -22,6 +22,10 @@ export interface CanalRow {
   ativo: boolean;
   /** Master switch da Bia nesta linha. false = silêncio total (só humanos). */
   bot_ativo: boolean;
+  /** Liga/desliga o alerta de handoff no WhatsApp do operador (por linha). */
+  alerta_handoff_ativo: boolean;
+  /** Destino do alerta (E.164 só dígitos). null/'' = o próprio número da linha. */
+  alerta_numero_e164: string | null;
   provider: string;
   status: StatusCanal;
   numero_e164: string | null;
@@ -36,6 +40,8 @@ export interface CanalRow {
 export interface CanalUpdate {
   status?: StatusCanal;
   bot_ativo?: boolean;
+  alerta_handoff_ativo?: boolean;
+  alerta_numero_e164?: string | null;
   qr_code?: string | null;
   qr_expires_at?: string | null;
   numero_e164?: string | null;

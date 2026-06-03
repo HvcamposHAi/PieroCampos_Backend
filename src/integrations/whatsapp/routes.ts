@@ -176,6 +176,56 @@ router.patch("/canais/:id/bot-ativo", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Configura o ALERTA de handoff desta linha (Admin > Linhas WhatsApp).
+ *   - `ativo`: liga/desliga o aviso no WhatsApp do operador.
+ *   - `numero`: destino (só dígitos, E.164 sem '+'); ""/null = o próprio número
+ *     da linha (a Bia avisa a si mesma).
+ *
+ * Autz: SOMENTE admin (config de roteamento sensível — não relaxar p/ operador
+ * como o bot-ativo). Cai sob `auditarMutacoes("whatsapp")` montado no app.ts.
+ */
+const alertaSchema = z.object({
+  ativo: z.boolean(),
+  numero: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => (v ?? "").replace(/\D/g, ""))
+    .refine((v) => v === "" || /^[0-9]{10,15}$/.test(v), {
+      message: "numero_invalido",
+    }),
+});
+
+router.patch("/canais/:id/alerta", exigirAdmin, async (req: Request, res: Response) => {
+  const canalId = req.params.id ?? "";
+  if (!canalId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = alertaSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido" });
+    return;
+  }
+  const numero = parsed.data.numero === "" ? null : parsed.data.numero;
+  try {
+    const canal = await buscarCanal(canalId);
+    if (!canal) {
+      res.status(404).json({ erro: "canal_nao_encontrado" });
+      return;
+    }
+    await atualizarCanal(canalId, {
+      alerta_handoff_ativo: parsed.data.ativo,
+      alerta_numero_e164: numero,
+    });
+    res.json({ ok: true, alerta_handoff_ativo: parsed.data.ativo, alerta_numero_e164: numero });
+  } catch (e) {
+    logger.error("[wa.routes] alerta falhou", { canalId, erro: (e as Error).message });
+    res.status(500).json({ erro: "alerta_failed", mensagem: (e as Error).message });
+  }
+});
+
 router.get("/canais/:id/status", async (req: Request, res: Response) => {
   const canalId = req.params.id ?? "";
   if (!canalId) {
