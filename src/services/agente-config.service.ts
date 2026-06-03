@@ -315,6 +315,67 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
   logger.info("[agente.cfg] config salva", { canal_id: input.canalId, por: input.porEmail });
 }
 
+/** Lê a row CRUA (override do canal, ou padrão quando canalId=null). Usada para
+ *  PRESERVAR campos avançados num save parcial (app móvel do operador). */
+async function lerLinhaRaw(canalId: string | null): Promise<AgenteConfigRow | null> {
+  const sb = getSupabaseAdmin();
+  let q = sb.from("canal_agente_config").select(COLUNAS);
+  q = canalId ? q.eq("canal_id", canalId) : q.is("canal_id", null);
+  const { data, error } = await q.maybeSingle();
+  if (error) throw new Error(`lerLinhaRaw: ${error.message}`);
+  return (data as AgenteConfigRow | null) ?? null;
+}
+
+/** Campos ESSENCIAIS editáveis no app móvel (sem campos da cotação / mensagens). */
+export interface EssencialAgente {
+  objetivo: Objetivo;
+  tom_voz: TomVoz;
+  criatividade: Criatividade;
+  persona: string | null;
+  saudacao: string | null;
+}
+
+/** Config essencial EFETIVA (padrão+override) da linha — para a tela do operador. */
+export async function obterEssencialLinha(canalId: string): Promise<EssencialAgente> {
+  const efetiva = await obterConfigEfetiva(canalId);
+  return {
+    objetivo: efetiva?.objetivo ?? "cotacao",
+    tom_voz: efetiva?.tomVoz ?? "proximo_caloroso",
+    criatividade: efetiva?.criatividade ?? "equilibrado",
+    persona: efetiva?.persona ?? null,
+    saudacao: efetiva?.saudacao ?? null,
+  };
+}
+
+/**
+ * Salva SÓ os campos essenciais do override de UMA linha (app móvel do operador),
+ * PRESERVANDO o que o admin configurou no portal: exemplos, variar_texto,
+ * campos_excluidos e perguntas_customizadas. Base = override existente da linha;
+ * se a linha ainda não tinha override, herda do PADRÃO (canal_id null). Assim o
+ * operador nunca apaga a configuração avançada do admin.
+ */
+export async function salvarConfigEssencialLinha(input: {
+  canalId: string;
+  patch: EssencialAgente;
+  porEmail?: string | null;
+}): Promise<void> {
+  const base = (await lerLinhaRaw(input.canalId)) ?? (await lerLinhaRaw(null));
+  await salvarConfig({
+    canalId: input.canalId,
+    objetivo: input.patch.objetivo,
+    tom_voz: input.patch.tom_voz,
+    criatividade: input.patch.criatividade,
+    persona: input.patch.persona,
+    saudacao: input.patch.saudacao,
+    // PRESERVA os avançados (vêm do override existente ou do padrão):
+    exemplos: base?.exemplos ?? null,
+    variar_texto: base?.variar_texto ?? true,
+    campos_excluidos: base?.campos_excluidos,
+    perguntas_customizadas: base?.perguntas_customizadas,
+    porEmail: input.porEmail,
+  });
+}
+
 /** Remove o override de um canal → a linha volta a herdar o padrão. */
 export async function removerOverride(canalId: string): Promise<void> {
   const sb = getSupabaseAdmin();

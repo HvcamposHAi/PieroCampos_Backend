@@ -9,12 +9,14 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin } from "../../middlewares/authSupabase";
+import { exigirAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import {
   obterConfigAdmin,
+  obterEssencialLinha,
   removerOverride,
   salvarConfig,
+  salvarConfigEssencialLinha,
 } from "../../services/agente-config.service";
 
 const router = Router();
@@ -93,6 +95,74 @@ router.delete("/config/:canalId", exigirAdmin, async (req: Request, res: Respons
   } catch (e) {
     logger.error("[agente.routes] remover override falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "delete_failed", mensagem: (e as Error).message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SELF-SERVICE do OPERADOR (app móvel /bot) — só os campos ESSENCIAIS da SUA
+// linha (operadores.canal_padrao_id). NÃO é admin: usa carregarOperadorAtivo.
+// Nunca toca o padrão nem outra linha; o save preserva os campos avançados do
+// admin (campos da cotação / mensagens) via salvarConfigEssencialLinha.
+// ---------------------------------------------------------------------------
+const meSchema = z.object({
+  objetivo: z.enum(["cotacao", "atendimento", "aquecer", "venda"]),
+  tom_voz: z.enum(["proximo_caloroso", "formal_profissional", "direto_objetivo", "entusiasta"]),
+  criatividade: z.enum(["consistente", "equilibrado", "criativo"]),
+  persona: z.string().trim().max(4000).nullish(),
+  saudacao: z.string().trim().max(500).nullish(),
+});
+
+router.get("/config/me", async (req: Request, res: Response) => {
+  const op = await carregarOperadorAtivo(req);
+  if (!op) {
+    res.status(403).json({ erro: "operador_required" });
+    return;
+  }
+  if (!op.canal_padrao_id) {
+    res.status(409).json({ erro: "sem_linha" });
+    return;
+  }
+  try {
+    const essencial = await obterEssencialLinha(op.canal_padrao_id);
+    res.json({ ok: true, ...essencial });
+  } catch (e) {
+    logger.error("[agente.routes] me.get falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
+  }
+});
+
+router.put("/config/me", async (req: Request, res: Response) => {
+  const op = await carregarOperadorAtivo(req);
+  if (!op) {
+    res.status(403).json({ erro: "operador_required" });
+    return;
+  }
+  if (!op.canal_padrao_id) {
+    res.status(409).json({ erro: "sem_linha" });
+    return;
+  }
+  const parsed = meSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    await salvarConfigEssencialLinha({
+      canalId: op.canal_padrao_id,
+      patch: {
+        objetivo: parsed.data.objetivo,
+        tom_voz: parsed.data.tom_voz,
+        criatividade: parsed.data.criatividade,
+        persona: parsed.data.persona ?? null,
+        saudacao: parsed.data.saudacao ?? null,
+      },
+      porEmail: req.user?.email ?? null,
+    });
+    const essencial = await obterEssencialLinha(op.canal_padrao_id);
+    res.json({ ok: true, ...essencial });
+  } catch (e) {
+    logger.error("[agente.routes] me.put falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "save_failed", mensagem: (e as Error).message });
   }
 });
 
