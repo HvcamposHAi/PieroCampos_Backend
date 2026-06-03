@@ -15,6 +15,7 @@ import { cotacaoRouter } from "./integrations/cotacao/routes";
 import { segfyRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
+import { aprendizadoRouter, aprendizadoPublicoRouter } from "./integrations/aprendizado/aprendizado.routes";
 import { auditoriaRouter, auditoriaPublicoRouter } from "./integrations/auditoria/auditoria.routes";
 import { auditarMutacoes } from "./middlewares/auditoria";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
@@ -77,12 +78,15 @@ export function criarApp(): express.Express {
 
   // Pública (sem JWT): o front reporta tentativas de login que falharam.
   app.use("/api/auditoria/acesso-falho", auditoriaPublicoRouter);
+  // Pública (token compartilhado): pinger externo dispara a destilação.
+  app.use("/api/aprendizado/cron", aprendizadoPublicoRouter);
 
   app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
   app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);
   app.use("/api/segfy", authSupabase, auditarMutacoes("segfy"), segfyRouter);
   app.use("/api/usuarios", authSupabase, auditarMutacoes("usuarios"), usuariosRouter);
   app.use("/api/agente", authSupabase, auditarMutacoes("agente"), agenteRouter);
+  app.use("/api/aprendizado", authSupabase, auditarMutacoes("aprendizado"), aprendizadoRouter);
   app.use("/api/auditoria", authSupabase, auditoriaRouter);
 
   app.use((_req, res) => {

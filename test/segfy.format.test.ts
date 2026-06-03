@@ -3,6 +3,7 @@ import {
   formatarMoedaBR,
   normalizarValorMonetarioBR,
   formatarComparativoParaWhatsApp,
+  formatarOpcaoUnicaParaWhatsApp,
 } from "../src/integrations/segfy/segfy.format";
 import type { ResultadoCotacaoItem } from "../src/integrations/segfy/segfy.types";
 
@@ -71,5 +72,22 @@ describe("formatarComparativoParaWhatsApp", () => {
     const msg = formatarComparativoParaWhatsApp([item({ status: "recusado" })], "Ana");
     expect(msg).toContain("Ana");
     expect(msg.toLowerCase()).toContain("não conseguimos cotações");
+  });
+});
+
+describe("formatarOpcaoUnicaParaWhatsApp", () => {
+  it("monta UMA opção (sem medalhas/top-3) e pede confirmação", () => {
+    const txt = formatarOpcaoUnicaParaWhatsApp(
+      item({ seguradora: "Aliro", premio_total: 4304.67, parcelas: 7, valor_parcela: 614.95, coberturas_resumo: "PLANO G" }),
+      "Camilly",
+    );
+    expect(txt).toContain("Camilly");
+    expect(txt).toContain("Aliro");
+    expect(txt).toContain("4.304,67");
+    expect(txt).toContain("7x de R$ 614,95");
+    expect(txt).toContain("PLANO G");
+    // Não é o comparativo: nada de "número (1, 2 ou 3)" nem medalhas.
+    expect(txt).not.toContain("🥇");
+    expect(txt).not.toContain("1, 2 ou 3");
   });
 });

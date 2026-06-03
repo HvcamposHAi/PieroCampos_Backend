@@ -41,6 +41,11 @@ export interface ResultadoBia {
   confirmarCotacao: boolean | null;
   /** Consentimento LGPD do cliente (tool registrar_consentimento_lgpd), se houve. */
   consentimentoLgpd: boolean | null;
+  /**
+   * Resposta do cliente na REVISÃO de dados (tool confirmar_revisao): true = algo
+   * mudou, false = tudo certo, null = ainda não respondeu claramente.
+   */
+  revisaoMudou: boolean | null;
   paradaPorMaxTokens: boolean;
   uso: { input_tokens: number; output_tokens: number };
 }
@@ -51,11 +56,19 @@ export interface ChamarBiaInput {
   historico: MensagemTurno[];
   /** Inclui a tool confirmar_cotacao (fase de confirmação do cliente). */
   permitirConfirmacao?: boolean;
+  /** Inclui a tool confirmar_revisao (cliente recorrente revisando os dados). */
+  permitirRevisao?: boolean;
   /**
    * Bloco 2 (PERSONALIZAÇÃO por canal). Entra entre a BASE e a DINÂMICA e é
    * cacheado por canal. Ausente → comportamento idêntico ao anterior (2 blocos).
    */
   systemPersonalizacao?: string;
+  /**
+   * Bloco 3 (DIRETRIZES APRENDIDAS — playbook destilado do histórico). Entra
+   * entre a PERSONALIZAÇÃO e a DINÂMICA e é cacheado (muda raro: só quando um
+   * admin ativa nova versão). Ausente → array idêntico ao anterior (zero efeito).
+   */
+  systemAprendizado?: string;
   /**
    * Temperatura de amostragem. Só enviada à API quando definida — ausente
    * preserva o default da Anthropic (comportamento atual, sem temperature).
@@ -119,6 +132,22 @@ const TOOL_CONFIRMAR_COTACAO = {
   },
 };
 
+const TOOL_CONFIRMAR_REVISAO = {
+  name: "confirmar_revisao",
+  description:
+    "Registra a resposta do cliente recorrente sobre os dados que já temos. Chame com mudou=false quando ele disser que está tudo certo / nada mudou; mudou=true quando algo tiver mudado (e, neste caso, chame TAMBÉM atualizar_dados com as chaves alteradas).",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      mudou: {
+        type: "boolean" as const,
+        description: "true = algum dado mudou; false = está tudo certo.",
+      },
+    },
+    required: ["mudou"],
+  },
+};
+
 const TOOL_CONSULTAR_CEP = {
   name: "consultar_cep",
   description:
@@ -175,8 +204,9 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   const client = getClient();
 
   // System prompt em blocos: BASE (cacheado) + PERSONALIZAÇÃO opcional por canal
-  // (cacheado) + DINÂMICO (varia por turno, não cacheado). Sem personalização,
-  // o array fica idêntico ao histórico de 2 blocos.
+  // (cacheado) + APRENDIZADO opcional (cacheado, muda raro) + DINÂMICO (varia por
+  // turno, não cacheado). Sem os blocos opcionais, o array fica byte-idêntico ao
+  // histórico de 2 blocos — garantia de zero impacto quando os recursos estão off.
   const system = [
     { type: "text" as const, text: input.systemBase, cache_control: { type: "ephemeral" as const } },
     ...(input.systemPersonalizacao
@@ -184,6 +214,15 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
           {
             type: "text" as const,
             text: input.systemPersonalizacao,
+            cache_control: { type: "ephemeral" as const },
+          },
+        ]
+      : []),
+    ...(input.systemAprendizado
+      ? [
+          {
+            type: "text" as const,
+            text: input.systemAprendizado,
             cache_control: { type: "ephemeral" as const },
           },
         ]
@@ -203,6 +242,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     TOOL_CONSULTAR_CEP,
     TOOL_CONSENTIMENTO_LGPD,
     ...(input.permitirConfirmacao ? [TOOL_CONFIRMAR_COTACAO] : []),
+    ...(input.permitirRevisao ? [TOOL_CONFIRMAR_REVISAO] : []),
   ];
 
   // Whitelist do tool atualizar_dados: chaves do roteiro + extras da linha (custom_*).
@@ -216,6 +256,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   let modalidadeEscolhida: Modalidade | null = null;
   let confirmarCotacao: boolean | null = null;
   let consentimentoLgpd: boolean | null = null;
+  let revisaoMudou: boolean | null = null;
   let inputTokensTotal = 0;
   let outputTokensTotal = 0;
   let cacheReadTotal = 0;
@@ -265,6 +306,9 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
       } else if (block.type === "tool_use" && block.name === "registrar_consentimento_lgpd") {
         const args = block.input as { autorizado?: unknown } | undefined;
         if (typeof args?.autorizado === "boolean") consentimentoLgpd = args.autorizado;
+      } else if (block.type === "tool_use" && block.name === "confirmar_revisao") {
+        const args = block.input as { mudou?: unknown } | undefined;
+        if (typeof args?.mudou === "boolean") revisaoMudou = args.mudou;
       }
     }
 
@@ -334,6 +378,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     modalidadeEscolhida,
     confirmarCotacao,
     consentimentoLgpd,
+    revisaoMudou,
     paradaPorMaxTokens,
     uso: { input_tokens: inputTokensTotal, output_tokens: outputTokensTotal },
   };

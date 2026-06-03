@@ -24,6 +24,7 @@ import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
+import { listarSeguradorasAtivas } from "./segfy-seguradoras.service";
 import { cpfValido } from "../lib/cpf";
 import { logger } from "../utils/logger";
 
@@ -181,8 +182,18 @@ export interface ResultadoDisparo {
  * `persistInjetado` permite testar sem Supabase.
  */
 export async function dispararCotacaoSegfy(
-  params: { conversaId: string; clienteId: string; dados: Record<string, unknown> },
+  params: {
+    /** Nulo na COTAÇÃO MANUAL (operador digita os dados; não há conversa WhatsApp). */
+    conversaId: string | null;
+    clienteId: string;
+    dados: Record<string, unknown>;
+    /** Origem da cotação (default 'whatsapp'); 'manual' para o disparo pelo operador. */
+    origem?: "whatsapp" | "manual";
+  },
   persistInjetado?: PersistencePort,
+  /** Chamado LOGO após criar a cotação (id já existe), antes das validações — a
+   *  rota manual usa para responder com o cotacaoId e a tela acompanhar ao vivo. */
+  onIniciada?: (cotacaoId: string) => void,
 ): Promise<ResultadoDisparo | null> {
   const env = getEnv();
   const persist: PersistencePort = persistInjetado ?? new SupabasePersistence();
@@ -193,7 +204,9 @@ export async function dispararCotacaoSegfy(
     clienteId: params.clienteId,
     ramo: "auto",
     dadosEntrada: params.dados,
+    origem: params.origem,
   });
+  onIniciada?.(cotacaoId);
   // NÃO pré-marcamos a etapa "token" como andamento aqui: as validações abaixo
   // (flag/cliente/LGPD/dados/credenciais) acontecem ANTES da autenticação. Se
   // alguma falhar, a etapa real de erro é registrada por `falhar(...)` e o passo
@@ -228,6 +241,11 @@ export async function dispararCotacaoSegfy(
   if (!credenciais) {
     return falhar("token", "Credenciais do Segfy não configuradas (Admin > Segfy ou .env).");
   }
+
+  // Curadoria: cota SÓ as seguradoras ativas (Admin > Segfy). Vazio → o
+  // multicálculo cai no fallback (INSURERS_PADRAO) — nunca deixa de cotar.
+  const ativas = await listarSeguradorasAtivas();
+  if (ativas.length > 0) entrada.insurers = ativas;
 
   try {
     const { quotationId, resultados } = await cotarAuto(

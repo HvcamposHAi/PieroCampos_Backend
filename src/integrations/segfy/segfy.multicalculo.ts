@@ -196,6 +196,60 @@ async function post<T>(path: string, body: unknown, tokens: SegfyTokens): Promis
   return r.data;
 }
 
+/** Uma seguradora configurada na conta Segfy (para curadoria no Admin). */
+export interface SeguradoraSegfy {
+  /** `name` técnico usado em config.insurers (ex.: "mapfre"). */
+  codigo: string;
+  /** Rótulo amigável para a tela. */
+  nome: string;
+  /** Comissão padrão (%) — usada em config.insurers se a seguradora for cotada. */
+  comissao: number;
+}
+
+/** Normaliza a resposta do company-list (formato varia: array, {data:[]}, {data:{companies:[]}}). */
+function extrairListaSeguradoras(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object") {
+    const d = (raw as { data?: unknown }).data;
+    if (Array.isArray(d)) return d;
+    if (d && typeof d === "object") {
+      const c =
+        (d as { companies?: unknown }).companies ??
+        (d as { seguradoras?: unknown }).seguradoras ??
+        (d as { list?: unknown }).list;
+      if (Array.isArray(c)) return c;
+    }
+  }
+  return [];
+}
+
+/**
+ * Lista as seguradoras configuradas na conta Segfy (vehicleCompanyList). Alimenta
+ * a curadoria no Admin (quais cotar). Defensiva quanto ao formato da resposta —
+ * o endpoint não foi capturado ponta-a-ponta, então aceitamos chaves alternativas.
+ */
+export async function listarSeguradorasSegfy(credenciais?: CredenciaisSegfy): Promise<SeguradoraSegfy[]> {
+  const tk = await obterTokensSegfy(false, credenciais);
+  const raw = await post<unknown>(
+    SEGFY_AUTOMATION_API.vehicleCompanyList,
+    { data: { vehicle_type: "car" }, config: { token: tk.automationToken } },
+    tk,
+  );
+  const out: SeguradoraSegfy[] = [];
+  const vistos = new Set<string>();
+  for (const item of extrairListaSeguradoras(raw)) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const codigo = String(o.name ?? o.codigo ?? o.id ?? "").trim().toLowerCase();
+    if (!codigo || vistos.has(codigo)) continue;
+    vistos.add(codigo);
+    const nome = String(o.nome ?? o.full_name ?? o.name ?? codigo).trim();
+    const comissaoNum = Number(o.commission ?? o.comissao);
+    out.push({ codigo, nome, comissao: Number.isFinite(comissaoNum) ? comissaoNum : 15 });
+  }
+  return out;
+}
+
 /**
  * Dispara a cotação Auto e coleta os resultados por seguradora via WebSocket.
  * Resolve quando todas as seguradoras responderem ou no timeout.

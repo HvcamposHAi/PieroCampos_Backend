@@ -212,6 +212,30 @@ export function calcularProgresso(
 }
 
 /**
+ * Resumo dos dados JÁ CAPTURADOS de um cliente recorrente, para a Bia apresentar
+ * "de uma vez" e perguntar se algo mudou (revisão). Usa o roteiro EFETIVO da linha
+ * (respeita campos excluídos e perguntas customizadas do Admin) e lista APENAS os
+ * campos do roteiro que estão preenchidos — chaves órfãs (ex.: `endereco` legado,
+ * dados de outra categoria) ficam de fora. Função pura. Vazio = nada a revisar.
+ */
+export function montarResumoRevisao(
+  categoria: CategoriaConversa | null | undefined,
+  dados: Record<string, unknown>,
+  excluidos: readonly string[] = [],
+  custom: readonly PerguntaCustom[] = [],
+): string[] {
+  const roteiro = getRoteiroEfetivo(categoria, excluidos, custom);
+  if (!roteiro) return [];
+  const linhas: string[] = [];
+  for (const c of roteiro.campos) {
+    const v = dados[c.chave];
+    if (v == null || v === "") continue;
+    linhas.push(`- ${c.rotulo}: ${typeof v === "string" ? v : JSON.stringify(v)}`);
+  }
+  return linhas;
+}
+
+/**
  * Chaves preenchidas AUTOMATICAMENTE pela consulta de CEP (tool consultar_cep) —
  * não são perguntadas no roteiro, mas precisam passar pela whitelist para serem
  * persistidas. `endereco` permanece válido só por RETROCOMPATIBILIDADE (conversas

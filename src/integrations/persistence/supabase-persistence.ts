@@ -115,15 +115,19 @@ export class SupabasePersistence implements PersistencePort {
   }
 
   async iniciarCotacao(input: IniciarCotacaoInput): Promise<{ cotacaoId: string }> {
+    // `origem` só é enviado quando informado (coluna opcional com default no banco).
+    // Cast via Record para não acoplar ao types.ts antes da regeneração (cláusula B).
+    const payload: Record<string, unknown> = {
+      cliente_id: input.clienteId,
+      conversa_id: input.conversaId,
+      ramo: input.ramo,
+      dados_entrada: input.dadosEntrada as unknown as Json,
+      status: "processando",
+    };
+    if (input.origem) payload.origem = input.origem;
     const { data, error } = await this.supabase
       .from("cotacoes")
-      .insert({
-        cliente_id: input.clienteId,
-        conversa_id: input.conversaId,
-        ramo: input.ramo,
-        dados_entrada: input.dadosEntrada as unknown as Json,
-        status: "processando",
-      })
+      .insert(payload as never)
       .select("id")
       .single();
     if (error || !data) {

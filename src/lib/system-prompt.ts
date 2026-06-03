@@ -9,7 +9,7 @@
  * O claude.client passa as duas partes e marca a BASE com cache_control.
  */
 import type { CategoriaConversa, CampoRoteiro, PerguntaCustom } from "./roteiros";
-import { getRoteiroEfetivo } from "./roteiros";
+import { getRoteiroEfetivo, montarResumoRevisao } from "./roteiros";
 import type { ConfigEfetiva, Objetivo, TomVoz } from "../services/agente-config.service";
 
 export const SYSTEM_PROMPT_BASE = `Você é a Bia, assistente virtual da Corretora de Seguros Piero de Campos, de Curitiba-PR. A Piero de Campos cuida dos seguros das famílias curitibanas há mais de 20 anos com proximidade e atenção.
@@ -99,6 +99,12 @@ export interface BuildSystemPromptInput {
    */
   pedirConfirmacaoCotacao?: boolean;
   /**
+   * Cliente recorrente: a Bia deve apresentar TODOS os dados já capturados numa
+   * ÚNICA mensagem e perguntar se algo mudou (em vez de re-perguntar campo a
+   * campo). Calculado pelo bot.service quando dados_bot.revisao_pendente é true.
+   */
+  revisaoPendente?: boolean;
+  /**
    * Chaves de campos OPCIONAIS que a linha desligou (Admin > Bia). Filtrados da
    * lista de campos a perguntar. Obrigatórios nunca saem. Default = [].
    */
@@ -133,6 +139,39 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
   if (modo === "holding") {
     partes.push(input.contextoHolding || CONTEXTO_HOLDING_PADRAO);
     partes.push(BLOCO_HOLDING_REGRAS);
+    partes.push("");
+    partes.push("CONTEXTO DO CLIENTE (RAG):");
+    partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");
+    return partes.join("\n");
+  }
+
+  // Gate de revisão: cliente recorrente. Apresenta TUDO o que já temos numa única
+  // mensagem e pergunta se mudou algo — sem re-perguntar campo a campo. O bloco de
+  // PERSONALIZAÇÃO (tom/saudação) é separado (claude.client) e segue valendo.
+  if (input.revisaoPendente) {
+    const resumo = montarResumoRevisao(
+      input.categoria,
+      input.dadosColetados,
+      input.camposExcluidos,
+      input.camposCustom,
+    );
+    partes.push(
+      "CLIENTE RECORRENTE (REVISÃO DE DADOS): já temos os dados abaixo de um atendimento anterior. NÃO recomece o roteiro nem pergunte campo a campo.",
+    );
+    partes.push(
+      "Sua tarefa neste turno: numa ÚNICA mensagem, cumprimente o cliente pelo nome (se souber), liste de forma organizada os dados que já temos e pergunte, de forma natural, se algo mudou ou se está tudo certo. NÃO chame a ferramenta atualizar_dados neste turno.",
+    );
+    partes.push("");
+    partes.push("DADOS QUE JÁ TEMOS DESTE CLIENTE:");
+    if (resumo.length === 0) {
+      partes.push("  (nenhum)");
+    } else {
+      for (const linha of resumo) partes.push(`  ${linha}`);
+    }
+    partes.push("");
+    partes.push(
+      "Quando o cliente responder: chame a ferramenta confirmar_revisao com mudou=false (se estiver tudo certo) ou mudou=true (se algo mudou). Se mudou=true, chame TAMBÉM atualizar_dados APENAS com as chaves que mudaram.",
+    );
     partes.push("");
     partes.push("CONTEXTO DO CLIENTE (RAG):");
     partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");

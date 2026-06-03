@@ -68,6 +68,7 @@ export interface Database {
           criado_em: string;
           dados_entrada: Json;
           id: string;
+          origem: string;
           ramo: string;
           renovacao_outro_corretor: boolean | null;
           resultados: Json | null;
@@ -81,6 +82,7 @@ export interface Database {
           conversa_id?: string | null;
           dados_entrada?: Json;
           id?: string;
+          origem?: string;
           ramo: string;
           resultados?: Json | null;
           segfy_cotacao_id?: string | null;

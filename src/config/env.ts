@@ -54,6 +54,16 @@ const schema = z
     ANTHROPIC_API_KEY: z.string().optional().default(""),
     BIA_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
     BIA_MAX_TOKENS: numComPadrao(1024),
+    // Aprendizado contínuo (playbook destilado). Desligado por padrão: enquanto
+    // false, nada novo roda em runtime e a Bia se comporta como hoje. Reusa a
+    // mesma ANTHROPIC_API_KEY/SDK da Bia (sem provedor externo de embeddings).
+    APRENDIZADO_ENABLED: boolDeString.default(false),
+    // Modelo do destilador (offline). Default = mesmo da Bia.
+    APRENDIZADO_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+    APRENDIZADO_MAX_TOKENS: numComPadrao(2048),
+    // Token compartilhado p/ o endpoint /api/aprendizado/cron (pinger externo).
+    // Vazio → endpoint cron desabilitado (só o botão do Admin dispara).
+    APRENDIZADO_CRON_TOKEN: z.string().optional().default(""),
     // HTTP.
     PORT: numComPadrao(3000),
     FRONT_ORIGIN: z.string().optional().default(""),

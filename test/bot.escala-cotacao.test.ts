@@ -86,7 +86,9 @@ describe("confirmarEdispararCotacao — escala em falha", () => {
     expect(h.executarHandoff).not.toHaveBeenCalled();
   });
 
-  it("cotação OK → não escala e envia comparativo", async () => {
+  it("cotação OK → NÃO envia comparativo nem vai p/ cotacao_enviada (escolha manual)", async () => {
+    // Novo fluxo: a cotação conclui e fica em "Cotações pendentes"; o OPERADOR
+    // escolhe a opção (rota /escolher) — o auto-envio do top-3 foi removido.
     h.store.estado = "aguardando_confirmacao_cotacao";
     h.dispararCotacaoSegfy.mockResolvedValue({ texto: "comparativo aqui" });
 
@@ -94,7 +96,9 @@ describe("confirmarEdispararCotacao — escala em falha", () => {
     const r = await confirmarEdispararCotacao({ ...params(), enviar: async (t) => { textos.push(t); } });
     expect(r).toEqual({ cotou: true });
     expect(h.executarHandoff).not.toHaveBeenCalled();
-    expect(textos).toContain("comparativo aqui");
-    expect(h.store.estado).toBe("cotacao_enviada");
+    // Nada é enviado automaticamente ao cliente.
+    expect(textos).toHaveLength(0);
+    // A conversa NÃO avança para cotacao_enviada (fica em aguardando_cotacao).
+    expect(h.store.estado).toBe("aguardando_cotacao");
   });
 });

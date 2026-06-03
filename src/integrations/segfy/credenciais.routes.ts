@@ -17,6 +17,11 @@ import {
   salvarCredenciaisSegfy,
   statusCredenciaisSegfy,
 } from "../../services/segfy-credenciais.service";
+import {
+  atualizarSeguradora,
+  listarSeguradorasConfig,
+  sincronizarSeguradoras,
+} from "../../services/segfy-seguradoras.service";
 import { obterTokensSegfy } from "./segfy.multicalculo";
 
 const router = Router();
@@ -72,6 +77,59 @@ router.post("/credenciais/testar", exigirAdmin, async (_req: Request, res: Respo
     await registrarTesteSegfy(false, msg);
     logger.warn("[segfy.routes] teste de login falhou", { erro: msg });
     res.json({ ok: false, mensagem: msg });
+  }
+});
+
+// ── Curadoria de seguradoras (quais cotar) ───────────────────────────────────
+
+router.get("/seguradoras", exigirAdmin, async (_req: Request, res: Response) => {
+  try {
+    const seguradoras = await listarSeguradorasConfig();
+    res.json({ ok: true, seguradoras });
+  } catch (e) {
+    logger.error("[segfy.routes] listar seguradoras falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "list_failed", mensagem: (e as Error).message });
+  }
+});
+
+router.post("/seguradoras/sync", exigirAdmin, async (_req: Request, res: Response) => {
+  try {
+    const r = await sincronizarSeguradoras();
+    const seguradoras = await listarSeguradorasConfig();
+    res.json({ ok: true, ...r, seguradoras });
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg === "sem_credenciais") {
+      res.status(409).json({ ok: false, erro: "sem_credenciais", mensagem: "Cadastre o login e a senha do Segfy antes de sincronizar." });
+      return;
+    }
+    logger.error("[segfy.routes] sync seguradoras falhou", { erro: msg });
+    res.status(500).json({ erro: "sync_failed", mensagem: msg });
+  }
+});
+
+const patchSeguradoraSchema = z.object({
+  ativa: z.boolean().optional(),
+  comissao: z.number().min(0).max(100).optional(),
+});
+
+router.patch("/seguradoras/:codigo", exigirAdmin, async (req: Request, res: Response) => {
+  const codigo = (req.params.codigo ?? "").trim().toLowerCase();
+  if (!codigo) {
+    res.status(400).json({ erro: "codigo_invalido" });
+    return;
+  }
+  const parsed = patchSeguradoraSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    await atualizarSeguradora(codigo, parsed.data);
+    res.json({ ok: true });
+  } catch (e) {
+    logger.error("[segfy.routes] atualizar seguradora falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "update_failed", mensagem: (e as Error).message });
   }
 });
 

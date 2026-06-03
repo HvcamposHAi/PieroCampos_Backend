@@ -79,3 +79,24 @@ export function formatarComparativoParaWhatsApp(
       `se quer ver mais detalhes de alguma opção.`,
   ].join("\n");
 }
+
+/**
+ * Mensagem de UMA opção (a escolhida pelo operador) para o WhatsApp. Função pura.
+ * Usada pelo fluxo de escolha manual: o operador seleciona o resultado vencedor e
+ * só ele é enviado ao cliente (em vez do comparativo top-3 automático).
+ */
+export function formatarOpcaoUnicaParaWhatsApp(
+  resultado: ResultadoCotacaoItem,
+  nomeCliente: string,
+): string {
+  return [
+    `Olá ${nomeCliente}! Encontrei a melhor opção para o seu seguro 👇`,
+    "",
+    `🏢 *${resultado.seguradora}*`,
+    `💰 R$ ${formatarMoedaBR(resultado.premio_total)}`,
+    `📅 ${resultado.parcelas}x de R$ ${formatarMoedaBR(resultado.valor_parcela)}`,
+    `🛡️ ${resultado.coberturas_resumo}`,
+    "",
+    `Posso seguir com essa opção? Me confirma que já dou andamento na sua proposta. 😊`,
+  ].join("\n");
+}

@@ -17,7 +17,8 @@ export type CategoriaAuditoria =
   | "whatsapp"
   | "cotacao"
   | "segfy"
-  | "agente";
+  | "agente"
+  | "aprendizado";
 
 export interface EventoAuditoriaInput {
   operadorId?: string | null;

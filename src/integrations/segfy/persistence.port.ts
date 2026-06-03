@@ -49,6 +49,8 @@ export interface IniciarCotacaoInput {
   clienteId: string;
   ramo: string;
   dadosEntrada: Record<string, unknown>;
+  /** 'whatsapp' (default no banco) ou 'manual' (cotação disparada pelo operador). */
+  origem?: "whatsapp" | "manual";
 }
 
 export type StatusCotacaoDb = "pendente" | "processando" | "concluida" | "erro" | "expirada";

@@ -12,6 +12,7 @@
  */
 import { logger } from "../../utils/logger";
 import { getSupabaseAdmin } from "./supabase";
+import { getRoteiro, type CategoriaConversa } from "../../lib/roteiros";
 import type { CanalRow, CanalUpdate, ConversaRow, MensagemInsert } from "./wa.types";
 
 /** Converte JID Baileys (`<num>@s.whatsapp.net`) para E.164 (`+<num>`). */
@@ -185,6 +186,79 @@ async function obterOuCriarCliente(telefone: string, nome?: string | null): Prom
   return inserido.id;
 }
 
+/** Normaliza um JSONB do banco para objeto (array/null/escalar → {}). */
+function comoObjeto(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+/**
+ * Estados TERMINAIS em que uma nova mensagem do cliente recorrente REABRE a
+ * conversa em modo REVISÃO (atendimento anterior concluído; o cliente voltou).
+ * NÃO inclui estados em que a equipe ainda trabalha (aguardando_cotacao,
+ * humano_assumiu, bloqueado_vip, aceite_registrado, proposta_transmitida) —
+ * reabrir ali atropelaria o time. Conjunto pequeno e nomeado para fácil ajuste.
+ */
+const ESTADOS_REABRE_REVISAO: ReadonlySet<string> = new Set([
+  "cotacao_enviada",
+  "apolice_emitida",
+]);
+
+/** True se há dados de roteiro reaproveitáveis (categoria com roteiro + ≥1 campo preenchido). Pura. */
+export function temDadosReaproveitaveis(
+  dados: Record<string, unknown>,
+  categoria: string | null | undefined,
+): boolean {
+  const roteiro = getRoteiro(categoria as CategoriaConversa | null);
+  if (!roteiro) return false;
+  return roteiro.campos.some((c) => {
+    const v = dados[c.chave];
+    return v != null && v !== "";
+  });
+}
+
+/**
+ * Decide se uma conversa EXISTENTE deve ser reaberta em modo revisão (Parte B):
+ * estado terminal elegível + ainda não em revisão + há dados a revisar. Pura.
+ */
+export function deveReabrirEmRevisao(
+  estado: string,
+  dadosBot: Record<string, unknown>,
+  dadosColetados: Record<string, unknown>,
+  categoria: string | null | undefined,
+): boolean {
+  return (
+    ESTADOS_REABRE_REVISAO.has(estado) &&
+    (dadosBot as { revisao_pendente?: unknown }).revisao_pendente !== true &&
+    temDadosReaproveitaveis(dadosColetados, categoria)
+  );
+}
+
+/**
+ * Busca os dados já capturados do cliente num atendimento ANTERIOR já encerrado
+ * (qualquer linha — o cliente é único por telefone) para reaproveitar numa
+ * conversa nova. Retorna null quando não há nada útil a revisar (sem roteiro ou
+ * sem campos preenchidos → fluxo normal de cliente novo). NÃO copia o dados_bot
+ * antigo (evita arrastar formulario/cotacao_em_falha/campos_forcados).
+ */
+async function buscarDadosAnteriores(
+  clienteId: string,
+): Promise<{ dadosColetados: Record<string, unknown>; categoria: CategoriaConversa } | null> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("conversas")
+    .select("dados_coletados, categoria")
+    .eq("cliente_id", clienteId)
+    .eq("estado", "encerrado")
+    .order("ultima_mensagem_em", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const row = data as { dados_coletados: unknown; categoria: string | null };
+  const dados = comoObjeto(row.dados_coletados);
+  if (!temDadosReaproveitaveis(dados, row.categoria)) return null;
+  return { dadosColetados: dados, categoria: row.categoria as CategoriaConversa };
+}
+
 /** Acha uma conversa aberta (estado != 'encerrado') para (canal, cliente) ou cria. */
 async function obterOuCriarConversaAberta(
   canalId: string,
@@ -193,7 +267,7 @@ async function obterOuCriarConversaAberta(
   const sb = getSupabaseAdmin();
   const { data: existente, error: errSel } = await sb
     .from("conversas")
-    .select("id, canal_id, cliente_id, estado")
+    .select("id, canal_id, cliente_id, estado, dados_coletados, dados_bot, categoria")
     .eq("canal_id", canalId)
     .eq("cliente_id", clienteId)
     .neq("estado", "encerrado")
@@ -201,16 +275,59 @@ async function obterOuCriarConversaAberta(
     .limit(1)
     .maybeSingle();
   if (errSel) throw errSel;
-  if (existente) return existente as ConversaRow;
+  if (existente) {
+    const row = existente as ConversaRow & {
+      dados_coletados?: unknown;
+      dados_bot?: unknown;
+      categoria?: string | null;
+    };
+    // Parte B — cliente recorrente voltou após o atendimento concluído: reabre a
+    // conversa em modo REVISÃO (reaproveita os próprios dados desta conversa).
+    // Só em estados terminais, com dados a revisar e se ainda não está em revisão.
+    const dadosBot = comoObjeto(row.dados_bot);
+    if (deveReabrirEmRevisao(row.estado, dadosBot, comoObjeto(row.dados_coletados), row.categoria)) {
+      const novoDadosBot = { ...dadosBot, revisao_pendente: true, reuso_de_dados: true };
+      await sb
+        .from("conversas")
+        .update({ estado: "bot_ativo", dados_bot: novoDadosBot })
+        .eq("id", row.id);
+      logger.info("[wa.persistence] conversa reaberta em revisão (cliente recorrente)", {
+        conversaId: row.id,
+        estadoAnterior: row.estado,
+      });
+      return { id: row.id, canal_id: row.canal_id, cliente_id: row.cliente_id, estado: "bot_ativo" };
+    }
+    return {
+      id: row.id,
+      canal_id: row.canal_id,
+      cliente_id: row.cliente_id,
+      estado: row.estado,
+    };
+  }
+
+  // Conversa NOVA — Parte A: se o cliente já tem dados de um atendimento anterior
+  // encerrado, semeia a conversa em modo REVISÃO (apresentar tudo de uma vez e
+  // perguntar se mudou algo); senão, começa do zero como antes.
+  const anterior = await buscarDadosAnteriores(clienteId);
+  const insert: Record<string, unknown> = anterior
+    ? {
+        canal_id: canalId,
+        cliente_id: clienteId,
+        estado: "bot_ativo",
+        categoria: anterior.categoria,
+        dados_coletados: anterior.dadosColetados,
+        dados_bot: { revisao_pendente: true, reuso_de_dados: true },
+      }
+    : {
+        canal_id: canalId,
+        cliente_id: clienteId,
+        estado: "bot_ativo",
+        categoria: "seguro_novo", // ENUM do banco; o adapter do front converte para CategoriaBot.
+      };
 
   const { data: nova, error: errIns } = await sb
     .from("conversas")
-    .insert({
-      canal_id: canalId,
-      cliente_id: clienteId,
-      estado: "bot_ativo",
-      categoria: "seguro_novo", // ENUM do banco; o adapter do front converte para CategoriaBot.
-    })
+    .insert(insert)
     .select("id, canal_id, cliente_id, estado")
     .single();
   if (errIns) throw errIns;

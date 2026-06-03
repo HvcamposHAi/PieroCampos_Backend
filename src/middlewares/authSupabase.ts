@@ -23,6 +23,8 @@ export interface UsuarioAutenticado {
 declare module "express-serve-static-core" {
   interface Request {
     user?: UsuarioAutenticado;
+    /** Operador ativo resolvido por `exigirOperadorAtivo` (evita 2º lookup). */
+    operador?: OperadorAtivo;
   }
 }
 
@@ -113,4 +115,24 @@ export async function carregarOperadorAtivo(req: Request): Promise<OperadorAtivo
     return null;
   }
   return (data as OperadorAtivo | null) ?? null;
+}
+
+/**
+ * Exige um operador ATIVO vinculado ao req.user (admin inclusive — admin é
+ * operador com perfil 'admin'). Usado por ações liberadas a qualquer operador
+ * (ex.: cotação manual). 403 se não houver vínculo ativo. Popula req.operador
+ * para o handler reusar sem novo round-trip.
+ */
+export async function exigirOperadorAtivo(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const operador = await carregarOperadorAtivo(req);
+  if (!operador) {
+    res.status(403).json({ erro: "operador_required" });
+    return;
+  }
+  req.operador = operador;
+  next();
 }

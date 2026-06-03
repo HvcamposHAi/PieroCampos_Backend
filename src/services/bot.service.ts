@@ -42,6 +42,7 @@ import {
   type MotivoHandoff,
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
+import { obterPlaybookAtivoTexto } from "./aprendizado.service";
 import { dispararCotacaoSegfy, mapearParaCotacao } from "./segfy-cotacao.service";
 import { cpfValido, formatarCpf } from "../lib/cpf";
 import { normalizarTelefoneBr } from "../lib/telefone";
@@ -270,6 +271,21 @@ export function deveOferecerModalidade(p: {
   return Object.keys(p.dadosColetados).length === 0;
 }
 
+/**
+ * Cliente recorrente em modo REVISÃO de dados? (flag semeada na criação/reabertura
+ * da conversa em persistence.ts). Quando true, a Bia apresenta tudo de uma vez e
+ * pergunta se mudou algo, em vez de re-perguntar campo a campo. Função pura.
+ */
+export function emRevisao(dadosBot: Record<string, unknown>): boolean {
+  return (dadosBot as { revisao_pendente?: unknown }).revisao_pendente === true;
+}
+
+/** Nº de turnos sem o cliente confirmar a revisão (anti-loop). Defensivo. */
+function lerTentativasRevisao(dadosBot: Record<string, unknown>): number {
+  const raw = (dadosBot as { revisao_tentativas?: unknown }).revisao_tentativas;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+}
+
 /** Lê a fila campos_forcados de dados_bot como lista de strings (defensivo). */
 function lerFilaForcada(dadosBot: Record<string, unknown>): string[] {
   const raw = (dadosBot as { campos_forcados?: unknown }).campos_forcados;
@@ -463,11 +479,17 @@ export async function confirmarEdispararCotacao(p: {
   }
   try {
     await mergeDadosBot(p.conversaId, dadosBot, { cotacao_em_falha: false, cotacao_faltando: [] });
-    await p.enviar(cotacao.texto);
-    await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", p.conversaId);
-    logger.info("[bot] cotação Segfy enviada, estado=cotacao_enviada", { conversaId: p.conversaId });
+    // NOVO FLUXO (escolha manual): NÃO enviamos o comparativo automaticamente.
+    // A cotação já foi persistida como 'concluida' e aparece em "Cotações
+    // pendentes" no board /chamados; lá o OPERADOR escolhe UMA opção e só ela é
+    // enviada ao cliente (POST /api/cotacao/:cotacaoId/escolher, que então move a
+    // conversa para 'cotacao_enviada'). Aqui a conversa permanece em
+    // 'aguardando_cotacao' — o gatilho trg_cotacoes_desfecho avisa os operadores.
+    logger.info("[bot] cotação Segfy concluída; aguardando escolha do operador", {
+      conversaId: p.conversaId,
+    });
   } catch (e) {
-    logger.error("[bot] falha ao enviar comparativo/atualizar estado", {
+    logger.error("[bot] falha ao finalizar cotação (pós-conclusão)", {
       conversaId: p.conversaId,
       erro: (e as Error).message,
     });
@@ -676,8 +698,11 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   );
   // Coleta concluída: a Bia pede a decisão de cotar (e ganha a tool confirmar_cotacao).
   const ehConfirmacao = conversa.estado === "aguardando_confirmacao_cotacao";
+  // Cliente recorrente: apresentar os dados de uma vez e perguntar se mudou algo.
+  const revisaoPendente = modo === "ativo" && !ehConfirmacao && emRevisao(conversa.dados_bot);
   const oferecerModalidade =
     !ehConfirmacao &&
+    !revisaoPendente &&
     modo === "ativo" &&
     deveOferecerModalidade({
       categoria: conversa.categoria,
@@ -713,9 +738,25 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     contextoHolding: modo === "holding" ? contextoHoldingPorEstado(conversa.estado) : undefined,
     oferecerModalidade,
     pedirConfirmacaoCotacao: ehConfirmacao,
+    revisaoPendente,
     camposExcluidos,
     camposCustom,
   });
+
+  // 3.2) Diretrizes aprendidas (Admin > Aprendizado): playbook destilado do
+  //       histórico, injetado como bloco cacheado. Só no fluxo ativo e atrás da
+  //       flag. Fail-open: erro/sem versão ativa → "" → a Bia roda como antes.
+  let aprendizadoTexto = "";
+  if (env.APRENDIZADO_ENABLED && modo === "ativo") {
+    try {
+      aprendizadoTexto = await obterPlaybookAtivoTexto(conversa.categoria);
+    } catch (e) {
+      logger.warn("[bot] playbook falhou; seguindo sem diretrizes", {
+        conversaId: conversa.id,
+        erro: (e as Error).message,
+      });
+    }
+  }
 
   // 4) Histórico (já inclui a mensagem que acabou de chegar, pois persistimos antes).
   const historico = await carregarHistorico(conversa.id);
@@ -728,7 +769,9 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       systemDinamico,
       historico,
       permitirConfirmacao: ehConfirmacao,
+      permitirRevisao: revisaoPendente,
       systemPersonalizacao: configAgente ? buildBlocoPersonalizacao(configAgente) : undefined,
+      systemAprendizado: aprendizadoTexto || undefined,
       temperature: configAgente?.temperature,
       chavesExtras: camposCustom.map((c) => c.chave),
     });
@@ -811,6 +854,38 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
 
   // 8) Enviar a resposta da Bia ao cliente (se houver texto).
   await enviarRespostaBia(resposta.texto, input.enviar, conversa.id);
+
+  // 8.05) Revisão do cliente recorrente: ele acabou de ver todos os dados de uma
+  //       vez. NÃO deixa o fluxo cair em finalizarSeRoteiroCompleto enquanto a
+  //       revisão não for respondida (evita pular para a cotação sem confirmar).
+  if (revisaoPendente) {
+    if (typeof resposta.revisaoMudou === "boolean") {
+      // Cliente respondeu (tudo certo OU informou mudanças — já mescladas no bloco 7):
+      // encerra a revisão e segue o fluxo normal (se completo → confirmação de cotação).
+      await mergeDadosBot(conversa.id, conversa.dados_bot, {
+        revisao_pendente: false,
+        revisao_tentativas: 0,
+      });
+      const dadosPos = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
+      await finalizarSeRoteiroCompleto({
+        conversaId: conversa.id,
+        categoria: conversa.categoria,
+        dados: dadosPos,
+      });
+    } else {
+      // Cliente ainda não confirmou: mantém a revisão, com teto (na 2ª tentativa
+      // sem resposta clara, abandona a revisão e segue a coleta normal no próximo turno).
+      const tentativas = lerTentativasRevisao(conversa.dados_bot) + 1;
+      await mergeDadosBot(
+        conversa.id,
+        conversa.dados_bot,
+        tentativas >= 2
+          ? { revisao_pendente: false, revisao_tentativas: 0 }
+          : { revisao_tentativas: tentativas },
+      );
+    }
+    return;
+  }
 
   // 8.1) Fase de confirmação: o cliente decidiu cotar AGORA?
   if (ehConfirmacao) {

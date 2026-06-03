@@ -10,10 +10,13 @@
  * (se o canal estiver offline, a cotação ainda fica visível na tela).
  */
 import { Router, type Request, type Response } from "express";
-import { exigirAdmin } from "../../middlewares/authSupabase";
+import { z } from "zod";
+import { exigirAdmin, exigirOperadorAtivo } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import { confirmarEdispararCotacao } from "../../services/bot.service";
-import { formatarComparativoParaWhatsApp } from "../segfy/segfy.format";
+import { dispararCotacaoManual } from "../../services/cotacao-manual.service";
+import { cpfValido } from "../../lib/cpf";
+import { formatarComparativoParaWhatsApp, formatarOpcaoUnicaParaWhatsApp } from "../segfy/segfy.format";
 import type { ResultadoCotacaoItem } from "../segfy/segfy.types";
 import { getSupabaseAdmin } from "../whatsapp/supabase";
 import { sessionManager } from "../whatsapp/sessionManager";
@@ -69,6 +72,46 @@ function enviarParaCliente(conv: ConversaCotacao, conversaId: string, operadorNo
   };
 }
 
+/**
+ * COTAÇÃO MANUAL (operador): cria/obtém o cliente por CPF e dispara no Segfy SEM
+ * passar pelo WhatsApp. Liberada a qualquer operador ativo (admin incluso).
+ * Responde 202 com { clienteId, cotacaoId } assim que a cotação é criada; o
+ * pipeline segue em background e a tela acompanha via realtime. NÃO envia nada
+ * ao cliente. Rota de 1 segmento — não conflita com "/:conversaId/...".
+ */
+router.post("/manual", exigirOperadorAtivo, async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as {
+    cliente?: { nome?: unknown; telefone?: unknown; cpf?: unknown; email?: unknown };
+    dados?: Record<string, unknown>;
+  };
+  const nome = String(body.cliente?.nome ?? "").trim();
+  const telefone = String(body.cliente?.telefone ?? "").trim();
+  const cpf = String(body.cliente?.cpf ?? "").trim();
+  const email = body.cliente?.email != null ? String(body.cliente.email).trim() : null;
+  const dados = body.dados ?? {};
+
+  if (!nome || !telefone || !cpf) {
+    res.status(400).json({ erro: "dados_cliente_incompletos" });
+    return;
+  }
+  if (!cpfValido(cpf)) {
+    res.status(400).json({ erro: "cpf_invalido" });
+    return;
+  }
+
+  try {
+    const { clienteId, cotacaoId } = await dispararCotacaoManual({
+      cliente: { nome, telefone, cpf, email },
+      // Garante o CPF em `dados` (mapearParaCotacao prioriza o coletado).
+      dados: { cpf, ...dados },
+    });
+    res.status(202).json({ ok: true, clienteId, cotacaoId });
+  } catch (e) {
+    logger.error("[cotacao.routes] cotação manual falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "cotacao_manual_falhou", mensagem: (e as Error).message });
+  }
+});
+
 router.post("/:conversaId/disparar", exigirAdmin, async (req: Request, res: Response) => {
   const conversaId = req.params.conversaId ?? "";
   if (!conversaId) {
@@ -119,6 +162,101 @@ router.post("/:conversaId/enviar", exigirAdmin, async (req: Request, res: Respon
   }
   const texto = formatarComparativoParaWhatsApp(resultados, conv.clientes?.nome ?? "tudo certo");
   await enviarParaCliente(conv, conversaId, req.user?.email)(texto);
+  res.json({ ok: true });
+});
+
+const escolherSchema = z.object({ seguradora: z.string().trim().min(1, "seguradora obrigatória") });
+
+/**
+ * ESCOLHA MANUAL do operador: dentre os resultados cotados da cotação, escolhe UMA
+ * seguradora; só ela é enviada ao cliente no WhatsApp (formatarOpcaoUnicaParaWhatsApp).
+ * Grava a escolha + `enviado_ao_cliente_em` (move o card de "Cotações pendentes"
+ * p/ "Cotações enviadas") e leva a conversa a `cotacao_enviada`. Idempotente: a
+ * 2ª chamada (já enviada) responde 409 e não reenvia. Keyed por COTAÇÃO (não conversa).
+ */
+router.post("/:cotacaoId/escolher", exigirAdmin, async (req: Request, res: Response) => {
+  const cotacaoId = req.params.cotacaoId ?? "";
+  if (!cotacaoId) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  const parsed = escolherSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+
+  const sb = getSupabaseAdmin();
+  const { data: cot } = await sb
+    .from("cotacoes")
+    .select("id, conversa_id, status, resultados, enviado_ao_cliente_em")
+    .eq("id", cotacaoId)
+    .maybeSingle();
+  if (!cot) {
+    res.status(404).json({ erro: "cotacao_nao_encontrada" });
+    return;
+  }
+  const c = cot as {
+    id: string;
+    conversa_id: string | null;
+    status: string;
+    resultados: ResultadoCotacaoItem[] | null;
+    enviado_ao_cliente_em: string | null;
+  };
+
+  // Idempotência: já enviada → não reenvia.
+  if (c.enviado_ao_cliente_em) {
+    res.status(409).json({ erro: "ja_enviada" });
+    return;
+  }
+
+  // A seguradora escolhida deve existir entre os resultados COTADOS (integridade).
+  const resultados = Array.isArray(c.resultados) ? c.resultados : [];
+  const alvo = parsed.data.seguradora.trim().toLowerCase();
+  const escolhido = resultados.find(
+    (r) => (r?.seguradora ?? "").trim().toLowerCase() === alvo && r?.status === "cotado",
+  );
+  if (!escolhido) {
+    res.status(422).json({ erro: "seguradora_invalida", mensagem: "Seguradora não está entre os resultados cotados." });
+    return;
+  }
+
+  // Envia SÓ a opção escolhida ao cliente (best-effort; cotação manual sem
+  // conversa não tem cliente no WhatsApp → só registra a escolha).
+  if (c.conversa_id) {
+    const conv = await carregar(c.conversa_id);
+    if (conv) {
+      const texto = formatarOpcaoUnicaParaWhatsApp(escolhido, conv.clientes?.nome ?? "tudo certo");
+      await enviarParaCliente(conv, c.conversa_id, req.user?.email)(texto);
+    }
+  }
+
+  // Grava a escolha + marca enviada. O `.is(enviado_ao_cliente_em, null)` torna a
+  // gravação idempotente também sob corrida (duplo clique / 2 abas).
+  const { error: upErr } = await sb
+    .from("cotacoes")
+    .update({
+      escolha_seguradora: escolhido.seguradora,
+      escolha_plano: escolhido,
+      enviado_ao_cliente_em: new Date().toISOString(),
+      escolhido_por: req.user?.id ?? null,
+    })
+    .eq("id", cotacaoId)
+    .is("enviado_ao_cliente_em", null);
+  if (upErr) {
+    res.status(500).json({ erro: "falha_ao_gravar", mensagem: upErr.message });
+    return;
+  }
+
+  // Conversa → cotacao_enviada (coerente com o fluxo de aceite futuro).
+  if (c.conversa_id) {
+    await sb.from("conversas").update({ estado: "cotacao_enviada" }).eq("id", c.conversa_id);
+  }
+
+  logger.info("[cotacao.routes] opção escolhida e enviada ao cliente", {
+    cotacaoId,
+    seguradora: escolhido.seguradora,
+  });
   res.json({ ok: true });
 });
 
