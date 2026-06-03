@@ -101,7 +101,13 @@ const PATCH = {
 
 describe("salvarConfigEssencialLinha", () => {
   it("preserva avançados do override e troca só os essenciais", async () => {
-    h.override = rowBase({ canal_id: "c1", exemplos: "exemplo do admin", variar_texto: true });
+    h.override = rowBase({
+      canal_id: "c1",
+      exemplos: "exemplo do admin",
+      variar_texto: true,
+      emojis: "a_vontade",
+      estilo_amostra: "amostra do admin",
+    });
     h.overrideId = "row-1";
 
     await salvarConfigEssencialLinha({ canalId: "c1", patch: PATCH, porEmail: "op@x.com" });
@@ -115,9 +121,11 @@ describe("salvarConfigEssencialLinha", () => {
     expect(p.criatividade).toBe("criativo");
     expect(p.persona).toBe("nova persona");
     expect(p.saudacao).toBe("novo oi");
-    // avançados PRESERVADOS do override
+    // avançados PRESERVADOS do override (inclui emojis e a amostra de clone)
     expect(p.exemplos).toBe("exemplo do admin");
     expect(p.variar_texto).toBe(true);
+    expect(p.emojis).toBe("a_vontade");
+    expect(p.estilo_amostra).toBe("amostra do admin");
     expect(p.canal_id).toBe("c1");
   });
 

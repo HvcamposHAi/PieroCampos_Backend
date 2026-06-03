@@ -47,6 +47,8 @@ const putSchema = z.object({
   variar_texto: z.boolean(),
   criatividade: z.enum(["consistente", "equilibrado", "criativo"]),
   objetivo: z.enum(["cotacao", "atendimento", "aquecer", "venda"]),
+  emojis: z.enum(["sem", "moderado", "a_vontade"]).default("moderado"),
+  estilo_amostra: z.string().trim().max(8000).nullish(),
   // Mapas por categoria; o serviço saneia (descarta obrigatórios / chaves inválidas).
   campos_excluidos: z.record(z.string(), z.array(z.string())).optional(),
   perguntas_customizadas: z.record(z.string(), z.array(perguntaCustomSchema)).optional(),
@@ -69,6 +71,8 @@ router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
       variar_texto: parsed.data.variar_texto,
       criatividade: parsed.data.criatividade,
       objetivo: parsed.data.objetivo,
+      emojis: parsed.data.emojis,
+      estilo_amostra: parsed.data.estilo_amostra ?? null,
       campos_excluidos: parsed.data.campos_excluidos,
       perguntas_customizadas: parsed.data.perguntas_customizadas,
       ativo: parsed.data.ativo,

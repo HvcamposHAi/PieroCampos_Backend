@@ -43,6 +43,9 @@ export type TomVoz =
 
 export type Criatividade = "consistente" | "equilibrado" | "criativo";
 
+/** Nível de uso de emoji da Bia na linha. 'moderado' = comportamento atual ("máx. 1"). */
+export type Emojis = "sem" | "moderado" | "a_vontade";
+
 /** Objetivo/postura da Bia na linha — orienta a intenção (não muda o roteiro). */
 export type Objetivo = "cotacao" | "atendimento" | "aquecer" | "venda";
 
@@ -70,6 +73,7 @@ const OBJETIVOS_VALIDOS: ReadonlySet<string> = new Set<Objetivo>([
   "aquecer",
   "venda",
 ]);
+const EMOJIS_VALIDOS: ReadonlySet<string> = new Set<Emojis>(["sem", "moderado", "a_vontade"]);
 
 /** Linha crua da tabela (forma devolvida à tela do Admin). */
 export interface AgenteConfigRow {
@@ -82,6 +86,8 @@ export interface AgenteConfigRow {
   variar_texto: boolean;
   criatividade: Criatividade;
   objetivo: Objetivo;
+  emojis: Emojis;
+  estilo_amostra: string | null;
   campos_excluidos: CamposExcluidos;
   perguntas_customizadas: PerguntasCustomizadas;
   atualizado_em: string | null;
@@ -97,6 +103,8 @@ export interface ConfigEfetiva {
   variarTexto: boolean;
   criatividade: Criatividade;
   objetivo: Objetivo;
+  emojis: Emojis;
+  estiloAmostra: string | null;
   camposExcluidos: CamposExcluidos;
   perguntasCustomizadas: PerguntasCustomizadas;
   temperature: number;
@@ -110,7 +118,7 @@ export interface AgenteConfigAdmin {
 }
 
 const COLUNAS =
-  "canal_id, ativo, tom_voz, persona, saudacao, exemplos, variar_texto, criatividade, objetivo, campos_excluidos, perguntas_customizadas, atualizado_em, atualizado_por";
+  "canal_id, ativo, tom_voz, persona, saudacao, exemplos, variar_texto, criatividade, objetivo, emojis, estilo_amostra, campos_excluidos, perguntas_customizadas, atualizado_em, atualizado_por";
 
 /** Normaliza um jsonb que deveria ser objeto { categoria: [...] }; senão {}. */
 function comoMapa<T>(v: unknown): Record<string, T> {
@@ -139,6 +147,7 @@ export function mergeConfig(
   const criatividade = override?.criatividade ?? padrao?.criatividade ?? "equilibrado";
   const variarTexto = override?.variar_texto ?? padrao?.variar_texto ?? true;
   const objetivo = override?.objetivo ?? padrao?.objetivo ?? "cotacao";
+  const emojis = override?.emojis ?? padrao?.emojis ?? "moderado";
   // Campos da cotação: o override (quando existe) substitui o objeto inteiro — a
   // UI pré-semeia o override a partir do padrão, então é coerente.
   const fonteCampos = override ?? padrao;
@@ -150,6 +159,8 @@ export function mergeConfig(
     variarTexto,
     criatividade,
     objetivo,
+    emojis,
+    estiloAmostra: preferir(override?.estilo_amostra, padrao?.estilo_amostra),
     camposExcluidos: comoMapa<string[]>(fonteCampos?.campos_excluidos),
     perguntasCustomizadas: comoMapa<PerguntaCustom[]>(fonteCampos?.perguntas_customizadas),
     temperature: CRIATIVIDADE_TEMPERATURA[criatividade],
@@ -262,6 +273,8 @@ export interface SalvarConfigInput {
   variar_texto: boolean;
   criatividade: Criatividade;
   objetivo: Objetivo;
+  emojis: Emojis;
+  estilo_amostra?: string | null;
   campos_excluidos?: CamposExcluidos;
   perguntas_customizadas?: PerguntasCustomizadasInput;
   ativo?: boolean;
@@ -286,6 +299,7 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
   if (!TONS_VALIDOS.has(input.tom_voz)) throw new Error("tom_voz inválido");
   if (!CRIATIVIDADES_VALIDAS.has(input.criatividade)) throw new Error("criatividade inválida");
   if (!OBJETIVOS_VALIDOS.has(input.objetivo)) throw new Error("objetivo inválido");
+  if (!EMOJIS_VALIDOS.has(input.emojis)) throw new Error("emojis inválido");
 
   const sb = getSupabaseAdmin();
   const payload = {
@@ -298,6 +312,8 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
     variar_texto: input.variar_texto,
     criatividade: input.criatividade,
     objetivo: input.objetivo,
+    emojis: input.emojis,
+    estilo_amostra: nuloSeVazio(input.estilo_amostra),
     campos_excluidos: sanearCamposExcluidos(input.campos_excluidos),
     perguntas_customizadas: sanearPerguntasCustom(input.perguntas_customizadas),
     atualizado_em: new Date().toISOString(),
@@ -370,6 +386,8 @@ export async function salvarConfigEssencialLinha(input: {
     // PRESERVA os avançados (vêm do override existente ou do padrão):
     exemplos: base?.exemplos ?? null,
     variar_texto: base?.variar_texto ?? true,
+    emojis: base?.emojis ?? "moderado",
+    estilo_amostra: base?.estilo_amostra ?? null,
     campos_excluidos: base?.campos_excluidos,
     perguntas_customizadas: base?.perguntas_customizadas,
     porEmail: input.porEmail,

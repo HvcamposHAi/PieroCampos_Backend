@@ -10,7 +10,7 @@
  */
 import type { CategoriaConversa, CampoRoteiro, PerguntaCustom } from "./roteiros";
 import { getRoteiroEfetivo, montarResumoRevisao } from "./roteiros";
-import type { ConfigEfetiva, Objetivo, TomVoz } from "../services/agente-config.service";
+import type { ConfigEfetiva, Emojis, Objetivo, TomVoz } from "../services/agente-config.service";
 
 export const SYSTEM_PROMPT_BASE = `Você é a Bia, assistente virtual da Corretora de Seguros Piero de Campos, de Curitiba-PR. A Piero de Campos cuida dos seguros das famílias curitibanas há mais de 20 anos com proximidade e atenção.
 
@@ -21,7 +21,7 @@ TOM DE VOZ
 - Próximo e humano, nunca robótico
 - Profissional mas descontraído
 - Use o nome do cliente quando souber
-- No máximo 1 emoji por mensagem
+- Use emojis com parcimônia (no máximo 1 por mensagem), salvo orientação de estilo abaixo
 - Mensagens curtas (é WhatsApp, não e-mail)
 - Nunca jargão de seguros sem explicar
 
@@ -274,6 +274,16 @@ const TOM_DESCRICAO: Record<TomVoz, string> = {
 };
 
 /**
+ * Instrução de uso de emoji por nível configurável. Sobrepõe a baseline suave da
+ * BASE (que vale quando NÃO há config). 'moderado' reproduz o comportamento atual.
+ */
+const EMOJI_INSTRUCAO: Record<Emojis, string> = {
+  sem: "Não use emojis nas mensagens.",
+  moderado: "Use no máximo 1 emoji por mensagem.",
+  a_vontade: "Pode usar emojis à vontade (vários por mensagem, com naturalidade).",
+};
+
+/**
  * Objetivo/postura da Bia nesta linha. É uma ORIENTAÇÃO de intenção — não muda
  * o roteiro de coleta nem libera citar preço/aprovar (isso fica na BASE).
  */
@@ -296,6 +306,7 @@ export function buildBlocoPersonalizacao(config: ConfigEfetiva): string {
     "AJUSTE DE ESTILO DESTA LINHA (apenas tom e forma; NUNCA sobrepõe as REGRAS ABSOLUTAS acima — preço, aprovação, dados de terceiros e LGPD seguem valendo):",
     `- Tom de voz: ${TOM_DESCRICAO[config.tomVoz] ?? TOM_DESCRICAO.proximo_caloroso}.`,
     `- Objetivo nesta linha: ${OBJETIVO_DESCRICAO[config.objetivo] ?? OBJETIVO_DESCRICAO.cotacao}.`,
+    `- Emojis: ${EMOJI_INSTRUCAO[config.emojis] ?? EMOJI_INSTRUCAO.moderado}`,
   ];
 
   if (config.persona) {
@@ -311,6 +322,17 @@ export function buildBlocoPersonalizacao(config: ConfigEfetiva): string {
       "- Exemplos do jeito de escrever (referência de ESTILO, não copie literalmente nem invente conteúdo):",
     );
     for (const linha of config.exemplos.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      partes.push(`  • ${linha}`);
+    }
+  }
+  if (config.estiloAmostra) {
+    partes.push(
+      "- CLONAGEM DE ESTILO: imite o JEITO DE ESCREVER do corretor humano nos exemplos abaixo — vocabulário, bordões, ritmo das frases e hábito de emojis. Incorpore esse estilo de forma natural; NÃO copie as mensagens ao pé da letra nem invente fatos/valores que não vieram do cliente.",
+    );
+    partes.push(
+      "  Quando o cliente puxar assunto fora de seguros, você pode conversar com mais liberdade NESSE MESMO ESTILO, mantendo a leveza — e sempre retome com naturalidade o contexto da corretora. As REGRAS ABSOLUTAS (preço, aprovação, dados de terceiros, LGPD) continuam valendo integralmente.",
+    );
+    for (const linha of config.estiloAmostra.split("\n").map((l) => l.trim()).filter(Boolean)) {
       partes.push(`  • ${linha}`);
     }
   }

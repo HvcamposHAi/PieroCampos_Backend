@@ -59,6 +59,8 @@ function row(over: Partial<AgenteConfigRow> = {}): AgenteConfigRow {
     variar_texto: true,
     criatividade: "equilibrado",
     objetivo: "cotacao",
+    emojis: "moderado",
+    estilo_amostra: null,
     campos_excluidos: {},
     perguntas_customizadas: {},
     atualizado_em: null,
@@ -100,6 +102,27 @@ describe("mergeConfig + criatividade→temperature", () => {
     expect(CRIATIVIDADE_TEMPERATURA).toEqual({ consistente: 0.3, equilibrado: 0.6, criativo: 0.9 });
   });
 
+  it("emojis: override vence; sem ninguém → 'moderado'; estilo_amostra segue preferir()", () => {
+    // override define emojis e estilo; padrão tem outro estilo
+    const m1 = mergeConfig(
+      row({ emojis: "sem", estilo_amostra: "padrão" }),
+      row({ canal_id: "c1", emojis: "a_vontade", estilo_amostra: "override" }),
+    );
+    expect(m1.emojis).toBe("a_vontade");
+    expect(m1.estiloAmostra).toBe("override");
+    // override com estilo nulo → herda o estilo do padrão (preferir); emojis do override vence
+    const m2 = mergeConfig(
+      row({ emojis: "a_vontade", estilo_amostra: "padrão" }),
+      row({ canal_id: "c1", emojis: "moderado", estilo_amostra: null }),
+    );
+    expect(m2.estiloAmostra).toBe("padrão");
+    expect(m2.emojis).toBe("moderado");
+    // sem override (null) → tudo cai no padrão
+    const m3 = mergeConfig(row({ emojis: "sem", estilo_amostra: "só padrão" }), null);
+    expect(m3.emojis).toBe("sem");
+    expect(m3.estiloAmostra).toBe("só padrão");
+  });
+
   it("campos da cotação: override substitui os mapas inteiros", () => {
     const padrao = row({ campos_excluidos: { renovacao: ["bonus"] } });
     const override = row({
@@ -138,6 +161,28 @@ describe("buildBlocoPersonalizacao", () => {
     expect(bloco).toContain("Oi! Sou a Bia");
     expect(bloco).toContain("Já anotei");
     expect(bloco.toLowerCase()).toContain("varie");
+  });
+
+  it("emojis: cada nível emite a instrução correta; 'moderado' = comportamento atual", () => {
+    const bSem = buildBlocoPersonalizacao(mergeConfig(row({ emojis: "sem" }), null));
+    const bMod = buildBlocoPersonalizacao(mergeConfig(row({ emojis: "moderado" }), null));
+    const bAvt = buildBlocoPersonalizacao(mergeConfig(row({ emojis: "a_vontade" }), null));
+    expect(bSem).toContain("Não use emojis");
+    expect(bMod).toContain("no máximo 1 emoji por mensagem");
+    expect(bAvt).toContain("à vontade");
+  });
+
+  it("clone: com estilo_amostra injeta a seção E reafirma as REGRAS ABSOLUTAS; sem ele, nada", () => {
+    const com = buildBlocoPersonalizacao(
+      mergeConfig(row({ estilo_amostra: "Opa, bora resolver!\nFechou então 👊" }), null),
+    );
+    expect(com).toContain("CLONAGEM DE ESTILO");
+    expect(com).toContain("Opa, bora resolver!");
+    expect(com).toContain("REGRAS ABSOLUTAS");
+    expect(com).toContain("fora de seguros");
+
+    const sem = buildBlocoPersonalizacao(mergeConfig(row({ estilo_amostra: null }), null));
+    expect(sem).not.toContain("CLONAGEM DE ESTILO");
   });
 });
 
