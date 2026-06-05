@@ -19,8 +19,10 @@ import {
 } from "../../services/segfy-credenciais.service";
 import {
   confirmarReauth,
+  importarSessao,
   iniciarReauth,
   invalidarSessao,
+  restaurarSessao,
   statusSessao,
 } from "../../services/segfy-sessao.service";
 import {
@@ -67,6 +69,34 @@ router.patch("/credenciais", exigirAdmin, async (req: Request, res: Response) =>
   } catch (e) {
     logger.error("[segfy.routes] salvar falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "save_failed", mensagem: (e as Error).message });
+  }
+});
+
+// ── Importação de sessão do navegador do operador (contorno do 2FA SEM browser) ─
+
+const importarSchema = z.object({
+  cookieHeader: z.string().trim().min(10, "cole o cabeçalho Cookie do Segfy").max(20_000),
+  authAutomationToken: z.string().trim().min(10).max(8_000).optional(),
+  userAutomationToken: z.string().trim().min(10).max(8_000).optional(),
+});
+
+router.post("/sessao/importar", exigirAdmin, async (req: Request, res: Response) => {
+  const parsed = importarSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const { cookieHeader, authAutomationToken, userAutomationToken } = parsed.data;
+    const tokens =
+      authAutomationToken && userAutomationToken ? { authAutomationToken, userAutomationToken } : undefined;
+    await importarSessao({ cookieHeader, tokens, porEmail: req.user?.email ?? null });
+    const sessao = await statusSessao();
+    res.json({ ok: true, sessao });
+  } catch (e) {
+    const msg = (e as Error).message;
+    logger.error("[segfy.routes] importar sessão falhou", { erro: msg });
+    res.status(500).json({ ok: false, erro: "importar_falhou", mensagem: msg });
   }
 });
 
@@ -120,8 +150,11 @@ router.post("/credenciais/testar", exigirAdmin, async (_req: Request, res: Respo
     return;
   }
   try {
-    // forcar=true → não usa cache; login de verdade com as credenciais salvas.
-    await obterTokensSegfy(true, { email: creds.email, password: creds.password });
+    // forcar=true → não usa cache; login de verdade com as credenciais salvas +
+    // a SESSÃO importada (cookie de device trust) — espelha o caminho de cotação
+    // e valida na hora se o cookie dispensa o 2FA (premissa P1′).
+    const sessao = await restaurarSessao();
+    await obterTokensSegfy(true, { email: creds.email, password: creds.password }, sessao ?? undefined);
     await registrarTesteSegfy(true, "Login OK");
     res.json({ ok: true, mensagem: "Login no Segfy OK." });
   } catch (e) {

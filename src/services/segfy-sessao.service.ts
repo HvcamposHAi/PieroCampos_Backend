@@ -53,7 +53,13 @@ interface LinhaSessao {
   reauth_por: string | null;
 }
 
-interface StorageState {
+/**
+ * Blob de sessão persistido (cifrado). Dois formatos:
+ *  - importação de cookie (Render, sem navegador): `{ cookieHeader }`.
+ *  - captura por navegador (host com Chromium): `storageState` com `cookies[]`.
+ */
+interface SessaoBlob {
+  cookieHeader?: string;
   cookies?: Array<{ name: string; value: string; domain?: string }>;
 }
 
@@ -77,6 +83,34 @@ function limparExpirados(): void {
 }
 
 // ── Persistência ─────────────────────────────────────────────────────────────
+
+/**
+ * Importa a sessão confiável a partir do navegador JÁ logado do operador (sem
+ * rodar navegador no servidor): grava o cabeçalho `Cookie` (device trust) cifrado
+ * e, opcionalmente, os tokens de automação para uma janela imediata de cotação.
+ */
+export async function importarSessao(input: {
+  cookieHeader: string;
+  tokens?: TokensCapturados;
+  porEmail?: string | null;
+}): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const agora = new Date();
+  const patch: Record<string, unknown> = {
+    id: ID_SINGLETON,
+    sessao_cifrada: cifrar({ cookieHeader: input.cookieHeader.trim() }),
+    sessao_status: "ativa",
+    sessao_atualizada_em: agora.toISOString(),
+    sessao_valida_ate: new Date(agora.getTime() + SESSAO_TTL_MS).toISOString(),
+    reauth_por: input.porEmail ?? null,
+  };
+  if (input.tokens?.authAutomationToken && input.tokens?.userAutomationToken) {
+    patch.tokens_cifrados = cifrar(input.tokens);
+  }
+  const { error } = await sb.from("segfy_credenciais").upsert(patch, { onConflict: "id" });
+  if (error) throw new Error(`importarSessao: ${error.message}`);
+  logger.info("[segfy.sessao] sessão importada (cookie)", { por: input.porEmail ?? null });
+}
 
 async function persistirSessao(resultado: ResultadoReauth, porEmail: string | null): Promise<void> {
   const sb = getSupabaseAdmin();
@@ -208,9 +242,10 @@ function paraSegfyTokens(t: TokensCapturados): SegfyTokens {
   return { bearer: `Bearer ${t.authAutomationToken}`, automationToken: t.userAutomationToken };
 }
 
-/** Monta o header Cookie a partir do storageState (só cookies de domínio segfy). */
-function cookieHeader(storageState: StorageState): string | undefined {
-  const cookies = (storageState.cookies ?? []).filter((c) => (c.domain ?? "").includes("segfy"));
+/** Monta o header Cookie do blob: usa o `cookieHeader` importado ou os cookies do storageState. */
+function montarCookieHeader(blob: SessaoBlob): string | undefined {
+  if (blob.cookieHeader && blob.cookieHeader.trim()) return blob.cookieHeader.trim();
+  const cookies = (blob.cookies ?? []).filter((c) => (c.domain ?? "").includes("segfy"));
   if (cookies.length === 0) return undefined;
   return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 }
@@ -227,8 +262,8 @@ export async function restaurarSessao(): Promise<SegfySessaoInjetada | null> {
     if (linha.sessao_status === "expirada") return null;
     if (linha.sessao_valida_ate && new Date(linha.sessao_valida_ate).getTime() <= Date.now()) return null;
 
-    const storageState = decifrar<StorageState>(linha.sessao_cifrada);
-    const cookie = cookieHeader(storageState);
+    const blob = decifrar<SessaoBlob>(linha.sessao_cifrada);
+    const cookie = montarCookieHeader(blob);
 
     let tokens: SegfyTokens | undefined;
     let tokensValidadeMs: number | undefined;

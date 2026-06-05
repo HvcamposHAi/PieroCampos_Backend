@@ -68,11 +68,12 @@ describe("obterTokensSegfy — 2FA / sessão", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("injeta o cookie de device trust no /auth/login", async () => {
+  it("injeta o cookie de device trust E User-Agent de navegador no /auth/login", async () => {
     await obterTokensSegfy(true, CREDS, { cookie: "trust=abc" }).catch(() => undefined);
     const chamadaLogin = post.mock.calls.find((c) => String(c[0]).includes("/auth/login"));
-    const headers = (chamadaLogin?.[2] as { headers?: { Cookie?: string } } | undefined)?.headers;
+    const headers = (chamadaLogin?.[2] as { headers?: Record<string, string> } | undefined)?.headers;
     expect(headers?.Cookie).toContain("trust=abc");
+    expect(headers?.["User-Agent"]).toMatch(/Mozilla\/5\.0/);
   });
 });
 

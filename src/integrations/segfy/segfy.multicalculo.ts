@@ -166,10 +166,14 @@ export async function obterTokensSegfy(
   const email = credenciais?.email || env.SEGFY_LOGIN;
   const password = credenciais?.password || env.SEGFY_SENHA;
   // Origin/Referer do SSO: a API key do Firebase tem restrição de referrer.
+  // User-Agent de navegador: o cookie de device-trust importado pode ser checado
+  // junto do UA — enviamos um UA realista para o /auth/login aceitar a sessão.
   const json = {
     "Content-Type": "application/json",
     Origin: "https://login.segfy.com",
     Referer: "https://login.segfy.com/",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
   };
 
   // 1) Firebase verifyPassword → idToken

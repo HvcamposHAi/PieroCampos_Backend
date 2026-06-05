@@ -39,9 +39,14 @@ vi.mock("../src/integrations/segfy/segfy.scraper", () => ({
   abortarReauthSegfy: vi.fn(async () => undefined),
 }));
 
-import { cifrar, _resetCipherCache } from "../src/integrations/whatsapp/cipher";
+import { cifrar, decifrar, _resetCipherCache } from "../src/integrations/whatsapp/cipher";
 import { _resetEnvCache } from "../src/config/env";
-import { restaurarSessao, statusSessao, marcarSessaoExpirada } from "../src/services/segfy-sessao.service";
+import {
+  restaurarSessao,
+  statusSessao,
+  marcarSessaoExpirada,
+  importarSessao,
+} from "../src/services/segfy-sessao.service";
 
 const CHAVE = "A".repeat(43) + "="; // 32 bytes base64
 
@@ -96,6 +101,43 @@ describe("restaurarSessao", () => {
   it("sessão vencida pela data → null", async () => {
     estado.selectRow = { data: linhaSessao({ sessao_valida_ate: new Date(Date.now() - 1000).toISOString() }), error: null };
     expect(await restaurarSessao()).toBeNull();
+  });
+});
+
+describe("restaurarSessao — cookie importado", () => {
+  it("lê o cookieHeader importado (sem storageState/cookies[])", async () => {
+    estado.selectRow = {
+      data: linhaSessao({ sessao_cifrada: cifrar({ cookieHeader: "trust=abc; sess=xyz" }), tokens_cifrados: null }),
+      error: null,
+    };
+    const s = await restaurarSessao();
+    expect(s?.cookie).toBe("trust=abc; sess=xyz");
+    expect(s?.tokens).toBeUndefined();
+  });
+});
+
+describe("importarSessao", () => {
+  it("grava o cookie CIFRADO + status ativa e validade ~30d", async () => {
+    await importarSessao({ cookieHeader: "trust=abc; sess=xyz", porEmail: "op@x.com" });
+    const up = estado.upserts.at(-1)!;
+    expect(up.sessao_status).toBe("ativa");
+    expect(up.reauth_por).toBe("op@x.com");
+    expect(up.sessao_valida_ate).toBeTruthy();
+    // cifrado e recuperável (round-trip), nunca em claro:
+    expect(decifrar<{ cookieHeader: string }>(up.sessao_cifrada as never).cookieHeader).toBe(
+      "trust=abc; sess=xyz",
+    );
+    expect(JSON.stringify(up.sessao_cifrada)).not.toContain("trust=abc");
+  });
+
+  it("guarda tokens de automação quando fornecidos", async () => {
+    await importarSessao({
+      cookieHeader: "trust=abc",
+      tokens: { authAutomationToken: "atk", userAutomationToken: "utk" },
+    });
+    const up = estado.upserts.at(-1)!;
+    expect(up.tokens_cifrados).toBeTruthy();
+    expect(decifrar<{ userAutomationToken: string }>(up.tokens_cifrados as never).userAutomationToken).toBe("utk");
   });
 });
 
