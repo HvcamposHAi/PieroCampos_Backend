@@ -18,6 +18,12 @@ import {
   statusCredenciaisSegfy,
 } from "../../services/segfy-credenciais.service";
 import {
+  confirmarReauth,
+  iniciarReauth,
+  invalidarSessao,
+  statusSessao,
+} from "../../services/segfy-sessao.service";
+import {
   atualizarSeguradora,
   listarSeguradorasConfig,
   sincronizarSeguradoras,
@@ -28,8 +34,9 @@ const router = Router();
 
 router.get("/credenciais", exigirAdmin, async (_req: Request, res: Response) => {
   try {
-    const status = await statusCredenciaisSegfy();
-    res.json({ ok: true, ...status });
+    // Status de credenciais + status da SESSÃO confiável (2FA) num só payload.
+    const [status, sessao] = await Promise.all([statusCredenciaisSegfy(), statusSessao()]);
+    res.json({ ok: true, ...status, sessao });
   } catch (e) {
     logger.error("[segfy.routes] status falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "status_failed", mensagem: (e as Error).message });
@@ -53,11 +60,56 @@ router.patch("/credenciais", exigirAdmin, async (req: Request, res: Response) =>
       senha: parsed.data.senha,
       porEmail: req.user?.email ?? null,
     });
-    const status = await statusCredenciaisSegfy();
-    res.json({ ok: true, ...status });
+    // Trocar a senha invalida a sessão confiável: força nova reauth coerente.
+    await invalidarSessao();
+    const [status, sessao] = await Promise.all([statusCredenciaisSegfy(), statusSessao()]);
+    res.json({ ok: true, ...status, sessao });
   } catch (e) {
     logger.error("[segfy.routes] salvar falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "save_failed", mensagem: (e as Error).message });
+  }
+});
+
+// ── Reautenticação assistida (contorno do 2FA) ───────────────────────────────
+
+router.post("/sessao/iniciar", exigirAdmin, async (req: Request, res: Response) => {
+  try {
+    const r = await iniciarReauth({ porEmail: req.user?.email ?? null });
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg === "sem_credenciais") {
+      res.status(409).json({ ok: false, erro: "sem_credenciais", mensagem: "Cadastre o login e a senha do Segfy antes de reautenticar." });
+      return;
+    }
+    logger.error("[segfy.routes] iniciar reauth falhou", { erro: msg });
+    res.status(500).json({ ok: false, erro: "reauth_iniciar_falhou", mensagem: msg });
+  }
+});
+
+const confirmarSchema = z.object({
+  challengeId: z.string().min(1),
+  codigo: z.string().trim().min(4, "código inválido").max(12),
+});
+
+router.post("/sessao/confirmar", exigirAdmin, async (req: Request, res: Response) => {
+  const parsed = confirmarSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    await confirmarReauth(parsed.data);
+    const sessao = await statusSessao();
+    res.json({ ok: true, sessao });
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg === "challenge_invalido") {
+      res.status(409).json({ ok: false, erro: "challenge_invalido", mensagem: "Sessão de reautenticação expirou. Recomece pelo botão Reautenticar." });
+      return;
+    }
+    logger.warn("[segfy.routes] confirmar reauth falhou", { erro: msg });
+    res.json({ ok: false, mensagem: msg });
   }
 });
 

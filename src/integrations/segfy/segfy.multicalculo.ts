@@ -19,6 +19,7 @@ import { getEnv } from "../../config/env";
 import { logger } from "../../utils/logger";
 import { SEGFY_AUTOMATION_API, SEGFY_AUTOMATION_BASE_URL, SEGFY_ENDPOINTS } from "./endpoints";
 import { mapearResultadoParaItem } from "./segfy.resultado";
+import { SegfyReauthNecessariaError } from "./errors";
 import type { ResultadoCotacaoItem } from "./segfy.types";
 
 const SOCKET_ORIGIN = "https://socket-io.segfy.com";
@@ -116,6 +117,11 @@ function setCookieToHeader(resp: AxiosResponse): string {
 
 let cache: { tokens: SegfyTokens; expiraEm: number } | null = null;
 
+/** Reseta o cache de tokens (uso em testes). */
+export function _resetTokenCache(): void {
+  cache = null;
+}
+
 /**
  * Login Segfy 100% via HTTP (SEM browser): Firebase verifyPassword → SSO →
  * upfygate /auth/login (com o cookie do SSO) → find-by-user. Cacheia o token.
@@ -129,11 +135,32 @@ export interface CredenciaisSegfy {
   password: string;
 }
 
+/**
+ * Sessão confiável injetada (vem do banco via segfy-sessao.service): o `cookie` de
+ * device trust ("lembrar 30 dias") permite ao /auth/login HTTP pular o 2FA, e os
+ * `tokens` persistidos servem de atalho enquanto válidos. O módulo recebe isso
+ * como DADO — não conhece Supabase.
+ */
+export interface SegfySessaoInjetada {
+  cookie?: string;
+  tokens?: SegfyTokens;
+  tokensValidadeMs?: number;
+}
+
+/** Margem para reusar tokens persistidos sem nova rede. */
+const MARGEM_TOKENS_MS = 5 * 60 * 1000;
+
 export async function obterTokensSegfy(
   forcar = false,
   credenciais?: CredenciaisSegfy,
+  sessao?: SegfySessaoInjetada,
 ): Promise<SegfyTokens> {
   if (!forcar && cache && cache.expiraEm > Date.now()) return cache.tokens;
+  // Atalho: tokens persistidos da última reauth ainda confortavelmente válidos.
+  if (!forcar && sessao?.tokens && (sessao.tokensValidadeMs ?? 0) > MARGEM_TOKENS_MS) {
+    cache = { tokens: sessao.tokens, expiraEm: Date.now() + Math.min(sessao.tokensValidadeMs ?? 0, TOKEN_TTL_MS) };
+    return sessao.tokens;
+  }
   const env = getEnv();
   // Credenciais: prioriza as injetadas (banco); fallback .env (retrocompat).
   const email = credenciais?.email || env.SEGFY_LOGIN;
@@ -154,13 +181,13 @@ export async function obterTokensSegfy(
   const idToken = fb.data.idToken;
   if (!idToken) throw new Error("Segfy: Firebase não retornou idToken (credencial?).");
 
-  // 2) SSO → cookie de sessão (.segfy.com)
+  // 2) SSO → cookie de sessão (.segfy.com). Junta com o cookie de DEVICE TRUST
+  //    (sessão confiável persistida) para o /auth/login dispensar o 2FA.
   const sso = await axios.post(SSO_LOGIN, { idToken }, { headers: json, timeout: 30_000 });
-  const cookie = setCookieToHeader(sso);
+  const cookie = [sessao?.cookie, setCookieToHeader(sso)].filter(Boolean).join("; ");
 
-  // 3) upfygate /auth/login (com o cookie do SSO) → já traz os tokens de automação.
+  // 3) upfygate /auth/login (com o cookie do SSO + device trust) → tokens de automação.
   //    bearer = authAutomationToken (Authorization); config.token = userAutomationToken.
-  //    (Não é preciso find-by-user — esses tokens vêm direto no login.)
   const up = await axios.post<UpfyLoginResp>(
     `${UPFY_BASE}${SEGFY_ENDPOINTS.auth.login}`,
     { email, password },
@@ -168,7 +195,12 @@ export async function obterTokensSegfy(
   );
   const d = up.data.data;
   if (!d?.authAutomationToken || !d?.userAutomationToken) {
-    throw new Error("Segfy: /auth/login não retornou tokens de automação (2FA? SSO?).");
+    // 2FA sem device trust válido. Último recurso: tokens persistidos ainda úteis.
+    if (sessao?.tokens && (sessao.tokensValidadeMs ?? 0) > 60_000) {
+      cache = { tokens: sessao.tokens, expiraEm: Date.now() + (sessao.tokensValidadeMs ?? 60_000) };
+      return sessao.tokens;
+    }
+    throw new SegfyReauthNecessariaError();
   }
   const tokens: SegfyTokens = {
     bearer: `Bearer ${d.authAutomationToken}`,
@@ -310,6 +342,7 @@ export async function cotarAuto(
   tokens?: SegfyTokens,
   onEtapa?: (e: EtapaEvento) => void,
   credenciais?: CredenciaisSegfy,
+  sessao?: SegfySessaoInjetada,
 ): Promise<ResultadoCotacaoAuto> {
   const emit = (e: EtapaEvento): void => {
     try {
@@ -343,7 +376,7 @@ export async function cotarAuto(
   // confundia a leitura da etapa "Autenticação no Segfy".
   const tk = await comEtapa(
     "token",
-    async () => tokens ?? (await obterTokensSegfy(false, credenciais)),
+    async () => tokens ?? (await obterTokensSegfy(false, credenciais, sessao)),
     tokens ? "token reutilizado" : "autenticado no Segfy",
   );
   const { automationToken: token } = tk;

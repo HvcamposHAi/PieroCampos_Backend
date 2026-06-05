@@ -24,7 +24,9 @@ import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
+import { restaurarSessao, marcarSessaoExpirada } from "./segfy-sessao.service";
 import { listarSeguradorasAtivas } from "./segfy-seguradoras.service";
+import { SegfyReauthNecessariaError } from "../integrations/segfy/errors";
 import { cpfValido } from "../lib/cpf";
 import { logger } from "../utils/logger";
 
@@ -247,6 +249,11 @@ export async function dispararCotacaoSegfy(
   const ativas = await listarSeguradorasAtivas();
   if (ativas.length > 0) entrada.insurers = ativas;
 
+  // Sessão confiável (contorno do 2FA): cookie de device trust + tokens
+  // persistidos da última reauth assistida (Admin › Segfy). null → o login HTTP
+  // tenta direto e, se cair no 2FA, lança SegfyReauthNecessariaError.
+  const sessao = await restaurarSessao();
+
   try {
     const { quotationId, resultados } = await cotarAuto(
       entrada,
@@ -261,6 +268,7 @@ export async function dispararCotacaoSegfy(
         });
       },
       { email: credenciais.email, password: credenciais.password },
+      sessao ?? undefined,
     );
 
     await persist.atualizarCotacao(cotacaoId, {
@@ -288,6 +296,11 @@ export async function dispararCotacaoSegfy(
     // erro em "salvar" (isso criava uma 2ª linha vermelha enganosa); só marcamos
     // a cotação como erro — "Salvar cotação" permanece pendente.
     await persist.atualizarCotacao(cotacaoId, { status: "erro" });
+    // Falha de SESSÃO (2FA): marca a sessão como expirada para o badge do Admin
+    // pedir reautenticação. A etapa "token"/erro já mostrou a mensagem amigável.
+    if (e instanceof SegfyReauthNecessariaError) {
+      await marcarSessaoExpirada();
+    }
     logger.error("[segfy] cotação falhou (não-fatal)", {
       conversaId: params.conversaId,
       erro: e instanceof Error ? e.message : String(e),
