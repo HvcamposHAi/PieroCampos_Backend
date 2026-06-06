@@ -11,7 +11,8 @@
  * NÃO há callback `enviar`: nada é entregue a nenhum WhatsApp.
  */
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
-import { dispararCotacaoSegfy } from "./segfy-cotacao.service";
+import { dispararCotacao } from "./cotacao.service";
+import { CORRETORA_SEED_ID } from "../integrations/persistence/supabase-persistence";
 import { logger } from "../utils/logger";
 
 export interface DadosClienteManual {
@@ -26,15 +27,22 @@ export interface DadosClienteManual {
  * LGPD. Devolve o `clienteId`. CPF é normalizado para dígitos (consistente com
  * a gravação do bot via cliente-cpf).
  */
-export async function criarOuObterClientePorCpf(input: DadosClienteManual): Promise<string> {
+export async function criarOuObterClientePorCpf(
+  input: DadosClienteManual,
+  corretoraId?: string,
+): Promise<string> {
   const sb = getSupabaseAdmin();
   const cpfDigitos = input.cpf.replace(/\D/g, "");
+  const corretora = corretoraId ?? CORRETORA_SEED_ID;
   const agora = new Date().toISOString();
 
+  // Isolamento de tenant: find-or-create por CPF DENTRO da corretora. O MESMO CPF
+  // em duas corretoras gera DUAS linhas distintas (nunca uma compartilhada).
   const { data: achado, error: errSel } = await sb
     .from("clientes")
     .select("id, consentimento_lgpd")
     .eq("cpf", cpfDigitos)
+    .eq("corretora_id", corretora)
     .is("deletado_em", null)
     .limit(1)
     .maybeSingle();
@@ -59,6 +67,7 @@ export async function criarOuObterClientePorCpf(input: DadosClienteManual): Prom
   }
 
   const insert: Record<string, unknown> = {
+    corretora_id: corretora,
     nome: input.nome.trim(),
     telefone: input.telefone.trim(),
     cpf: cpfDigitos,
@@ -87,13 +96,24 @@ export async function criarOuObterClientePorCpf(input: DadosClienteManual): Prom
 export async function dispararCotacaoManual(params: {
   cliente: DadosClienteManual;
   dados: Record<string, unknown>;
+  /** Ramo da cotação (default 'auto'). */
+  ramo?: string | null;
+  /** Corretora (tenant) dona da cotação/cliente. Default → corretora seed. */
+  corretoraId?: string;
 }): Promise<{ clienteId: string; cotacaoId: string }> {
-  const clienteId = await criarOuObterClientePorCpf(params.cliente);
+  const clienteId = await criarOuObterClientePorCpf(params.cliente, params.corretoraId);
 
   const cotacaoId = await new Promise<string>((resolve, reject) => {
     let iniciada = false;
-    dispararCotacaoSegfy(
-      { conversaId: null, clienteId, dados: params.dados, origem: "manual" },
+    dispararCotacao(
+      {
+        conversaId: null,
+        clienteId,
+        dados: params.dados,
+        origem: "manual",
+        ramo: params.ramo,
+        corretoraId: params.corretoraId,
+      },
       undefined,
       (id) => {
         iniciada = true;

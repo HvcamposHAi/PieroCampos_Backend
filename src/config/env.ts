@@ -33,6 +33,18 @@ const schema = z
     SEGFY_COTACAO_TIMEOUT_MS: numComPadrao(60_000),
     SEGFY_COTACAO_INTERVAL_MS: numComPadrao(3_000),
     SEGFY_HEADLESS: boolDeString.default(true),
+    // Transporte da integração Segfy. 'http-reverse' (default) = engenharia
+    // reversa dos endpoints internos usada hoje (segfy.multicalculo.ts); 'oficial'
+    // = API comercial documentada (ainda SEM credenciais — só o CONTRATO existe,
+    // ver integrations/segfy/oficial/); 'off' = nenhuma. INERTE nesta fase: não é
+    // lido no runtime de cotação (o registry mantém o caminho atual); existe como
+    // configuração pronta para o selector futuro quando houver provider oficial.
+    SEGFY_TRANSPORT: z.enum(["http-reverse", "oficial", "off"]).default("http-reverse"),
+    // Gate do scraping (Playwright). default true = comportamento atual (reauth
+    // assistida de 2FA funcionando). false = isola o navegador: a reauth assistida
+    // e a sessão legada falham com erro gracioso e o operador usa "Importar sessão"
+    // (cookie) — o contorno de 2FA SEM browser. NÃO afeta o login HTTP da cotação.
+    SEGFY_SCRAPING_ENABLED: boolDeString.default(true),
     // Gmail OTP (fallback de 2FA Segfy a partir de 01/06/2026). Opcionais: o
     // caminho primário é um usuário de serviço isento de 2FA. Quando ausentes,
     // buscarOTPSegfy() lança erro claro e o scraper não tenta o desafio.
@@ -76,6 +88,10 @@ const schema = z
     TRANSCRICAO_MAX_SEG: numComPadrao(300),
     TRANSCRICAO_MAX_BYTES: numComPadrao(25 * 1024 * 1024),
     TRANSCRICAO_TIMEOUT_MS: numComPadrao(30_000),
+    // Multi-tenant (SaaS). Corretora "seed" (Piero de Campos) — uuid LITERAL fixo
+    // usado no backfill, nos defaults de persistência e nos testes. Deve casar com
+    // a linha semeada na migração `corretoras`. Não trocar sem re-backfillar.
+    CORRETORA_SEED_ID: z.string().uuid().optional().default("00000000-0000-0000-0000-000000000001"),
     // HTTP.
     PORT: numComPadrao(3000),
     FRONT_ORIGIN: z.string().optional().default(""),

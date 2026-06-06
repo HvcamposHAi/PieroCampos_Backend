@@ -21,10 +21,30 @@ import type {
 } from "../segfy/persistence.port";
 import type { Database, Json } from "./supabase.types";
 
+/** uuid LITERAL da corretora seed (Piero). Espelha o default de CORRETORA_SEED_ID. */
+export const CORRETORA_SEED_ID = "00000000-0000-0000-0000-000000000001";
+
+/** Lê o seed do ambiente sem acionar a validação completa de getEnv() (que pode
+ *  lançar em testes que injetam um client fake sem env de Supabase). */
+function lerCorretoraSeed(): string {
+  const v = process.env.CORRETORA_SEED_ID;
+  return v && v.trim() !== "" ? v.trim() : CORRETORA_SEED_ID;
+}
+
 export class SupabasePersistence implements PersistencePort {
   private readonly supabase: SupabaseClient<Database>;
+  /**
+   * Corretora (tenant) deste fluxo de cotação. Como o backend usa service_role
+   * (bypassa RLS), o isolamento é manual: TODO insert carrega esta corretora e a
+   * leitura de cliente é filtrada por ela. Default = corretora seed (Piero), que
+   * reproduz o comportamento mono-tenant atual até os callers passarem o id real.
+   */
+  private readonly corretoraId: string;
 
-  constructor(client?: SupabaseClient<Database>) {
+  constructor(client?: SupabaseClient<Database>, corretoraId?: string) {
+    // CORRETORA_SEED_ID tem default no schema; getEnv() pode falhar se WA_ENABLED
+    // e faltar env (ex.: testes que injetam client). Por isso resolvemos com try.
+    this.corretoraId = corretoraId ?? lerCorretoraSeed();
     if (client) {
       this.supabase = client;
       return;
@@ -40,11 +60,14 @@ export class SupabasePersistence implements PersistencePort {
     });
   }
 
-  async buscarClientePorId(id: string): Promise<ClienteRef | null> {
+  async buscarClientePorId(id: string, corretoraId?: string): Promise<ClienteRef | null> {
     const { data, error } = await this.supabase
       .from("clientes")
       .select("id,nome,cpf,email,telefone,segfy_id,consentimento_lgpd")
       .eq("id", id)
+      // Isolamento de tenant: nunca devolve cliente de outra corretora. Cast
+      // porque `corretora_id` só entra no types.ts após a regeneração (cláusula B).
+      .eq("corretora_id" as never, (corretoraId ?? this.corretoraId) as never)
       // Soft-delete: nunca enviar PII de cliente já excluído ao Segfy (LGPD).
       .is("deletado_em", null)
       .maybeSingle();
@@ -81,6 +104,7 @@ export class SupabasePersistence implements PersistencePort {
     const { data, error } = await this.supabase
       .from("cotacoes")
       .insert({
+        corretora_id: this.corretoraId,
         cliente_id: input.clienteId,
         conversa_id: input.conversaId,
         ramo: input.ramo,
@@ -89,7 +113,7 @@ export class SupabasePersistence implements PersistencePort {
         segfy_cotacao_id: input.segfyCotacaoId,
         validade_ate: input.validadeAte,
         status: "concluida",
-      })
+      } as never)
       .select("id")
       .single();
 
@@ -102,12 +126,13 @@ export class SupabasePersistence implements PersistencePort {
 
   async registrarLog(input: SegfySyncLogInput): Promise<void> {
     const { error } = await this.supabase.from("segfy_sync_log").insert({
+      corretora_id: this.corretoraId,
       operacao: input.operacao,
       via: input.via,
       ref_id: input.refId ?? null,
       sucesso: input.sucesso,
       detalhe: (input.detalhe ?? null) as Json | null,
-    });
+    } as never);
     if (error) {
       // Não relançar: falha no log de auditoria não deve abortar o fluxo de negócio.
       logger.warn("supabase: registrarLog falhou", { codigo: error.code });
@@ -118,6 +143,7 @@ export class SupabasePersistence implements PersistencePort {
     // `origem` só é enviado quando informado (coluna opcional com default no banco).
     // Cast via Record para não acoplar ao types.ts antes da regeneração (cláusula B).
     const payload: Record<string, unknown> = {
+      corretora_id: this.corretoraId,
       cliente_id: input.clienteId,
       conversa_id: input.conversaId,
       ramo: input.ramo,
@@ -155,13 +181,14 @@ export class SupabasePersistence implements PersistencePort {
 
   async registrarEtapa(input: RegistrarEtapaInput): Promise<void> {
     const { error } = await this.supabase.from("cotacao_eventos").insert({
+      corretora_id: this.corretoraId,
       cotacao_id: input.cotacaoId ?? null,
       conversa_id: input.conversaId,
       etapa: input.etapa,
       status: input.status,
       mensagem: input.mensagem ?? null,
       detalhe: (input.detalhe ?? null) as Json | null,
-    });
+    } as never);
     if (error) {
       // Não-fatal: observabilidade não pode abortar a cotação.
       logger.warn("supabase: registrarEtapa falhou", { etapa: input.etapa, codigo: error.code });

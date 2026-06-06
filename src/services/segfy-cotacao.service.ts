@@ -191,6 +191,8 @@ export async function dispararCotacaoSegfy(
     dados: Record<string, unknown>;
     /** Origem da cotação (default 'whatsapp'); 'manual' para o disparo pelo operador. */
     origem?: "whatsapp" | "manual";
+    /** Corretora (tenant) dona da cotação. Omitido → corretora seed (Piero). */
+    corretoraId?: string;
   },
   persistInjetado?: PersistencePort,
   /** Chamado LOGO após criar a cotação (id já existe), antes das validações — a
@@ -198,7 +200,10 @@ export async function dispararCotacaoSegfy(
   onIniciada?: (cotacaoId: string) => void,
 ): Promise<ResultadoDisparo | null> {
   const env = getEnv();
-  const persist: PersistencePort = persistInjetado ?? new SupabasePersistence();
+  // Persistência escopada à corretora: todo insert (cotacoes/etapas/log) carrega
+  // o tenant. Quando injetada (testes), respeita a instância recebida.
+  const persist: PersistencePort =
+    persistInjetado ?? new SupabasePersistence(undefined, params.corretoraId);
 
   // 1) Cria a cotação SEMPRE (observabilidade imediata via realtime).
   const { cotacaoId } = await persist.iniciarCotacao({
@@ -227,7 +232,7 @@ export async function dispararCotacaoSegfy(
   if (!env.SEGFY_ENABLED) {
     return falhar("token", "Integração Segfy desabilitada (SEGFY_ENABLED=false). Habilite para cotar de verdade.");
   }
-  const cliente = await persist.buscarClientePorId(params.clienteId);
+  const cliente = await persist.buscarClientePorId(params.clienteId, params.corretoraId);
   if (!cliente) return falhar("token", "Cliente não encontrado ou excluído.");
   if (!cliente.consentimento_lgpd) return falhar("token", "Sem consentimento LGPD do cliente.");
 

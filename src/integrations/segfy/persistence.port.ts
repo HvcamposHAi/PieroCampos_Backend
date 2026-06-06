@@ -77,7 +77,9 @@ export interface RegistrarEtapaInput {
 }
 
 export interface PersistencePort {
-  buscarClientePorId(id: string): Promise<ClienteRef | null>;
+  /** corretoraId (opcional): defesa-em-profundidade — só devolve o cliente se
+   *  pertencer à corretora. Quando omitido, o adapter usa a corretora do escopo. */
+  buscarClientePorId(id: string, corretoraId?: string): Promise<ClienteRef | null>;
   vincularSegfyIdAoCliente(clienteId: string, segfyId: string): Promise<void>;
   salvarCotacao(input: SalvarCotacaoInput): Promise<{ cotacaoId: string }>;
   registrarLog(input: SegfySyncLogInput): Promise<void>;
@@ -106,7 +108,7 @@ export class InMemoryPersistence implements PersistencePort {
     this.clientes.set(cliente.id, cliente);
   }
 
-  async buscarClientePorId(id: string): Promise<ClienteRef | null> {
+  async buscarClientePorId(id: string, _corretoraId?: string): Promise<ClienteRef | null> {
     return this.clientes.get(id) ?? null;
   }
 

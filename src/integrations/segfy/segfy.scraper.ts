@@ -37,6 +37,19 @@ const SELETOR_SUBMIT = 'button[type="submit"]';
 const TIMEOUT_2FA_MS = 12_000;
 const TIMEOUT_LOGADO_MS = 30_000;
 
+/**
+ * Mensagem do gate. Sinaliza à camada de serviço/rotas que o scraping (Playwright)
+ * está desligado (SEGFY_SCRAPING_ENABLED=false) — distinto de um erro de login.
+ */
+const ERRO_SCRAPING_OFF = "scraping_desabilitado";
+
+/** Gate PRIMÁRIO do navegador: barra QUALQUER caminho de subir Chromium quando a
+ *  flag está off. Centralizado aqui (antes de chromium.launch) para que nenhum
+ *  caller consiga iniciar o Playwright independentemente de quem chame. */
+function assegurarScrapingHabilitado(): void {
+  if (!getEnv().SEGFY_SCRAPING_ENABLED) throw new Error(ERRO_SCRAPING_OFF);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reautenticação assistida (2FA)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,6 +123,7 @@ export async function iniciarReauthSegfy(opts: {
   headless: boolean;
   storageState?: unknown;
 }): Promise<{ handle: ReauthHandle; estado: "aguardando_codigo" | "concluido"; resultado?: ResultadoReauth }> {
+  assegurarScrapingHabilitado();
   const b = await chromium.launch({ headless: opts.headless });
   const context = await b.newContext({
     userAgent: USER_AGENT,
@@ -210,6 +224,7 @@ async function tratar2FASePreciso(p: Page): Promise<void> {
 
 export async function iniciarSessaoSegfy(): Promise<Page> {
   if (page) return page;
+  assegurarScrapingHabilitado();
   const env = getEnv();
 
   browser = await chromium.launch({ headless: env.SEGFY_HEADLESS });

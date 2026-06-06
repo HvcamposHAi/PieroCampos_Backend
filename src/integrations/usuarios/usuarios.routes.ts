@@ -11,7 +11,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
+import { exigirAdmin, carregarOperadorAtivo, corretoraEfetiva } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import {
   ErroUsuario,
@@ -77,8 +77,16 @@ router.post("/", exigirAdmin, async (req: Request, res: Response) => {
     res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
     return;
   }
+  // Corretora do novo operador = a corretora EFETIVA do admin criador (super-admin
+  // "dentro" de X cria em X; admin normal cria na sua). req.operador é populado
+  // por exigirAdmin.
+  const corretoraId = req.operador ? corretoraEfetiva(req.operador) : null;
+  if (!corretoraId) {
+    res.status(400).json({ erro: "corretora_nao_selecionada", mensagem: "Selecione uma corretora ativa antes de criar usuários." });
+    return;
+  }
   try {
-    const usuario = await criarUsuario({ ...parsed.data, porEmail: req.user?.email ?? null });
+    const usuario = await criarUsuario({ ...parsed.data, corretoraId, porEmail: req.user?.email ?? null });
     res.status(201).json({ ok: true, usuario });
   } catch (e) {
     tratarErro(res, "criar", e);

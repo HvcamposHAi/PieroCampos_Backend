@@ -153,6 +153,10 @@ export async function iniciarReauth(opts: { porEmail?: string | null } = {}): Pr
   | { estado: "aguardando_codigo"; challengeId: string; email: string }
   | { estado: "concluido" }
 > {
+  // Defesa em profundidade: erro ANTES de qualquer trabalho quando o scraping
+  // está off (o gate primário vive em segfy.scraper). O contorno é "Importar
+  // sessão" (cookie), que NÃO passa por aqui e segue funcionando.
+  if (!getEnv().SEGFY_SCRAPING_ENABLED) throw new Error("scraping_desabilitado");
   limparExpirados();
   const creds = await obterCredenciaisSegfy();
   if (!creds) throw new Error("sem_credenciais");
@@ -190,6 +194,8 @@ export async function iniciarReauth(opts: { porEmail?: string | null } = {}): Pr
 
 /** Passo 2 da reauth assistida: aplica o código 2FA e persiste a sessão. */
 export async function confirmarReauth(input: { challengeId: string; codigo: string }): Promise<void> {
+  // Guard simétrico: se a flag foi desligada entre iniciar e confirmar, falha limpo.
+  if (!getEnv().SEGFY_SCRAPING_ENABLED) throw new Error("scraping_desabilitado");
   limparExpirados();
   const desafio = desafios.get(input.challengeId);
   if (!desafio) throw new Error("challenge_invalido");

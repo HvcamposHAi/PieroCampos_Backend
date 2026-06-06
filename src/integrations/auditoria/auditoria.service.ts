@@ -18,7 +18,8 @@ export type CategoriaAuditoria =
   | "cotacao"
   | "segfy"
   | "agente"
-  | "aprendizado";
+  | "aprendizado"
+  | "plataforma";
 
 export interface EventoAuditoriaInput {
   operadorId?: string | null;

@@ -13,7 +13,52 @@
 import { logger } from "../../utils/logger";
 import { getSupabaseAdmin } from "./supabase";
 import { getRoteiro, type CategoriaConversa } from "../../lib/roteiros";
+import { CORRETORA_SEED_ID } from "../persistence/supabase-persistence";
 import type { CanalRow, CanalUpdate, ConversaRow, MensagemInsert } from "./wa.types";
+
+/**
+ * Tenant de um canal (corretora dona + ramo padrão da linha). É o ÚNICO ponto de
+ * verdade do tenant no caminho INBOUND (mensagem chega sem usuário/JWT): tudo que
+ * for criado a partir de uma mensagem herda daqui. Cacheado por canal (canais
+ * mudam raramente); fail-safe = corretora seed / ramo auto (nunca cria órfão).
+ */
+interface CanalTenant {
+  corretoraId: string;
+  ramoPadrao: string | null;
+}
+const tenantCanalCache = new Map<string, CanalTenant>();
+
+export async function lerTenantDoCanal(canalId: string): Promise<CanalTenant> {
+  const cache = tenantCanalCache.get(canalId);
+  if (cache) return cache;
+  const sb = getSupabaseAdmin();
+  try {
+    const { data } = await sb
+      .from("canais")
+      .select("corretora_id, ramo_padrao" as never)
+      .eq("id", canalId)
+      .maybeSingle();
+    const row = (data as { corretora_id?: string | null; ramo_padrao?: string | null } | null) ?? null;
+    const tenant: CanalTenant = {
+      corretoraId: row?.corretora_id ?? CORRETORA_SEED_ID,
+      ramoPadrao: row?.ramo_padrao ?? null,
+    };
+    tenantCanalCache.set(canalId, tenant);
+    return tenant;
+  } catch (e) {
+    logger.warn("[wa.persistence] lerTenantDoCanal exceção; fail-safe seed/auto", {
+      canalId,
+      erro: (e as Error).message,
+    });
+    return { corretoraId: CORRETORA_SEED_ID, ramoPadrao: null };
+  }
+}
+
+/** Limpa o cache de tenant de um canal (uso em testes / após alteração do canal). */
+export function _resetTenantCanalCache(canalId?: string): void {
+  if (canalId) tenantCanalCache.delete(canalId);
+  else tenantCanalCache.clear();
+}
 
 /** Converte JID Baileys (`<num>@s.whatsapp.net`) para E.164 (`+<num>`). */
 export function jidParaE164(jid: string): string | null {
@@ -159,15 +204,22 @@ export async function lerBotAtivoCanal(canalId: string): Promise<boolean> {
 }
 
 /**
- * Garante uma row em `clientes` para o telefone informado. Sem UNIQUE em
- * telefone, fazemos read-then-write — race rara (1ª msg simultânea) é tolerável.
+ * Garante uma row em `clientes` para o telefone informado DENTRO da corretora.
+ * Isolamento de tenant: o MESMO telefone em duas corretoras gera DUAS linhas
+ * distintas (find-by-telefone escopado por corretora_id). Sem UNIQUE em telefone,
+ * fazemos read-then-write — race rara (1ª msg simultânea) é tolerável.
  */
-async function obterOuCriarCliente(telefone: string, nome?: string | null): Promise<string> {
+async function obterOuCriarCliente(
+  telefone: string,
+  corretoraId: string,
+  nome?: string | null,
+): Promise<string> {
   const sb = getSupabaseAdmin();
   const { data: existente, error: errSel } = await sb
     .from("clientes")
     .select("id, nome")
     .eq("telefone", telefone)
+    .eq("corretora_id" as never, corretoraId as never)
     .maybeSingle();
   if (errSel) throw errSel;
   if (existente?.id) {
@@ -179,7 +231,7 @@ async function obterOuCriarCliente(telefone: string, nome?: string | null): Prom
   }
   const { data: inserido, error: errIns } = await sb
     .from("clientes")
-    .insert({ telefone, nome: nome ?? null })
+    .insert({ telefone, nome: nome ?? null, corretora_id: corretoraId } as never)
     .select("id")
     .single();
   if (errIns) throw errIns;
@@ -242,12 +294,15 @@ export function deveReabrirEmRevisao(
  */
 async function buscarDadosAnteriores(
   clienteId: string,
+  corretoraId: string,
 ): Promise<{ dadosColetados: Record<string, unknown>; categoria: CategoriaConversa } | null> {
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
     .select("dados_coletados, categoria")
     .eq("cliente_id", clienteId)
+    // Defesa-em-profundidade: cliente já é por-corretora, mas reforçamos o tenant.
+    .eq("corretora_id" as never, corretoraId as never)
     .eq("estado", "encerrado")
     .order("ultima_mensagem_em", { ascending: false, nullsFirst: false })
     .limit(1)
@@ -263,6 +318,7 @@ async function buscarDadosAnteriores(
 async function obterOuCriarConversaAberta(
   canalId: string,
   clienteId: string,
+  tenant: CanalTenant,
 ): Promise<ConversaRow> {
   const sb = getSupabaseAdmin();
   const { data: existente, error: errSel } = await sb
@@ -308,9 +364,13 @@ async function obterOuCriarConversaAberta(
   // Conversa NOVA — Parte A: se o cliente já tem dados de um atendimento anterior
   // encerrado, semeia a conversa em modo REVISÃO (apresentar tudo de uma vez e
   // perguntar se mudou algo); senão, começa do zero como antes.
-  const anterior = await buscarDadosAnteriores(clienteId);
+  const anterior = await buscarDadosAnteriores(clienteId, tenant.corretoraId);
+  // Tenant herdado do canal: corretora (isolamento) + ramo padrão da linha (decide
+  // o roteiro/provider). ramo NULL → o bot trata como auto (retrocompat).
+  const tenantCols = { corretora_id: tenant.corretoraId, ramo: tenant.ramoPadrao };
   const insert: Record<string, unknown> = anterior
     ? {
+        ...tenantCols,
         canal_id: canalId,
         cliente_id: clienteId,
         estado: "bot_ativo",
@@ -319,6 +379,7 @@ async function obterOuCriarConversaAberta(
         dados_bot: { revisao_pendente: true, reuso_de_dados: true },
       }
     : {
+        ...tenantCols,
         canal_id: canalId,
         cliente_id: clienteId,
         estado: "bot_ativo",
@@ -400,8 +461,10 @@ export async function registrarMensagemEntrada(
     }
   }
 
-  const clienteId = await obterOuCriarCliente(telefone, input.pushName ?? null);
-  const conversa = await obterOuCriarConversaAberta(input.canalId, clienteId);
+  // Resolve o tenant a partir do CANAL (única âncora confiável no inbound).
+  const tenant = await lerTenantDoCanal(input.canalId);
+  const clienteId = await obterOuCriarCliente(telefone, tenant.corretoraId, input.pushName ?? null);
+  const conversa = await obterOuCriarConversaAberta(input.canalId, clienteId, tenant);
 
   const msg: MensagemInsert = {
     conversa_id: conversa.id,
@@ -412,7 +475,9 @@ export async function registrarMensagemEntrada(
     midia_url: input.midiaUrl ?? null,
     twilio_message_sid: input.providerMsgId ?? null,
     enviada_em: (input.enviadaEm ?? new Date()).toISOString(),
-  };
+    // Denormalizado do tenant da conversa (RLS/realtime/queries por corretora).
+    corretora_id: tenant.corretoraId,
+  } as MensagemInsert & { corretora_id: string };
 
   const { error: errMsg } = await sb.from("mensagens").insert(msg);
   if (errMsg) throw errMsg;

@@ -61,7 +61,14 @@ export async function listarUsuarios(): Promise<UsuarioAdmin[]> {
  */
 async function reconciliarOperador(
   sb: SupabaseClient,
-  input: { uid: string; email: string; nome: string; perfil: PerfilOperador; ativo: boolean },
+  input: {
+    uid: string;
+    email: string;
+    nome: string;
+    perfil: PerfilOperador;
+    ativo: boolean;
+    corretoraId: string;
+  },
 ): Promise<UsuarioAdmin> {
   const { data, error } = await sb
     .from("operadores")
@@ -72,8 +79,11 @@ async function reconciliarOperador(
         perfil: input.perfil,
         ativo: input.ativo,
         supabase_user_id: input.uid,
+        // corretora_id é NOT NULL (multi-tenant). Sem isto o insert falha.
+        // Cast: coluna entra no types.ts após a regeneração.
+        corretora_id: input.corretoraId,
         atualizado_em: new Date().toISOString(),
-      },
+      } as never,
       { onConflict: "email" },
     )
     .select(COLUNAS)
@@ -89,6 +99,8 @@ export async function criarUsuario(input: {
   perfil: PerfilOperador;
   ativo: boolean;
   senha: string;
+  /** Corretora (tenant) do novo operador. Obrigatória (operadores.corretora_id NOT NULL). */
+  corretoraId: string;
   porEmail?: string | null;
 }): Promise<UsuarioAdmin> {
   const sb = getSupabaseAdmin();
@@ -118,6 +130,7 @@ export async function criarUsuario(input: {
     nome,
     perfil: input.perfil,
     ativo: input.ativo,
+    corretoraId: input.corretoraId,
   });
   logger.info("[usuarios] usuario criado", { email, perfil: input.perfil, por: input.porEmail ?? null });
   return operador;

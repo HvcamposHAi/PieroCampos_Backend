@@ -112,6 +112,10 @@ router.post("/sessao/iniciar", exigirAdmin, async (req: Request, res: Response) 
       res.status(409).json({ ok: false, erro: "sem_credenciais", mensagem: "Cadastre o login e a senha do Segfy antes de reautenticar." });
       return;
     }
+    if (msg === "scraping_desabilitado") {
+      res.status(409).json({ ok: false, erro: "scraping_desabilitado", mensagem: "Reautenticação por navegador desativada (SEGFY_SCRAPING_ENABLED=false). Use 'Importar sessão' (cookie)." });
+      return;
+    }
     logger.error("[segfy.routes] iniciar reauth falhou", { erro: msg });
     res.status(500).json({ ok: false, erro: "reauth_iniciar_falhou", mensagem: msg });
   }
@@ -136,6 +140,10 @@ router.post("/sessao/confirmar", exigirAdmin, async (req: Request, res: Response
     const msg = (e as Error).message;
     if (msg === "challenge_invalido") {
       res.status(409).json({ ok: false, erro: "challenge_invalido", mensagem: "Sessão de reautenticação expirou. Recomece pelo botão Reautenticar." });
+      return;
+    }
+    if (msg === "scraping_desabilitado") {
+      res.status(409).json({ ok: false, erro: "scraping_desabilitado", mensagem: "Reautenticação por navegador desativada (SEGFY_SCRAPING_ENABLED=false). Use 'Importar sessão' (cookie)." });
       return;
     }
     logger.warn("[segfy.routes] confirmar reauth falhou", { erro: msg });

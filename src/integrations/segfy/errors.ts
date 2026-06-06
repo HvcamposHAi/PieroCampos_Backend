@@ -21,3 +21,20 @@ export class SegfyReauthNecessariaError extends Error {
     this.name = "SegfyReauthNecessariaError";
   }
 }
+
+/** Mensagem do contrato da API OFICIAL ainda não habilitada (sem credenciais). */
+export const MSG_OFICIAL_NAO_CONFIGURADA =
+  "API oficial Segfy não configurada — solicite acesso comercial à Segfy e defina SEGFY_TRANSPORT='oficial'.";
+
+/**
+ * Lançado pelo STUB do provider oficial (integrations/segfy/oficial/). Enquanto a
+ * Segfy não libera credenciais/documentação, o contrato existe mas NÃO opera: toda
+ * chamada falha de forma clara e tipada (nunca devolve resultado vazio mascarado).
+ */
+export class SegfyOficialNaoConfiguradaError extends Error {
+  readonly code = "segfy_oficial_nao_configurada";
+  constructor(message: string = MSG_OFICIAL_NAO_CONFIGURADA) {
+    super(message);
+    this.name = "SegfyOficialNaoConfiguradaError";
+  }
+}

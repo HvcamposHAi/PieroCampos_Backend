@@ -43,7 +43,8 @@ import {
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
 import { obterPlaybookAtivoTexto } from "./aprendizado.service";
-import { dispararCotacaoSegfy, mapearParaCotacao } from "./segfy-cotacao.service";
+import { mapearParaCotacao } from "./segfy-cotacao.service";
+import { dispararCotacao } from "./cotacao.service";
 import { cpfValido, formatarCpf } from "../lib/cpf";
 import { normalizarTelefoneBr } from "../lib/telefone";
 
@@ -449,18 +450,24 @@ export async function confirmarEdispararCotacao(p: {
   // se a conversa já estava com um humano, uma nova falha não re-notifica.
   const { data: pre } = await sb
     .from("conversas")
-    .select("estado, dados_bot")
+    .select("estado, dados_bot, ramo, corretora_id")
     .eq("id", p.conversaId)
     .maybeSingle();
   const estadoInicial = (pre as { estado?: string } | null)?.estado;
   const dadosBot = comoObjeto((pre as { dados_bot?: Record<string, unknown> | null } | null)?.dados_bot);
+  // Ramo e corretora da conversa decidem o provider (auto→Segfy; demais→manual)
+  // e o tenant da cotação. Ausentes (conversa antiga) → auto / corretora seed.
+  const ramoConversa = (pre as { ramo?: string | null } | null)?.ramo ?? null;
+  const corretoraConversa = (pre as { corretora_id?: string | null } | null)?.corretora_id ?? undefined;
 
   await sb.from("conversas").update({ estado: "aguardando_cotacao" }).eq("id", p.conversaId);
 
-  const cotacao = await dispararCotacaoSegfy({
+  const cotacao = await dispararCotacao({
     conversaId: p.conversaId,
     clienteId: p.clienteId,
     dados: p.dados,
+    ramo: ramoConversa,
+    corretoraId: corretoraConversa,
   });
   if (!cotacao) {
     // Cotação falhou (Segfy off / dados faltando / erro): escala para um humano

@@ -81,6 +81,7 @@ describe("criarUsuario", () => {
       perfil: "operador",
       ativo: true,
       senha: "senha1234",
+      corretoraId: "corr-1",
     });
 
     expect(h.authAdmin.createUser).toHaveBeenCalledWith(
@@ -97,6 +98,7 @@ describe("criarUsuario", () => {
       supabase_user_id: "uid-1",
       perfil: "operador",
       ativo: true,
+      corretora_id: "corr-1", // U2: corretora_id obrigatório (NOT NULL) vai no upsert
     });
     expect(u.supabase_user_id).toBe("uid-1");
   });
@@ -107,7 +109,7 @@ describe("criarUsuario", () => {
       error: { message: "A user with this email address has already been registered", code: "email_exists" },
     });
     await expect(
-      criarUsuario({ nome: "Maria", email: "m@x.com", perfil: "operador", ativo: true, senha: "senha1234" }),
+      criarUsuario({ nome: "Maria", email: "m@x.com", perfil: "operador", ativo: true, senha: "senha1234", corretoraId: "corr-1" }),
     ).rejects.toMatchObject({ codigo: "email_exists" });
     expect(h.rec.upsert.length).toBe(0);
   });
