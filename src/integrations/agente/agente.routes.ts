@@ -9,7 +9,11 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
+import {
+  exigirAdmin,
+  exigirCorretoraSelecionada,
+  carregarOperadorAtivo,
+} from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import {
   obterConfigAdmin,
@@ -21,9 +25,9 @@ import {
 
 const router = Router();
 
-router.get("/config", exigirAdmin, async (_req: Request, res: Response) => {
+router.get("/config", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   try {
-    const dados = await obterConfigAdmin();
+    const dados = await obterConfigAdmin(req.corretoraId!);
     res.json({ ok: true, ...dados });
   } catch (e) {
     logger.error("[agente.routes] obter falhou", { erro: (e as Error).message });
@@ -55,7 +59,7 @@ const putSchema = z.object({
   ativo: z.boolean().optional(),
 });
 
-router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
+router.put("/config", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const parsed = putSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
@@ -63,6 +67,7 @@ router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
   }
   try {
     await salvarConfig({
+      corretoraId: req.corretoraId!,
       canalId: parsed.data.canal_id,
       tom_voz: parsed.data.tom_voz,
       persona: parsed.data.persona ?? null,
@@ -78,7 +83,7 @@ router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
       ativo: parsed.data.ativo,
       porEmail: req.user?.email ?? null,
     });
-    const dados = await obterConfigAdmin();
+    const dados = await obterConfigAdmin(req.corretoraId!);
     res.json({ ok: true, ...dados });
   } catch (e) {
     logger.error("[agente.routes] salvar falhou", { erro: (e as Error).message });
@@ -86,15 +91,15 @@ router.put("/config", exigirAdmin, async (req: Request, res: Response) => {
   }
 });
 
-router.delete("/config/:canalId", exigirAdmin, async (req: Request, res: Response) => {
+router.delete("/config/:canalId", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const canalId = z.string().uuid().safeParse(req.params.canalId);
   if (!canalId.success) {
     res.status(422).json({ erro: "canal_invalido" });
     return;
   }
   try {
-    await removerOverride(canalId.data);
-    const dados = await obterConfigAdmin();
+    await removerOverride(canalId.data, req.corretoraId!);
+    const dados = await obterConfigAdmin(req.corretoraId!);
     res.json({ ok: true, ...dados });
   } catch (e) {
     logger.error("[agente.routes] remover override falhou", { erro: (e as Error).message });
@@ -152,6 +157,7 @@ router.put("/config/me", async (req: Request, res: Response) => {
   }
   try {
     await salvarConfigEssencialLinha({
+      corretoraId: op.corretora_id,
       canalId: op.canal_padrao_id,
       patch: {
         objetivo: parsed.data.objetivo,

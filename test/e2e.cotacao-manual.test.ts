@@ -8,7 +8,9 @@ import express from "express";
 import type { AddressInfo } from "node:net";
 
 const h = vi.hoisted(() => ({
-  operador: null as { id: string; perfil: string; canal_padrao_id: string | null } | null,
+  operador: null as
+    | { id: string; perfil: string; canal_padrao_id: string | null; corretora_id?: string; is_plataforma?: boolean; corretora_ativa_id?: string | null }
+    | null,
   disparar: vi.fn(),
 }));
 
@@ -23,6 +25,9 @@ vi.mock("../src/middlewares/authSupabase", () => ({
     }
     res.status(403).json({ erro: "operador_required" });
   },
+  // corretora EFETIVA: super-admin usa a ativa; demais, a sua.
+  corretoraEfetiva: (op: { is_plataforma?: boolean; corretora_ativa_id?: string | null; corretora_id?: string }) =>
+    op.is_plataforma ? op.corretora_ativa_id ?? null : op.corretora_id ?? null,
 }));
 // Serviço de disparo mockado (sem Segfy/Supabase reais).
 vi.mock("../src/services/cotacao-manual.service", () => ({ dispararCotacaoManual: h.disparar }));
@@ -55,7 +60,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  h.operador = { id: "op_1", perfil: "operador", canal_padrao_id: null };
+  h.operador = { id: "op_1", perfil: "operador", canal_padrao_id: null, corretora_id: "corr-1", is_plataforma: false };
   h.disparar.mockReset().mockResolvedValue({ clienteId: "cli-1", cotacaoId: "cot_1" });
 });
 

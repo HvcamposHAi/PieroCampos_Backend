@@ -11,9 +11,8 @@
 import { getEnv } from "../config/env";
 import { cifrar, decifrar, type PayloadCifrado } from "../integrations/whatsapp/cipher";
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
+import { CORRETORA_SEED_ID } from "../integrations/persistence/supabase-persistence";
 import { logger } from "../utils/logger";
-
-const ID_SINGLETON = "singleton";
 
 export interface CredenciaisSegfy {
   email: string;
@@ -47,15 +46,15 @@ interface LinhaCredenciais {
  * Resolve as credenciais a usar no login: 1º a linha cifrada do banco; se não
  * houver (ou a decifra falhar), cai no `.env`; `null` se nenhum dos dois existir.
  */
-export async function obterCredenciaisSegfy(): Promise<
-  (CredenciaisSegfy & { fonte: Exclude<FonteCredenciais, "nenhuma"> }) | null
-> {
+export async function obterCredenciaisSegfy(
+  corretoraId: string = CORRETORA_SEED_ID,
+): Promise<(CredenciaisSegfy & { fonte: Exclude<FonteCredenciais, "nenhuma"> }) | null> {
   try {
     const sb = getSupabaseAdmin();
     const { data, error } = await sb
       .from("segfy_credenciais")
       .select("email, senha_cifrada")
-      .eq("id", ID_SINGLETON)
+      .eq("corretora_id" as never, corretoraId as never)
       .maybeSingle();
     if (!error && data) {
       const linha = data as Pick<LinhaCredenciais, "email" | "senha_cifrada">;
@@ -76,9 +75,12 @@ export async function obterCredenciaisSegfy(): Promise<
     });
   }
 
-  const env = getEnv();
-  if (env.SEGFY_LOGIN && env.SEGFY_SENHA) {
-    return { email: env.SEGFY_LOGIN, password: env.SEGFY_SENHA, fonte: "env" };
+  // Fallback .env só vale para a corretora SEED (Piero) — as demais usam o banco.
+  if (corretoraId === CORRETORA_SEED_ID) {
+    const env = getEnv();
+    if (env.SEGFY_LOGIN && env.SEGFY_SENHA) {
+      return { email: env.SEGFY_LOGIN, password: env.SEGFY_SENHA, fonte: "env" };
+    }
   }
   return null;
 }
@@ -87,26 +89,33 @@ export async function obterCredenciaisSegfy(): Promise<
 export async function salvarCredenciaisSegfy(input: {
   email: string;
   senha: string;
+  corretoraId?: string;
   porEmail?: string | null;
 }): Promise<void> {
+  const corretoraId = input.corretoraId ?? CORRETORA_SEED_ID;
   const sb = getSupabaseAdmin();
   const senha_cifrada = cifrar(input.senha); // {iv,tag,ciphertext}
+  // Por-corretora: 1 linha por corretora (UNIQUE(corretora_id) — cláusula 13).
+  // id (PK text) = corretoraId; onConflict no corretora_id atualiza a existente.
   const { error } = await sb.from("segfy_credenciais").upsert(
     {
-      id: ID_SINGLETON,
+      id: corretoraId,
+      corretora_id: corretoraId,
       email: input.email,
       senha_cifrada,
       atualizado_por: input.porEmail ?? null,
       atualizado_em: new Date().toISOString(),
-    },
-    { onConflict: "id" },
+    } as never,
+    { onConflict: "corretora_id" },
   );
   if (error) throw new Error(`salvarCredenciaisSegfy: ${error.message}`);
   logger.info("[segfy.cred] credenciais salvas", { email: input.email, por: input.porEmail });
 }
 
 /** Status para a tela (NUNCA inclui a senha). */
-export async function statusCredenciaisSegfy(): Promise<StatusCredenciais> {
+export async function statusCredenciaisSegfy(
+  corretoraId: string = CORRETORA_SEED_ID,
+): Promise<StatusCredenciais> {
   try {
     const sb = getSupabaseAdmin();
     const { data } = await sb
@@ -114,7 +123,7 @@ export async function statusCredenciaisSegfy(): Promise<StatusCredenciais> {
       .select(
         "email, atualizado_em, atualizado_por, ultimo_teste_em, ultimo_teste_ok, ultimo_teste_msg",
       )
-      .eq("id", ID_SINGLETON)
+      .eq("corretora_id" as never, corretoraId as never)
       .maybeSingle();
     const linha = data as Omit<LinhaCredenciais, "senha_cifrada"> | null;
     if (linha?.email) {
@@ -134,7 +143,7 @@ export async function statusCredenciaisSegfy(): Promise<StatusCredenciais> {
   }
 
   const env = getEnv();
-  if (env.SEGFY_LOGIN) {
+  if (corretoraId === CORRETORA_SEED_ID && env.SEGFY_LOGIN) {
     return {
       configurado: true,
       fonte: "env",
@@ -159,7 +168,11 @@ export async function statusCredenciaisSegfy(): Promise<StatusCredenciais> {
 }
 
 /** Registra o resultado do "Testar conexão" (no-op se as creds vêm só do .env). */
-export async function registrarTesteSegfy(ok: boolean, msg?: string): Promise<void> {
+export async function registrarTesteSegfy(
+  ok: boolean,
+  msg?: string,
+  corretoraId: string = CORRETORA_SEED_ID,
+): Promise<void> {
   try {
     const sb = getSupabaseAdmin();
     await sb
@@ -169,7 +182,7 @@ export async function registrarTesteSegfy(ok: boolean, msg?: string): Promise<vo
         ultimo_teste_ok: ok,
         ultimo_teste_msg: msg ? msg.slice(0, 200) : null,
       })
-      .eq("id", ID_SINGLETON);
+      .eq("corretora_id" as never, corretoraId as never);
   } catch (e) {
     logger.warn("[segfy.cred] não consegui registrar resultado do teste", {
       erro: (e as Error).message,

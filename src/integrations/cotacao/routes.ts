@@ -11,7 +11,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin, exigirOperadorAtivo } from "../../middlewares/authSupabase";
+import { exigirAdmin, exigirOperadorAtivo, corretoraEfetiva } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import { confirmarEdispararCotacao } from "../../services/bot.service";
 import { dispararCotacaoManual } from "../../services/cotacao-manual.service";
@@ -99,11 +99,18 @@ router.post("/manual", exigirOperadorAtivo, async (req: Request, res: Response) 
     return;
   }
 
+  // Corretora EFETIVA do operador (super-admin "dentro" de X cota em X).
+  const corretoraId = req.operador ? corretoraEfetiva(req.operador) : null;
+  if (!corretoraId) {
+    res.status(409).json({ erro: "corretora_nao_selecionada", mensagem: "Selecione uma corretora no topo para cotar." });
+    return;
+  }
   try {
     const { clienteId, cotacaoId } = await dispararCotacaoManual({
       cliente: { nome, telefone, cpf, email },
       // Garante o CPF em `dados` (mapearParaCotacao prioriza o coletado).
       dados: { cpf, ...dados },
+      corretoraId,
     });
     res.status(202).json({ ok: true, clienteId, cotacaoId });
   } catch (e) {

@@ -244,7 +244,7 @@ export async function dispararCotacaoSegfy(
   }
 
   // Credenciais do portal: banco (tela Admin) com fallback .env. Sem nenhuma → não cota.
-  const credenciais = await obterCredenciaisSegfy();
+  const credenciais = await obterCredenciaisSegfy(params.corretoraId);
   if (!credenciais) {
     return falhar("token", "Credenciais do Segfy não configuradas (Admin > Segfy ou .env).");
   }

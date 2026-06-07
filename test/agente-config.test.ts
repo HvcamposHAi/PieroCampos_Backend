@@ -19,6 +19,9 @@ vi.mock("../src/integrations/whatsapp/supabase", () => ({
         or: () => ctx,
         is: () => ctx,
         eq: () => ctx,
+        // corretoraDoCanal usa maybeSingle: devolve null → sem filtro de corretora
+        // (mantém o comportamento original deste teste de obterConfigEfetiva).
+        maybeSingle: async () => ({ data: null, error: null }),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         then: (onF: (v: any) => unknown, onR?: (e: unknown) => unknown) =>
           Promise.resolve({ data: store.rows, error: null }).then(onF, onR),

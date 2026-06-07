@@ -25,6 +25,8 @@ declare module "express-serve-static-core" {
     user?: UsuarioAutenticado;
     /** Operador ativo resolvido por `exigirOperadorAtivo` (evita 2º lookup). */
     operador?: OperadorAtivo;
+    /** Corretora EFETIVA resolvida por `exigirCorretoraSelecionada` (isolamento). */
+    corretoraId?: string;
   }
 }
 
@@ -110,6 +112,35 @@ export async function exigirPlataforma(
     return;
   }
   req.operador = op;
+  next();
+}
+
+/**
+ * Exige uma corretora EFETIVA selecionada e a publica em `req.corretoraId`. Usar
+ * APÓS exigirAdmin/exigirOperadorAtivo (que populam req.operador) nas rotas que
+ * leem/escrevem dados-tenant. Super-admin em "Todas" (sem seleção) → 409 para a
+ * UI pedir que escolha uma corretora. Admin normal nunca cai no 409.
+ */
+export async function exigirCorretoraSelecionada(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const op = req.operador ?? (await carregarOperadorAtivo(req));
+  if (!op) {
+    res.status(403).json({ erro: "operador_required" });
+    return;
+  }
+  req.operador = op;
+  const corretoraId = corretoraEfetiva(op);
+  if (!corretoraId) {
+    res.status(409).json({
+      erro: "corretora_nao_selecionada",
+      mensagem: "Selecione uma corretora no topo para gerenciar.",
+    });
+    return;
+  }
+  req.corretoraId = corretoraId;
   next();
 }
 

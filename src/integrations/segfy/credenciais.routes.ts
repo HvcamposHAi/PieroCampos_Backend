@@ -9,7 +9,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { exigirAdmin } from "../../middlewares/authSupabase";
+import { exigirAdmin, exigirCorretoraSelecionada } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import {
   obterCredenciaisSegfy,
@@ -34,10 +34,13 @@ import { obterTokensSegfy } from "./segfy.multicalculo";
 
 const router = Router();
 
-router.get("/credenciais", exigirAdmin, async (_req: Request, res: Response) => {
+router.get("/credenciais", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   try {
-    // Status de credenciais + status da SESSÃO confiável (2FA) num só payload.
-    const [status, sessao] = await Promise.all([statusCredenciaisSegfy(), statusSessao()]);
+    // Status de credenciais (por-corretora) + status da SESSÃO confiável (2FA).
+    const [status, sessao] = await Promise.all([
+      statusCredenciaisSegfy(req.corretoraId!),
+      statusSessao(),
+    ]);
     res.json({ ok: true, ...status, sessao });
   } catch (e) {
     logger.error("[segfy.routes] status falhou", { erro: (e as Error).message });
@@ -50,7 +53,7 @@ const putSchema = z.object({
   senha: z.string().min(1, "senha obrigatória").max(200),
 });
 
-router.patch("/credenciais", exigirAdmin, async (req: Request, res: Response) => {
+router.patch("/credenciais", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const parsed = putSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
@@ -60,11 +63,15 @@ router.patch("/credenciais", exigirAdmin, async (req: Request, res: Response) =>
     await salvarCredenciaisSegfy({
       email: parsed.data.email,
       senha: parsed.data.senha,
+      corretoraId: req.corretoraId!,
       porEmail: req.user?.email ?? null,
     });
     // Trocar a senha invalida a sessão confiável: força nova reauth coerente.
     await invalidarSessao();
-    const [status, sessao] = await Promise.all([statusCredenciaisSegfy(), statusSessao()]);
+    const [status, sessao] = await Promise.all([
+      statusCredenciaisSegfy(req.corretoraId!),
+      statusSessao(),
+    ]);
     res.json({ ok: true, ...status, sessao });
   } catch (e) {
     logger.error("[segfy.routes] salvar falhou", { erro: (e as Error).message });
@@ -151,8 +158,8 @@ router.post("/sessao/confirmar", exigirAdmin, async (req: Request, res: Response
   }
 });
 
-router.post("/credenciais/testar", exigirAdmin, async (_req: Request, res: Response) => {
-  const creds = await obterCredenciaisSegfy();
+router.post("/credenciais/testar", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  const creds = await obterCredenciaisSegfy(req.corretoraId!);
   if (!creds) {
     res.status(409).json({ ok: false, erro: "sem_credenciais", mensagem: "Cadastre o login e a senha antes de testar." });
     return;
@@ -163,11 +170,11 @@ router.post("/credenciais/testar", exigirAdmin, async (_req: Request, res: Respo
     // e valida na hora se o cookie dispensa o 2FA (premissa P1′).
     const sessao = await restaurarSessao();
     await obterTokensSegfy(true, { email: creds.email, password: creds.password }, sessao ?? undefined);
-    await registrarTesteSegfy(true, "Login OK");
+    await registrarTesteSegfy(true, "Login OK", req.corretoraId!);
     res.json({ ok: true, mensagem: "Login no Segfy OK." });
   } catch (e) {
     const msg = (e as Error).message;
-    await registrarTesteSegfy(false, msg);
+    await registrarTesteSegfy(false, msg, req.corretoraId!);
     logger.warn("[segfy.routes] teste de login falhou", { erro: msg });
     res.json({ ok: false, mensagem: msg });
   }

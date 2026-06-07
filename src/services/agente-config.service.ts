@@ -175,7 +175,11 @@ export function mergeConfig(
 export async function obterConfigEfetiva(canalId: string | null): Promise<ConfigEfetiva | null> {
   try {
     const sb = getSupabaseAdmin();
+    // Config é POR-CORRETORA (inclusive o padrão canal_id IS NULL). Resolve a
+    // corretora do canal para não misturar padrões de corretoras diferentes.
+    const corretoraId = canalId ? await corretoraDoCanal(canalId) : null;
     let q = sb.from("canal_agente_config").select(COLUNAS);
+    if (corretoraId) q = q.eq("corretora_id" as never, corretoraId as never);
     q = canalId ? q.or(`canal_id.is.null,canal_id.eq.${canalId}`) : q.is("canal_id", null);
     const { data, error } = await q;
     if (error) {
@@ -197,12 +201,27 @@ export async function obterConfigEfetiva(canalId: string | null): Promise<Config
   }
 }
 
-/** Padrão + todas as linhas (com override, se houver) para a tela do Admin. */
-export async function obterConfigAdmin(): Promise<AgenteConfigAdmin> {
+/** corretora_id do canal (isolamento da config por linha). null se não achar. */
+async function corretoraDoCanal(canalId: string): Promise<string | null> {
+  const sb = getSupabaseAdmin();
+  const { data } = await sb
+    .from("canais")
+    .select("corretora_id" as never)
+    .eq("id", canalId)
+    .maybeSingle();
+  return (data as { corretora_id?: string } | null)?.corretora_id ?? null;
+}
+
+/**
+ * Padrão + todas as linhas (com override) para a tela do Admin, ESCOPADO à
+ * corretora efetiva: só os canais e configs daquela corretora. Isso corrige o
+ * vazamento (Admin via service_role mostrava linhas de outra corretora).
+ */
+export async function obterConfigAdmin(corretoraId: string): Promise<AgenteConfigAdmin> {
   const sb = getSupabaseAdmin();
   const [cfgRes, canaisRes] = await Promise.all([
-    sb.from("canal_agente_config").select(COLUNAS),
-    sb.from("canais").select("id, apelido").eq("ativo", true),
+    sb.from("canal_agente_config").select(COLUNAS).eq("corretora_id" as never, corretoraId as never),
+    sb.from("canais").select("id, apelido").eq("ativo", true).eq("corretora_id" as never, corretoraId as never),
   ]);
   if (cfgRes.error) throw new Error(`obterConfigAdmin(config): ${cfgRes.error.message}`);
   if (canaisRes.error) throw new Error(`obterConfigAdmin(canais): ${canaisRes.error.message}`);
@@ -265,6 +284,8 @@ function sanearPerguntasCustom(bruto: PerguntasCustomizadasInput | undefined): P
 }
 
 export interface SalvarConfigInput {
+  /** Corretora EFETIVA dona da config (override do canal ou padrão da corretora). */
+  corretoraId: string;
   canalId: string | null;
   tom_voz: TomVoz;
   persona?: string | null;
@@ -281,9 +302,9 @@ export interface SalvarConfigInput {
   porEmail?: string | null;
 }
 
-async function acharIdLinha(canalId: string | null): Promise<string | null> {
+async function acharIdLinha(canalId: string | null, corretoraId: string): Promise<string | null> {
   const sb = getSupabaseAdmin();
-  let q = sb.from("canal_agente_config").select("id");
+  let q = sb.from("canal_agente_config").select("id").eq("corretora_id" as never, corretoraId as never);
   q = canalId ? q.eq("canal_id", canalId) : q.is("canal_id", null);
   const { data, error } = await q.maybeSingle();
   if (error) throw new Error(`acharIdLinha: ${error.message}`);
@@ -301,8 +322,17 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
   if (!OBJETIVOS_VALIDOS.has(input.objetivo)) throw new Error("objetivo inválido");
   if (!EMOJIS_VALIDOS.has(input.emojis)) throw new Error("emojis inválido");
 
+  // Se for override de um canal, valida que o canal é DA corretora (anti cross-tenant).
+  if (input.canalId) {
+    const dono = await corretoraDoCanal(input.canalId);
+    if (dono !== input.corretoraId) {
+      throw new Error(`salvarConfig: canal de outra corretora (404)`);
+    }
+  }
+
   const sb = getSupabaseAdmin();
   const payload = {
+    corretora_id: input.corretoraId,
     canal_id: input.canalId,
     ativo: input.ativo ?? true,
     tom_voz: input.tom_voz,
@@ -320,12 +350,12 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
     atualizado_por: input.porEmail ?? null,
   };
 
-  const existenteId = await acharIdLinha(input.canalId);
+  const existenteId = await acharIdLinha(input.canalId, input.corretoraId);
   if (existenteId) {
-    const { error } = await sb.from("canal_agente_config").update(payload).eq("id", existenteId);
+    const { error } = await sb.from("canal_agente_config").update(payload as never).eq("id", existenteId);
     if (error) throw new Error(`salvarConfig(update): ${error.message}`);
   } else {
-    const { error } = await sb.from("canal_agente_config").insert(payload);
+    const { error } = await sb.from("canal_agente_config").insert(payload as never);
     if (error) throw new Error(`salvarConfig(insert): ${error.message}`);
   }
   logger.info("[agente.cfg] config salva", { canal_id: input.canalId, por: input.porEmail });
@@ -333,9 +363,9 @@ export async function salvarConfig(input: SalvarConfigInput): Promise<void> {
 
 /** Lê a row CRUA (override do canal, ou padrão quando canalId=null). Usada para
  *  PRESERVAR campos avançados num save parcial (app móvel do operador). */
-async function lerLinhaRaw(canalId: string | null): Promise<AgenteConfigRow | null> {
+async function lerLinhaRaw(canalId: string | null, corretoraId: string): Promise<AgenteConfigRow | null> {
   const sb = getSupabaseAdmin();
-  let q = sb.from("canal_agente_config").select(COLUNAS);
+  let q = sb.from("canal_agente_config").select(COLUNAS).eq("corretora_id" as never, corretoraId as never);
   q = canalId ? q.eq("canal_id", canalId) : q.is("canal_id", null);
   const { data, error } = await q.maybeSingle();
   if (error) throw new Error(`lerLinhaRaw: ${error.message}`);
@@ -371,12 +401,16 @@ export async function obterEssencialLinha(canalId: string): Promise<EssencialAge
  * operador nunca apaga a configuração avançada do admin.
  */
 export async function salvarConfigEssencialLinha(input: {
+  corretoraId: string;
   canalId: string;
   patch: EssencialAgente;
   porEmail?: string | null;
 }): Promise<void> {
-  const base = (await lerLinhaRaw(input.canalId)) ?? (await lerLinhaRaw(null));
+  const base =
+    (await lerLinhaRaw(input.canalId, input.corretoraId)) ??
+    (await lerLinhaRaw(null, input.corretoraId));
   await salvarConfig({
+    corretoraId: input.corretoraId,
     canalId: input.canalId,
     objetivo: input.patch.objetivo,
     tom_voz: input.patch.tom_voz,
@@ -395,9 +429,14 @@ export async function salvarConfigEssencialLinha(input: {
 }
 
 /** Remove o override de um canal → a linha volta a herdar o padrão. */
-export async function removerOverride(canalId: string): Promise<void> {
+export async function removerOverride(canalId: string, corretoraId: string): Promise<void> {
   const sb = getSupabaseAdmin();
-  const { error } = await sb.from("canal_agente_config").delete().eq("canal_id", canalId);
+  // Escopado por corretora: nunca apaga override de canal de outra corretora.
+  const { error } = await sb
+    .from("canal_agente_config")
+    .delete()
+    .eq("canal_id", canalId)
+    .eq("corretora_id" as never, corretoraId as never);
   if (error) throw new Error(`removerOverride: ${error.message}`);
-  logger.info("[agente.cfg] override removido", { canal_id: canalId });
+  logger.info("[agente.cfg] override removido", { canal_id: canalId, corretora_id: corretoraId });
 }

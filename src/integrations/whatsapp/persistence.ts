@@ -39,6 +39,15 @@ export async function lerTenantDoCanal(canalId: string): Promise<CanalTenant> {
       .eq("id", canalId)
       .maybeSingle();
     const row = (data as { corretora_id?: string | null; ramo_padrao?: string | null } | null) ?? null;
+    // Multi-tenant: `canais.corretora_id` é NOT NULL, então o fallback p/ seed só
+    // ocorre se o canal não existir / lookup vier vazio. Em produção multi-corretora
+    // isso ROTEARIA mensagens para a Piero — logar alto para detectar mis-routing.
+    if (!row?.corretora_id) {
+      logger.error("[wa.persistence] canal sem corretora_id — fallback p/ seed (risco cross-tenant)", {
+        canalId,
+        canalEncontrado: row !== null,
+      });
+    }
     const tenant: CanalTenant = {
       corretoraId: row?.corretora_id ?? CORRETORA_SEED_ID,
       ramoPadrao: row?.ramo_padrao ?? null,

@@ -45,6 +45,10 @@ vi.mock("../src/integrations/whatsapp/supabase", () => ({
           return ctx;
         },
         async maybeSingle() {
+          // corretoraDoCanal: select("corretora_id").eq("id", canalId)
+          if (cols.trim() === "corretora_id") {
+            return { data: { corretora_id: "corr-1" }, error: null };
+          }
           if (cols.trim() === "id") {
             return { data: alvo === "canal" && h.overrideId ? { id: h.overrideId } : null, error: null };
           }
@@ -110,7 +114,7 @@ describe("salvarConfigEssencialLinha", () => {
     });
     h.overrideId = "row-1";
 
-    await salvarConfigEssencialLinha({ canalId: "c1", patch: PATCH, porEmail: "op@x.com" });
+    await salvarConfigEssencialLinha({ corretoraId: "corr-1", canalId: "c1", patch: PATCH, porEmail: "op@x.com" });
 
     expect(h.saved).toHaveLength(1);
     const p = h.saved[0]!.payload;
@@ -134,7 +138,7 @@ describe("salvarConfigEssencialLinha", () => {
     h.overrideId = null; // acharIdLinha não acha → insert
     h.padrao = rowBase({ exemplos: "exemplo padrao", variar_texto: false });
 
-    await salvarConfigEssencialLinha({ canalId: "c2", patch: PATCH, porEmail: "op@x.com" });
+    await salvarConfigEssencialLinha({ corretoraId: "corr-1", canalId: "c2", patch: PATCH, porEmail: "op@x.com" });
 
     expect(h.saved).toHaveLength(1);
     const p = h.saved[0]!.payload;
