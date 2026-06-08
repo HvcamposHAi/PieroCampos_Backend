@@ -12,7 +12,7 @@ import { getEnv } from "./config/env";
 import { authSupabase } from "./middlewares/authSupabase";
 import { waRouter } from "./integrations/whatsapp/routes";
 import { cotacaoRouter } from "./integrations/cotacao/routes";
-import { segfyRouter, segfySessaoCronRouter } from "./integrations/segfy/credenciais.routes";
+import { segfyRouter, segfySessaoCronRouter, segfySessaoTokensRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { plataformaRouter } from "./integrations/plataforma/plataforma.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
@@ -83,6 +83,8 @@ export function criarApp(): express.Express {
   app.use("/api/aprendizado/cron", aprendizadoPublicoRouter);
   // Pública (token compartilhado): pinger checa expiração da sessão Segfy e avisa.
   app.use("/api/segfy/sessao/cron", segfySessaoCronRouter);
+  // Pública (token compartilhado): agente local entrega tokens de automação colhidos.
+  app.use("/api/segfy/sessao/tokens", segfySessaoTokensRouter);
 
   app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
   app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);

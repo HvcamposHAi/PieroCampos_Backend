@@ -49,6 +49,7 @@ import {
   marcarSessaoExpirada,
   importarSessao,
   avisoProativoSessao,
+  gravarTokensHarvest,
 } from "../src/services/segfy-sessao.service";
 
 const CHAVE = "A".repeat(43) + "="; // 32 bytes base64
@@ -97,6 +98,17 @@ describe("restaurarSessao", () => {
   it("sessão ausente → null", async () => {
     estado.selectRow = { data: null, error: null };
     expect(await restaurarSessao()).toBeNull();
+  });
+
+  it("só-tokens (sem cookie/sessao_cifrada) → devolve tokens (agente de colheita)", async () => {
+    estado.selectRow = {
+      data: linhaSessao({ sessao_cifrada: null, tokens_cifrados: cifrar({ authAutomationToken: "atk", userAutomationToken: "utk" }), sessao_atualizada_em: new Date().toISOString() }),
+      error: null,
+    };
+    const s = await restaurarSessao();
+    expect(s?.cookie).toBeUndefined();
+    expect(s?.tokens).toEqual({ bearer: "Bearer atk", automationToken: "utk" });
+    expect((s?.tokensValidadeMs ?? 0)).toBeGreaterThan(0);
   });
 
   it("sessão expirada (status) → null", async () => {
@@ -150,6 +162,22 @@ describe("importarSessao", () => {
   it("falha clara quando a linha de credenciais não existe", async () => {
     estado.updateReturn = []; // nenhuma linha singleton
     await expect(importarSessao({ cookieHeader: "trust=abc" })).rejects.toThrow(/não configuradas/);
+  });
+});
+
+describe("gravarTokensHarvest", () => {
+  it("grava tokens cifrados + atualiza timestamp/status e retorna true", async () => {
+    const ok = await gravarTokensHarvest({ authAutomationToken: "atk", userAutomationToken: "utk" });
+    expect(ok).toBe(true);
+    const up = estado.updates.at(-1)!;
+    expect(up.sessao_status).toBe("ativa");
+    expect(up.sessao_atualizada_em).toBeTruthy();
+    expect(decifrar<{ userAutomationToken: string }>(up.tokens_cifrados as never).userAutomationToken).toBe("utk");
+  });
+
+  it("retorna false quando não há linha de credenciais", async () => {
+    estado.updateReturn = [];
+    expect(await gravarTokensHarvest({ authAutomationToken: "a", userAutomationToken: "u" })).toBe(false);
   });
 });
 

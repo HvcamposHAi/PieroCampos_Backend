@@ -18,7 +18,8 @@
     "segfy:analisar": "tsx src/scripts/analisar-mapa.ts",
     "segfy:cotar": "tsx src/scripts/cotar-auto.ts",
     "segfy:harness": "tsx src/scripts/segfy-harness.ts",
-    "segfy:reauth": "tsx src/scripts/segfy-reauth.ts"
+    "segfy:reauth": "tsx src/scripts/segfy-reauth.ts",
+    "segfy:perfil": "tsx src/scripts/segfy-perfil.ts"
   },
   "repository": {
     "type": "git",

@@ -21,6 +21,7 @@ import {
 import {
   avisoProativoSessao,
   confirmarReauth,
+  gravarTokensHarvest,
   importarSessao,
   iniciarReauth,
   invalidarSessao,
@@ -266,3 +267,39 @@ publico.post("/", async (req: Request, res: Response) => {
 });
 
 export const segfySessaoCronRouter = publico;
+
+/**
+ * Router PÚBLICO p/ o AGENTE LOCAL de colheita: recebe os tokens de automação
+ * colhidos do navegador com perfil persistente confiável (contorno de 2FA SEM
+ * navegador no servidor — solução gratuita). Token compartilhado (x-cron-token).
+ */
+const publicoTokens = Router();
+const tokensSchema = z.object({
+  authAutomationToken: z.string().trim().min(10).max(8_000),
+  userAutomationToken: z.string().trim().min(10).max(8_000),
+});
+publicoTokens.post("/", async (req: Request, res: Response) => {
+  const token = getEnv().SEGFY_SESSAO_CRON_TOKEN;
+  if (!token) {
+    res.status(404).json({ erro: "cron_desabilitado" });
+    return;
+  }
+  if (req.header("x-cron-token") !== token) {
+    res.status(401).json({ erro: "token_invalido" });
+    return;
+  }
+  const parsed = tokensSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const ok = await gravarTokensHarvest(parsed.data);
+    res.json({ ok });
+  } catch (e) {
+    logger.error("[segfy.routes] gravar tokens colhidos falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "gravar_falhou", mensagem: (e as Error).message });
+  }
+});
+
+export const segfySessaoTokensRouter = publicoTokens;

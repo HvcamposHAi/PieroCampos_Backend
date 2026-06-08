@@ -299,6 +299,30 @@ export async function avisoProativoSessao(): Promise<{ avisar: boolean; motivo?:
   }
 }
 
+/**
+ * Grava tokens de automação COLHIDOS pelo agente local (navegador com perfil
+ * persistente confiável) — sem cookie. `sessao_atualizada_em=now` marca o frescor
+ * dos tokens (~50min de validade no restaurarSessao). UPDATE na linha singleton
+ * (credenciais já existem). Retorna false se não houver linha (creds ausentes).
+ */
+export async function gravarTokensHarvest(tokens: TokensCapturados): Promise<boolean> {
+  const sb = getSupabaseAdmin();
+  const { data, error } = await sb
+    .from("segfy_credenciais")
+    .update({
+      tokens_cifrados: cifrar(tokens),
+      sessao_atualizada_em: new Date().toISOString(),
+      sessao_status: "ativa",
+    })
+    .eq("id", ID_SINGLETON)
+    .select("id");
+  if (error) throw new Error(`gravarTokensHarvest: ${error.message}`);
+  const ok = !!data && data.length > 0;
+  if (ok) logger.info("[segfy.sessao] tokens colhidos pelo agente gravados");
+  else logger.warn("[segfy.sessao] gravarTokensHarvest: linha de credenciais ausente");
+  return ok;
+}
+
 /** Converte os tokens capturados (no formato da resposta) para o formato do multicálculo. */
 function paraSegfyTokens(t: TokensCapturados): SegfyTokens {
   return { bearer: `Bearer ${t.authAutomationToken}`, automationToken: t.userAutomationToken };
@@ -320,12 +344,13 @@ function montarCookieHeader(blob: SessaoBlob): string | undefined {
 export async function restaurarSessao(): Promise<SegfySessaoInjetada | null> {
   try {
     const linha = await lerLinha();
-    if (!linha || !linha.sessao_cifrada) return null;
+    if (!linha) return null;
     if (linha.sessao_status === "expirada") return null;
     if (linha.sessao_valida_ate && new Date(linha.sessao_valida_ate).getTime() <= Date.now()) return null;
 
-    const blob = decifrar<SessaoBlob>(linha.sessao_cifrada);
-    const cookie = montarCookieHeader(blob);
+    // cookie (do storageState/cookieHeader) — opcional: pode ser sessão só-tokens
+    // (agente local de colheita) sem cookie.
+    const cookie = linha.sessao_cifrada ? montarCookieHeader(decifrar<SessaoBlob>(linha.sessao_cifrada)) : undefined;
 
     let tokens: SegfyTokens | undefined;
     let tokensValidadeMs: number | undefined;
