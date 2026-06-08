@@ -120,9 +120,13 @@ async function marcarLembrarDispositivo(p: Page): Promise<void> {
   }
 }
 
-/** Considera "logado" quando saiu da tela de login (callback p/ app/gestao). */
+/**
+ * Considera "logado" só quando saiu de QUALQUER tela de login/2FA. O desafio de
+ * 2FA fica em app.segfy.com/login/mfa — por isso checamos "/login" (não só o host
+ * login.segfy.com), senão concluiríamos ANTES de o código ser processado.
+ */
 async function esperarLogado(p: Page): Promise<void> {
-  await p.waitForURL((u) => !u.toString().includes("login.segfy.com"), { timeout: TIMEOUT_LOGADO_MS });
+  await p.waitForURL((u) => !u.toString().includes("/login"), { timeout: TIMEOUT_LOGADO_MS });
 }
 
 /** Dispensa o banner de cookies do HubSpot (intercepta o clique no submit). No-op tolerante. */

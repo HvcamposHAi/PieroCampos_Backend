@@ -51,7 +51,7 @@ async function login(): Promise<void> {
   const p = ctx.pages()[0] ?? (await ctx.newPage());
   try {
     await p.goto(LOGIN_URL, { waitUntil: "networkidle", timeout: 45_000 });
-    if (!p.url().includes("login.segfy.com")) {
+    if (!p.url().includes("/login")) {
       console.log("Perfil já confiável — entrou sem formulário:", p.url());
       return;
     }
@@ -78,7 +78,8 @@ async function login(): Promise<void> {
       await dispensarBanner(p);
       await submeter(p);
     }
-    await p.waitForURL((u) => !u.toString().includes("login.segfy.com"), { timeout: 30_000 });
+    // "Logado" = saiu de QUALQUER tela de login/2FA (a 2FA fica em /login/mfa).
+    await p.waitForURL((u) => !u.toString().includes("/login"), { timeout: 30_000 });
     console.log("✅ Login concluído:", p.url());
   } finally {
     await ctx.close();
