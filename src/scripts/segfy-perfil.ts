@@ -65,14 +65,16 @@ async function login(): Promise<void> {
       console.log("📧 2FA solicitado — verifique o e-mail.");
       const codigo = await pergunta("Digite o código 2FA: ");
       await p.locator(SEL_OTP).first().fill(codigo);
-      // marca "lembrar 30 dias" (primeiro checkbox visível)
-      const chk = p.locator('input[type="checkbox"]').first();
-      if (await chk.isVisible({ timeout: 1_500 }).catch(() => false)) {
-        await chk.check({ timeout: 2_000 }).catch(() => undefined);
-        console.log('Marquei "lembrar 30 dias".');
-      } else {
-        console.log('⚠️ Não achei o checkbox de "lembrar 30 dias".');
+      // marca "Lembrar este dispositivo por 30 dias" — checkbox CUSTOM (input oculto):
+      // clica o rótulo e força o check, confirmando o estado.
+      const rotulo = p.getByText(/lembrar este dispositivo/i).first();
+      if (await rotulo.isVisible({ timeout: 2_500 }).catch(() => false)) {
+        await rotulo.click().catch(() => undefined);
       }
+      const chk = p.locator('input[type="checkbox"]').first();
+      await chk.check({ force: true, timeout: 2_000 }).catch(() => undefined);
+      const marcado = await chk.isChecked().catch(() => false);
+      console.log(marcado ? '✅ "Lembrar 30 dias" MARCADO.' : '⚠️ Não consegui confirmar o "lembrar 30 dias".');
       await dispensarBanner(p);
       await submeter(p);
     }

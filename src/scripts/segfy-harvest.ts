@@ -55,32 +55,51 @@ async function main(): Promise<void> {
     }
   });
 
-  console.log("Carregando /home (bootstrap da sessão)…");
-  await p.goto("https://app.segfy.com/home", { waitUntil: "domcontentloaded", timeout: 45_000 }).catch((e) => console.log("goto home:", (e as Error).message));
-  await p.waitForTimeout(3_000);
-  console.log("Abrindo o multicálculo (perfil confiável)…");
-  await p.goto(MC_URL, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch((e) => console.log("goto mc:", (e as Error).message));
-
-  // Aguarda até capturar os dois tokens (ou timeout ~30s).
-  for (let i = 0; i < 60 && !(authAutomationToken && userAutomationToken); i++) {
-    await p.waitForTimeout(500);
+  // Abre uma URL e espera o auto-relogin do perfil confiável SAIR do /login.
+  // Distingue /login/mfa (trust expirou → precisa 2FA) de /login transitório.
+  async function abrirLogado(url: string): Promise<void> {
+    await p.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 }).catch((e) => console.log("goto:", (e as Error).message));
+    for (let i = 0; i < 60; i++) {
+      const u = p.url();
+      if (u.includes("/login/mfa")) throw new Error("Perfil expirou (2FA). Rode `npm run segfy:perfil` para reautenticar.");
+      if (!u.includes("/login")) return; // logado
+      await p.waitForTimeout(500);
+    }
+    if (p.url().includes("/login")) throw new Error("Ficou preso no /login (auto-relogin não concluiu).");
   }
-  const url = p.url();
-  await ctx.close();
 
-  if (url.includes("/login")) {
-    throw new Error("Perfil expirou (caiu no login). Rode `npm run segfy:perfil` para reautenticar (2FA).");
+  try {
+    console.log("Carregando /home (bootstrap + auto-relogin)…");
+    await abrirLogado("https://app.segfy.com/home");
+    await p.waitForTimeout(2_000);
+    console.log("Abrindo o multicálculo (perfil confiável)…");
+    await abrirLogado(MC_URL);
+
+    // Aguarda até capturar os dois tokens (ou timeout ~30s).
+    for (let i = 0; i < 60 && !(authAutomationToken && userAutomationToken); i++) {
+      await p.waitForTimeout(500);
+    }
+  } finally {
+    await ctx.close().catch(() => undefined);
   }
   if (!authAutomationToken || !userAutomationToken) {
     throw new Error("Não capturei os tokens (o multicálculo não disparou as chamadas). Tente de novo.");
   }
 
   console.log("Tokens capturados ✅ — enviando ao backend…");
-  const r = await axios.post(
-    `${BACKEND}/api/segfy/sessao/tokens`,
-    { authAutomationToken, userAutomationToken },
-    { headers: { "x-cron-token": CRON_TOKEN }, timeout: 30_000 },
-  );
+  // Render Free hiberna: o 1º POST pode acordar o serviço (cold start ~1min).
+  // Timeout generoso + 1 retry.
+  const enviar = () =>
+    axios.post(
+      `${BACKEND}/api/segfy/sessao/tokens`,
+      { authAutomationToken, userAutomationToken },
+      { headers: { "x-cron-token": CRON_TOKEN }, timeout: 90_000 },
+    );
+  const r = await enviar().catch(async (e) => {
+    console.log("1ª tentativa falhou (cold start?), repetindo em 5s…", (e as Error).message);
+    await new Promise((res) => setTimeout(res, 5_000));
+    return enviar();
+  });
   console.log("Backend respondeu:", r.status, JSON.stringify(r.data));
   console.log("🎉 Sessão de cotação renovada no backend.");
 }

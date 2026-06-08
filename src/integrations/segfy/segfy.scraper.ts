@@ -100,13 +100,21 @@ function instalarCapturaDeTokens(p: Page): () => TokensCapturados | null {
   return () => capturados;
 }
 
-/** Marca o "lembrar dispositivo (30 dias)" se o checkbox existir (no-op tolerante). */
+/**
+ * Marca o "Lembrar este dispositivo por 30 dias" — ESSENCIAL p/ o device-trust.
+ * O checkbox é CUSTOM (o <input> real fica oculto → isVisible=false), por isso
+ * clicamos o RÓTULO e ainda forçamos o check no input, confirmando o estado.
+ */
 async function marcarLembrarDispositivo(p: Page): Promise<void> {
   try {
-    const chk = p.locator('input[type="checkbox"]').first();
-    if (await chk.isVisible({ timeout: 1_500 }).catch(() => false)) {
-      await chk.check({ timeout: 2_000 }).catch(() => undefined);
+    const rotulo = p.getByText(/lembrar este dispositivo/i).first();
+    if (await rotulo.isVisible({ timeout: 2_500 }).catch(() => false)) {
+      await rotulo.click().catch(() => undefined);
     }
+    const chk = p.locator('input[type="checkbox"]').first();
+    await chk.check({ force: true, timeout: 2_000 }).catch(() => undefined);
+    const marcado = await chk.isChecked().catch(() => false);
+    logger.info(`Segfy reauth: "lembrar 30 dias" ${marcado ? "marcado" : "NÃO confirmado"}`);
   } catch {
     /* sem checkbox — segue */
   }
