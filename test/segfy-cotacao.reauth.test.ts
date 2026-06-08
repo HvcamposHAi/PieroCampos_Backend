@@ -6,7 +6,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SegfyReauthNecessariaError } from "../src/integrations/segfy/errors";
 
-const marcarSessaoExpirada = vi.hoisted(() => vi.fn(async () => undefined));
+const marcarSessaoExpirada = vi.hoisted(() => vi.fn(async () => true)); // transição
+const notificarReauthNecessaria = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../src/integrations/segfy/segfy.multicalculo", () => ({
   cotarAuto: vi.fn(async () => {
@@ -19,6 +20,9 @@ vi.mock("../src/services/segfy-credenciais.service", () => ({
 vi.mock("../src/services/segfy-sessao.service", () => ({
   restaurarSessao: vi.fn(async () => null),
   marcarSessaoExpirada,
+}));
+vi.mock("../src/services/segfy-alertas.service", () => ({
+  notificarReauthNecessaria,
 }));
 vi.mock("../src/services/segfy-seguradoras.service", () => ({
   listarSeguradorasAtivas: vi.fn(async () => []),
@@ -34,6 +38,7 @@ beforeEach(() => {
   process.env.SEGFY_ENABLED = "true";
   _resetEnvCache();
   marcarSessaoExpirada.mockClear();
+  notificarReauthNecessaria.mockClear();
 });
 
 describe("dispararCotacaoSegfy — reauth necessária", () => {
@@ -49,5 +54,18 @@ describe("dispararCotacaoSegfy — reauth necessária", () => {
     expect(r).toBeNull();
     expect(mem.cotacoesAtualizadas.some((c) => c.status === "erro")).toBe(true);
     expect(marcarSessaoExpirada).toHaveBeenCalledTimes(1);
+    // Avisa o operador (sino + WhatsApp) na TRANSIÇÃO p/ expirada.
+    expect(notificarReauthNecessaria).toHaveBeenCalledTimes(1);
+  });
+
+  it("NÃO avisa de novo quando a sessão já estava expirada (sem spam)", async () => {
+    marcarSessaoExpirada.mockResolvedValueOnce(false); // não houve transição
+    const mem = new InMemoryPersistence();
+    mem.semearCliente({ id: "cli1", cpf: "09065661930", nome: "Humberto", email: null, telefone: "+55", segfy_id: null, consentimento_lgpd: true });
+    await dispararCotacaoSegfy(
+      { conversaId: "c1", clienteId: "cli1", dados: { placa: "SFI7F72", cep: "81270320" } },
+      mem,
+    );
+    expect(notificarReauthNecessaria).not.toHaveBeenCalled();
   });
 });

@@ -25,6 +25,7 @@ import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
 import { restaurarSessao, marcarSessaoExpirada } from "./segfy-sessao.service";
+import { notificarReauthNecessaria } from "./segfy-alertas.service";
 import { listarSeguradorasAtivas } from "./segfy-seguradoras.service";
 import { SegfyReauthNecessariaError } from "../integrations/segfy/errors";
 import { cpfValido } from "../lib/cpf";
@@ -303,8 +304,14 @@ export async function dispararCotacaoSegfy(
     await persist.atualizarCotacao(cotacaoId, { status: "erro" });
     // Falha de SESSÃO (2FA): marca a sessão como expirada para o badge do Admin
     // pedir reautenticação. A etapa "token"/erro já mostrou a mensagem amigável.
+    // Avisa o operador (sino + WhatsApp) SÓ na transição (1x por expiração).
     if (e instanceof SegfyReauthNecessariaError) {
-      await marcarSessaoExpirada();
+      const transicionou = await marcarSessaoExpirada();
+      if (transicionou) {
+        await notificarReauthNecessaria(
+          "A sessão do Segfy expirou — uma cotação não pôde ser concluída. Reautentique em Admin › Segfy.",
+        );
+      }
     }
     logger.error("[segfy] cotação falhou (não-fatal)", {
       conversaId: params.conversaId,

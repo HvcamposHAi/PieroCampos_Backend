@@ -8,23 +8,25 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 const estado = vi.hoisted(() => ({
   selectRow: { data: null as unknown, error: null as unknown },
   updates: [] as Array<Record<string, unknown>>,
-  upserts: [] as Array<Record<string, unknown>>,
+  updateReturn: [{ id: "singleton" }] as Array<{ id: string }>, // linha existe por padrão
 }));
 
 vi.mock("../src/integrations/whatsapp/supabase", () => ({
   getSupabaseAdmin: () => ({
     from: () => {
+      // Resultado de update().eq(): thenable (p/ `await update().eq()`) E com .select()
+      // (p/ `update().eq().select()` que persistirSessao/importarSessao usam).
+      const eqResult = {
+        select: async () => ({ data: estado.updateReturn, error: null }),
+        then: (res: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(res),
+      };
       const chain: Record<string, unknown> = {
         select: () => chain,
         eq: () => chain,
         maybeSingle: async () => estado.selectRow,
         update: (patch: Record<string, unknown>) => {
           estado.updates.push(patch);
-          return { eq: async () => ({ error: null }) };
-        },
-        upsert: async (patch: Record<string, unknown>) => {
-          estado.upserts.push(patch);
-          return { error: null };
+          return { eq: () => eqResult };
         },
       };
       return chain;
@@ -46,6 +48,7 @@ import {
   statusSessao,
   marcarSessaoExpirada,
   importarSessao,
+  avisoProativoSessao,
 } from "../src/services/segfy-sessao.service";
 
 const CHAVE = "A".repeat(43) + "="; // 32 bytes base64
@@ -58,7 +61,7 @@ beforeEach(() => {
   _resetCipherCache();
   estado.selectRow = { data: null, error: null };
   estado.updates = [];
-  estado.upserts = [];
+  estado.updateReturn = [{ id: "singleton" }];
 });
 
 function linhaSessao(over: Record<string, unknown> = {}) {
@@ -75,9 +78,12 @@ function linhaSessao(over: Record<string, unknown> = {}) {
     sessao_atualizada_em: new Date().toISOString(),
     sessao_valida_ate: new Date(Date.now() + 30 * 24 * 3600_000).toISOString(),
     reauth_por: "op@x.com",
+    sessao_ultimo_aviso_em: null,
     ...over,
   };
 }
+
+const umDia = 24 * 3600_000;
 
 describe("restaurarSessao", () => {
   it("decifra cookie (só domínio segfy) + tokens persistidos", async () => {
@@ -117,9 +123,10 @@ describe("restaurarSessao — cookie importado", () => {
 });
 
 describe("importarSessao", () => {
-  it("grava o cookie CIFRADO + status ativa e validade ~30d", async () => {
+  it("grava o cookie CIFRADO + status ativa e validade ~30d (via UPDATE, sem tocar email)", async () => {
     await importarSessao({ cookieHeader: "trust=abc; sess=xyz", porEmail: "op@x.com" });
-    const up = estado.upserts.at(-1)!;
+    const up = estado.updates.at(-1)!;
+    expect(up).not.toHaveProperty("email"); // não toca a coluna NOT NULL
     expect(up.sessao_status).toBe("ativa");
     expect(up.reauth_por).toBe("op@x.com");
     expect(up.sessao_valida_ate).toBeTruthy();
@@ -135,9 +142,14 @@ describe("importarSessao", () => {
       cookieHeader: "trust=abc",
       tokens: { authAutomationToken: "atk", userAutomationToken: "utk" },
     });
-    const up = estado.upserts.at(-1)!;
+    const up = estado.updates.at(-1)!;
     expect(up.tokens_cifrados).toBeTruthy();
     expect(decifrar<{ userAutomationToken: string }>(up.tokens_cifrados as never).userAutomationToken).toBe("utk");
+  });
+
+  it("falha clara quando a linha de credenciais não existe", async () => {
+    estado.updateReturn = []; // nenhuma linha singleton
+    await expect(importarSessao({ cookieHeader: "trust=abc" })).rejects.toThrow(/não configuradas/);
   });
 });
 
@@ -161,8 +173,40 @@ describe("statusSessao", () => {
 });
 
 describe("marcarSessaoExpirada", () => {
-  it("grava sessao_status='expirada'", async () => {
-    await marcarSessaoExpirada();
+  it("grava sessao_status='expirada' e retorna TRUE na transição (estava ativa)", async () => {
+    estado.selectRow = { data: linhaSessao({ sessao_status: "ativa" }), error: null };
+    const transicionou = await marcarSessaoExpirada();
+    expect(transicionou).toBe(true);
     expect(estado.updates.at(-1)).toMatchObject({ sessao_status: "expirada" });
+  });
+
+  it("retorna FALSE quando já estava expirada (evita aviso repetido)", async () => {
+    estado.selectRow = { data: linhaSessao({ sessao_status: "expirada" }), error: null };
+    expect(await marcarSessaoExpirada()).toBe(false);
+  });
+});
+
+describe("avisoProativoSessao", () => {
+  it("avisa quando faltam ≤ N dias e grava o throttle", async () => {
+    estado.selectRow = { data: linhaSessao({ sessao_valida_ate: new Date(Date.now() + 2 * umDia).toISOString() }), error: null };
+    const r = await avisoProativoSessao();
+    expect(r.avisar).toBe(true);
+    expect(estado.updates.at(-1)).toHaveProperty("sessao_ultimo_aviso_em");
+  });
+
+  it("NÃO avisa quando ainda falta muito (> N dias)", async () => {
+    estado.selectRow = { data: linhaSessao({ sessao_valida_ate: new Date(Date.now() + 20 * umDia).toISOString() }), error: null };
+    expect((await avisoProativoSessao()).avisar).toBe(false);
+  });
+
+  it("NÃO avisa dentro da janela de throttle (aviso recente)", async () => {
+    estado.selectRow = {
+      data: linhaSessao({
+        sessao_valida_ate: new Date(Date.now() + 2 * umDia).toISOString(),
+        sessao_ultimo_aviso_em: new Date(Date.now() - 3600_000).toISOString(), // 1h atrás
+      }),
+      error: null,
+    };
+    expect((await avisoProativoSessao()).avisar).toBe(false);
   });
 });

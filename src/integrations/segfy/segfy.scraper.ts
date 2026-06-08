@@ -31,9 +31,14 @@ const LOGIN_URL = "https://login.segfy.com/login";
 /** Campos típicos do desafio de 2FA por e-mail (seletores tolerantes). */
 const SELETOR_OTP =
   'input[name="code"], input[name="otp"], input[name="token"], input[autocomplete="one-time-code"], input[inputmode="numeric"]';
-const SELETOR_EMAIL = 'input[name="email"], input[type="email"]';
+// A tela do Segfy usa <input> "pelado" (sem name/type) p/ o e-mail; por isso
+// incluímos input[type="text"] e input:not([type]) como fallback tolerante.
+const SELETOR_EMAIL =
+  'input[name="email"], input[type="email"], input[type="text"], input:not([type])';
 const SELETOR_SENHA = 'input[name="password"], input[type="password"]';
 const SELETOR_SUBMIT = 'button[type="submit"]';
+// Banner de cookies do HubSpot que intercepta o clique no "Entrar".
+const SELETOR_COOKIES_OK = "#hs-eu-confirmation-button, #hs-eu-cookie-confirmation button";
 const TIMEOUT_2FA_MS = 12_000;
 const TIMEOUT_LOGADO_MS = 30_000;
 
@@ -112,6 +117,29 @@ async function esperarLogado(p: Page): Promise<void> {
   await p.waitForURL((u) => !u.toString().includes("login.segfy.com"), { timeout: TIMEOUT_LOGADO_MS });
 }
 
+/** Dispensa o banner de cookies do HubSpot (intercepta o clique no submit). No-op tolerante. */
+async function dispensarBannerCookies(p: Page): Promise<void> {
+  try {
+    const ok = p.locator(SELETOR_COOKIES_OK).first();
+    if (await ok.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      await ok.click({ timeout: 2_000 }).catch(() => undefined);
+    }
+  } catch {
+    /* sem banner — segue */
+  }
+}
+
+/** Submete o formulário; se o clique no botão for interceptado, cai p/ Enter na senha. */
+async function submeter(p: Page): Promise<void> {
+  await p
+    .locator(SELETOR_SUBMIT)
+    .first()
+    .click({ timeout: 8_000 })
+    .catch(async () => {
+      await p.locator(SELETOR_SENHA).first().press("Enter").catch(() => undefined);
+    });
+}
+
 /**
  * Passo 1 da reauth: loga e PARA no 2FA. Se o dispositivo já for confiável (sem
  * desafio), conclui de imediato e devolve o resultado. `storageState` opcional
@@ -135,9 +163,10 @@ export async function iniciarReauthSegfy(opts: {
 
   try {
     await p.goto(LOGIN_URL, { waitUntil: "networkidle" });
-    await p.fill(SELETOR_EMAIL, opts.email);
-    await p.fill(SELETOR_SENHA, opts.password);
-    await p.click(SELETOR_SUBMIT);
+    await p.locator(SELETOR_EMAIL).first().fill(opts.email);
+    await p.locator(SELETOR_SENHA).first().fill(opts.password);
+    await dispensarBannerCookies(p);
+    await submeter(p);
 
     // Corrida: desafio de 2FA aparece OU já entramos (device confiável/isento).
     const apareceuOtp = await p
@@ -172,7 +201,8 @@ export async function confirmarReauthSegfy(handle: ReauthHandle, codigo: string)
     const campo = p.locator(SELETOR_OTP).first();
     await campo.fill(codigo);
     await marcarLembrarDispositivo(p);
-    await p.click(SELETOR_SUBMIT);
+    await dispensarBannerCookies(p);
+    await submeter(p);
     await esperarLogado(p);
     return await finalizarCaptura(handle);
   } finally {

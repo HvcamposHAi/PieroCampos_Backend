@@ -10,6 +10,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { exigirAdmin, exigirCorretoraSelecionada } from "../../middlewares/authSupabase";
+import { getEnv } from "../../config/env";
 import { logger } from "../../utils/logger";
 import {
   obterCredenciaisSegfy,
@@ -18,6 +19,7 @@ import {
   statusCredenciaisSegfy,
 } from "../../services/segfy-credenciais.service";
 import {
+  avisoProativoSessao,
   confirmarReauth,
   importarSessao,
   iniciarReauth,
@@ -25,6 +27,7 @@ import {
   restaurarSessao,
   statusSessao,
 } from "../../services/segfy-sessao.service";
+import { notificarReauthNecessaria } from "../../services/segfy-alertas.service";
 import {
   atualizarSeguradora,
   listarSeguradorasConfig,
@@ -234,3 +237,32 @@ router.patch("/seguradoras/:codigo", exigirAdmin, async (req: Request, res: Resp
 });
 
 export const segfyRouter = router;
+
+/**
+ * Router PÚBLICO (sem JWT) p/ o aviso PROATIVO de reautenticação, disparado por um
+ * pinger externo. Protegido por token compartilhado (header `x-cron-token` ==
+ * SEGFY_SESSAO_CRON_TOKEN). Token vazio → 404 (desabilitado). Mesma forma do
+ * /api/aprendizado/cron. Sem corretora: a sessão Segfy é singleton da conta.
+ */
+const publico = Router();
+publico.post("/", async (req: Request, res: Response) => {
+  const token = getEnv().SEGFY_SESSAO_CRON_TOKEN;
+  if (!token) {
+    res.status(404).json({ erro: "cron_desabilitado" });
+    return;
+  }
+  if (req.header("x-cron-token") !== token) {
+    res.status(401).json({ erro: "token_invalido" });
+    return;
+  }
+  try {
+    const r = await avisoProativoSessao();
+    if (r.avisar && r.motivo) await notificarReauthNecessaria(r.motivo);
+    res.json({ ok: true, avisou: r.avisar });
+  } catch (e) {
+    logger.error("[segfy.routes] cron sessão falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "cron_falhou", mensagem: (e as Error).message });
+  }
+});
+
+export const segfySessaoCronRouter = publico;

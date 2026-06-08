@@ -45,6 +45,14 @@ const schema = z
     // e a sessão legada falham com erro gracioso e o operador usa "Importar sessão"
     // (cookie) — o contorno de 2FA SEM browser. NÃO afeta o login HTTP da cotação.
     SEGFY_SCRAPING_ENABLED: boolDeString.default(true),
+    // Aviso de reautenticação (2FA) ao operador. Número E.164 que recebe o alerta
+    // por WhatsApp quando a sessão do Segfy expira; vazio = só notificação in-app.
+    SEGFY_ALERTA_WPP_E164: z.string().optional().default(""),
+    // Token do pinger externo p/ o aviso PROATIVO (POST /api/segfy/sessao/cron).
+    // Vazio = endpoint desabilitado (404).
+    SEGFY_SESSAO_CRON_TOKEN: z.string().optional().default(""),
+    // Dias antes de expirar a sessão em que o aviso proativo dispara (default 3).
+    SEGFY_AVISO_ANTECEDENCIA_DIAS: numComPadrao(3),
     // Gmail OTP (fallback de 2FA Segfy a partir de 01/06/2026). Opcionais: o
     // caminho primário é um usuário de serviço isento de 2FA. Quando ausentes,
     // buscarOTPSegfy() lança erro claro e o scraper não tenta o desafio.

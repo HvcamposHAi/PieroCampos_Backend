@@ -51,6 +51,7 @@ interface LinhaSessao {
   sessao_atualizada_em: string | null;
   sessao_valida_ate: string | null;
   reauth_por: string | null;
+  sessao_ultimo_aviso_em: string | null;
 }
 
 /**
@@ -97,7 +98,6 @@ export async function importarSessao(input: {
   const sb = getSupabaseAdmin();
   const agora = new Date();
   const patch: Record<string, unknown> = {
-    id: ID_SINGLETON,
     sessao_cifrada: cifrar({ cookieHeader: input.cookieHeader.trim() }),
     sessao_status: "ativa",
     sessao_atualizada_em: agora.toISOString(),
@@ -107,8 +107,17 @@ export async function importarSessao(input: {
   if (input.tokens?.authAutomationToken && input.tokens?.userAutomationToken) {
     patch.tokens_cifrados = cifrar(input.tokens);
   }
-  const { error } = await sb.from("segfy_credenciais").upsert(patch, { onConflict: "id" });
+  // UPDATE (não upsert): a linha singleton já existe (credenciais salvas). Assim
+  // não tocamos a coluna `email` (NOT NULL) que o upsert exigiria.
+  const { data, error } = await sb
+    .from("segfy_credenciais")
+    .update(patch)
+    .eq("id", ID_SINGLETON)
+    .select("id");
   if (error) throw new Error(`importarSessao: ${error.message}`);
+  if (!data || data.length === 0) {
+    throw new Error("importarSessao: credenciais do Segfy não configuradas (cadastre o login antes).");
+  }
   logger.info("[segfy.sessao] sessão importada (cookie)", { por: input.porEmail ?? null });
 }
 
@@ -116,7 +125,6 @@ async function persistirSessao(resultado: ResultadoReauth, porEmail: string | nu
   const sb = getSupabaseAdmin();
   const agora = new Date();
   const patch: Record<string, unknown> = {
-    id: ID_SINGLETON,
     sessao_cifrada: cifrar(resultado.storageState),
     sessao_status: "ativa",
     sessao_atualizada_em: agora.toISOString(),
@@ -124,8 +132,16 @@ async function persistirSessao(resultado: ResultadoReauth, porEmail: string | nu
     reauth_por: porEmail,
   };
   if (resultado.tokens) patch.tokens_cifrados = cifrar(resultado.tokens);
-  const { error } = await sb.from("segfy_credenciais").upsert(patch, { onConflict: "id" });
+  // UPDATE (não upsert): a linha singleton já existe; não tocamos `email` (NOT NULL).
+  const { data, error } = await sb
+    .from("segfy_credenciais")
+    .update(patch)
+    .eq("id", ID_SINGLETON)
+    .select("id");
   if (error) throw new Error(`persistirSessao: ${error.message}`);
+  if (!data || data.length === 0) {
+    throw new Error("persistirSessao: credenciais do Segfy não configuradas (linha singleton ausente).");
+  }
   logger.info("[segfy.sessao] sessão confiável persistida", { por: porEmail });
 }
 
@@ -134,7 +150,7 @@ async function lerLinha(): Promise<LinhaSessao | null> {
   const { data, error } = await sb
     .from("segfy_credenciais")
     .select(
-      "sessao_cifrada, tokens_cifrados, sessao_status, sessao_atualizada_em, sessao_valida_ate, reauth_por",
+      "sessao_cifrada, tokens_cifrados, sessao_status, sessao_atualizada_em, sessao_valida_ate, reauth_por, sessao_ultimo_aviso_em",
     )
     .eq("id", ID_SINGLETON)
     .maybeSingle();
@@ -227,20 +243,60 @@ export async function statusSessao(): Promise<SessaoInfo> {
   }
 }
 
-/** Marca a sessão como expirada (reauth necessária). Idempotente / best-effort. */
-export async function marcarSessaoExpirada(): Promise<void> {
+/**
+ * Marca a sessão como expirada (reauth necessária). Best-effort.
+ * Retorna `true` se houve TRANSIÇÃO (não estava expirada antes) — usado p/ avisar
+ * o operador UMA vez por expiração (sem spam a cada cotação).
+ */
+export async function marcarSessaoExpirada(): Promise<boolean> {
   try {
     const sb = getSupabaseAdmin();
+    const linha = await lerLinha();
+    const jaExpirada = linha?.sessao_status === "expirada";
     await sb.from("segfy_credenciais").update({ sessao_status: "expirada" }).eq("id", ID_SINGLETON);
-    logger.warn("[segfy.sessao] sessão marcada como expirada — reauth necessária");
+    if (!jaExpirada) logger.warn("[segfy.sessao] sessão marcada como expirada — reauth necessária");
+    return !jaExpirada;
   } catch (e) {
     logger.warn("[segfy.sessao] não consegui marcar sessão expirada", { erro: (e as Error).message });
+    return false;
   }
 }
 
 /** Invalida a sessão (ex.: troca de senha no Admin). */
 export async function invalidarSessao(): Promise<void> {
-  return marcarSessaoExpirada();
+  await marcarSessaoExpirada();
+}
+
+/**
+ * Checagem PROATIVA (chamada pelo cron token-gated): se a sessão está 'ativa' e
+ * expira em ≤ N dias (SEGFY_AVISO_ANTECEDENCIA_DIAS), devolve o motivo do aviso e
+ * grava o throttle (`sessao_ultimo_aviso_em`, ≥20h). Não notifica aqui — quem
+ * notifica é a rota (separação: este módulo não conhece o serviço de alertas).
+ */
+export async function avisoProativoSessao(): Promise<{ avisar: boolean; motivo?: string }> {
+  try {
+    const linha = await lerLinha();
+    if (!linha || linha.sessao_status !== "ativa" || !linha.sessao_valida_ate) return { avisar: false };
+    const diasRestantes = (new Date(linha.sessao_valida_ate).getTime() - Date.now()) / 86_400_000;
+    if (diasRestantes > getEnv().SEGFY_AVISO_ANTECEDENCIA_DIAS) return { avisar: false };
+    // Throttle: no máximo 1 aviso a cada 20h.
+    if (linha.sessao_ultimo_aviso_em && Date.now() - new Date(linha.sessao_ultimo_aviso_em).getTime() < 20 * 3_600_000) {
+      return { avisar: false };
+    }
+    const sb = getSupabaseAdmin();
+    await sb
+      .from("segfy_credenciais")
+      .update({ sessao_ultimo_aviso_em: new Date().toISOString() })
+      .eq("id", ID_SINGLETON);
+    const dias = Math.max(0, Math.ceil(diasRestantes));
+    return {
+      avisar: true,
+      motivo: `A sessão do Segfy expira em ~${dias} dia(s). Reautentique para não interromper as cotações.`,
+    };
+  } catch (e) {
+    logger.warn("[segfy.sessao] avisoProativo falhou", { erro: (e as Error).message });
+    return { avisar: false };
+  }
 }
 
 /** Converte os tokens capturados (no formato da resposta) para o formato do multicálculo. */
