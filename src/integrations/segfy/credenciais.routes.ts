@@ -31,6 +31,13 @@ import {
 } from "../../services/segfy-sessao.service";
 import { notificarReauthNecessaria } from "../../services/segfy-alertas.service";
 import {
+  agenteReportar,
+  enviarCodigoReauth,
+  pegarTrabalhoReauth,
+  solicitarReauth,
+  statusReauth,
+} from "../../services/segfy-reauth-orq.service";
+import {
   atualizarSeguradora,
   listarSeguradorasConfig,
   sincronizarSeguradoras,
@@ -176,6 +183,55 @@ router.post("/sessao/confirmar", exigirAdmin, async (req: Request, res: Response
   }
 });
 
+// ── Reautenticação 1-clique via AGENTE LOCAL (2FA dentro do app, sem browser no
+//    servidor). O admin solicita/digita o código aqui; a máquina local (token-gated,
+//    routers públicos abaixo) abre o navegador e aplica o código. ───────────────
+
+router.post("/sessao/reauth/solicitar", exigirAdmin, async (req: Request, res: Response) => {
+  try {
+    const r = await solicitarReauth(req.user?.email ?? null);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    logger.error("[segfy.routes] solicitar reauth falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "reauth_solicitar_falhou", mensagem: (e as Error).message });
+  }
+});
+
+const codigoSchema = z.object({
+  jobId: z.string().min(1),
+  codigo: z.string().trim().min(4, "código inválido").max(12),
+});
+
+router.post("/sessao/reauth/codigo", exigirAdmin, async (req: Request, res: Response) => {
+  const parsed = codigoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const r = await enviarCodigoReauth(parsed.data);
+    if (!r.ok) {
+      res.status(409).json({ ok: false, erro: r.erro, mensagem: "Sessão de reautenticação inválida ou expirada. Recomece." });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    logger.error("[segfy.routes] enviar código reauth falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "reauth_codigo_falhou", mensagem: (e as Error).message });
+  }
+});
+
+router.get("/sessao/reauth/status", async (req: Request, res: Response) => {
+  try {
+    const jobId = typeof req.query.jobId === "string" ? req.query.jobId : undefined;
+    const r = await statusReauth(jobId);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    logger.warn("[segfy.routes] status reauth falhou", { erro: (e as Error).message });
+    res.json({ ok: true, fase: "idle", mensagem: null, email: null });
+  }
+});
+
 router.post("/credenciais/testar", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const creds = await obterCredenciaisSegfy(req.corretoraId!);
   if (!creds) {
@@ -317,3 +373,59 @@ publicoTokens.post("/", async (req: Request, res: Response) => {
 });
 
 export const segfySessaoTokensRouter = publicoTokens;
+
+/**
+ * Router PÚBLICO p/ o AGENTE LOCAL conduzir a reautenticação 1-clique (token-gated,
+ * x-cron-token). O agente faz POLL de `/trabalho` (pega o job e, quando houver, o
+ * código 2FA digitado no app) e reporta progresso/fim em `/reportar`. Só o agente
+ * (token) vê o código — a UI nunca o recebe.
+ */
+const publicoReauth = Router();
+function autorizadoCron(req: Request, res: Response): boolean {
+  const token = getEnv().SEGFY_SESSAO_CRON_TOKEN;
+  if (!token) {
+    res.status(404).json({ erro: "cron_desabilitado" });
+    return false;
+  }
+  if (req.header("x-cron-token") !== token) {
+    res.status(401).json({ erro: "token_invalido" });
+    return false;
+  }
+  return true;
+}
+
+publicoReauth.get("/trabalho", async (req: Request, res: Response) => {
+  if (!autorizadoCron(req, res)) return;
+  try {
+    const job = await pegarTrabalhoReauth();
+    res.json({ ok: true, job });
+  } catch (e) {
+    logger.error("[segfy.routes] pegar trabalho reauth falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "trabalho_falhou" });
+  }
+});
+
+const reportarSchema = z.object({
+  jobId: z.string().min(1),
+  fase: z.enum(["aguardando_codigo", "concluida", "erro"]),
+  mensagem: z.string().max(500).optional(),
+  email: z.string().max(200).optional(),
+});
+
+publicoReauth.post("/reportar", async (req: Request, res: Response) => {
+  if (!autorizadoCron(req, res)) return;
+  const parsed = reportarSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const ok = await agenteReportar(parsed.data);
+    res.json({ ok });
+  } catch (e) {
+    logger.error("[segfy.routes] reportar reauth falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "reportar_falhou" });
+  }
+});
+
+export const segfySessaoReauthRouter = publicoReauth;

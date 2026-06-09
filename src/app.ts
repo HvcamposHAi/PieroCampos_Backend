@@ -13,7 +13,7 @@ import { authSupabase } from "./middlewares/authSupabase";
 import { waRouter } from "./integrations/whatsapp/routes";
 import { cotacaoRouter } from "./integrations/cotacao/routes";
 import { apoliceRouter } from "./integrations/apolice/routes";
-import { segfyRouter, segfySessaoCronRouter, segfySessaoTokensRouter } from "./integrations/segfy/credenciais.routes";
+import { segfyRouter, segfySessaoCronRouter, segfySessaoTokensRouter, segfySessaoReauthRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { plataformaRouter } from "./integrations/plataforma/plataforma.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
@@ -87,6 +87,8 @@ export function criarApp(): express.Express {
   app.use("/api/segfy/sessao/cron", segfySessaoCronRouter);
   // Pública (token compartilhado): agente local entrega tokens de automação colhidos.
   app.use("/api/segfy/sessao/tokens", segfySessaoTokensRouter);
+  // Pública (token compartilhado): agente local conduz a reauth 1-clique (2FA no app).
+  app.use("/api/segfy/sessao/reauth/agente", segfySessaoReauthRouter);
 
   app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
   app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);
