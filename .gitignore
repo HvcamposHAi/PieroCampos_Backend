@@ -22,3 +22,5 @@ src/integrations/segfy/endpoints-mapeados.json
 # Validação local do Segfy (não versionar)
 .segfy-profile/
 segfy-*.png
+run-harvest.cmd
+segfy-harvest.log
