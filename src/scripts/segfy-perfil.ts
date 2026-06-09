@@ -64,9 +64,16 @@ async function login(): Promise<void> {
     if (temOtp) {
       console.log("📧 2FA solicitado — verifique o e-mail.");
       const codigo = await pergunta("Digite o código 2FA: ");
-      await p.locator(SEL_OTP).first().fill(codigo);
-      // marca "Lembrar este dispositivo por 30 dias" — checkbox CUSTOM (input oculto):
-      // clica o rótulo e força o check, confirmando o estado.
+      // 6 caixas de 1 dígito: digita sequencialmente (auto-avança).
+      const boxes = p.locator('input[autocomplete="one-time-code"], input[inputmode="numeric"]');
+      const n = await boxes.count().catch(() => 0);
+      if (n >= codigo.length) {
+        await boxes.first().click().catch(() => undefined);
+        await p.keyboard.type(codigo, { delay: 60 });
+      } else {
+        await boxes.first().fill(codigo).catch(() => undefined);
+      }
+      // marca "Lembrar este dispositivo por 30 dias" (checkbox custom, input oculto).
       const rotulo = p.getByText(/lembrar este dispositivo/i).first();
       if (await rotulo.isVisible({ timeout: 2_500 }).catch(() => false)) {
         await rotulo.click().catch(() => undefined);
@@ -76,7 +83,9 @@ async function login(): Promise<void> {
       const marcado = await chk.isChecked().catch(() => false);
       console.log(marcado ? '✅ "Lembrar 30 dias" MARCADO.' : '⚠️ Não consegui confirmar o "lembrar 30 dias".');
       await dispensarBanner(p);
-      await submeter(p);
+      // botão "Verificar" (habilita com os 6 dígitos)
+      const verificar = p.getByRole("button", { name: /verificar/i }).first();
+      await verificar.click({ timeout: 8_000 }).catch(async () => { await p.keyboard.press("Enter").catch(() => undefined); });
     }
     // "Logado" = saiu de QUALQUER tela de login/2FA (a 2FA fica em /login/mfa).
     await p.waitForURL((u) => !u.toString().includes("/login"), { timeout: 30_000 });

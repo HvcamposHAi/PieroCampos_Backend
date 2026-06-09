@@ -141,6 +141,32 @@ async function dispensarBannerCookies(p: Page): Promise<void> {
   }
 }
 
+/**
+ * Preenche o código 2FA. A tela usa 6 CAIXAS de 1 dígito (maxlength=1,
+ * autocomplete=one-time-code) — digitamos sequencialmente (auto-avança). Fallback
+ * p/ campo único. Garante o preenchimento conferindo a última caixa.
+ */
+async function preencherCodigo(p: Page, codigo: string): Promise<void> {
+  const boxes = p.locator('input[autocomplete="one-time-code"], input[inputmode="numeric"]');
+  const n = await boxes.count().catch(() => 0);
+  if (n >= codigo.length) {
+    await boxes.first().click().catch(() => undefined);
+    await p.keyboard.type(codigo, { delay: 60 });
+    const ultimo = await boxes.nth(codigo.length - 1).inputValue().catch(() => "");
+    if (!ultimo) for (let i = 0; i < codigo.length; i++) await boxes.nth(i).fill(codigo[i]).catch(() => undefined);
+  } else {
+    await boxes.first().fill(codigo).catch(() => undefined);
+  }
+}
+
+/** Submete a tela de 2FA: botão "Verificar" (não é type=submit; habilita com 6 dígitos). */
+async function submeterMfa(p: Page): Promise<void> {
+  const btn = p.getByRole("button", { name: /verificar/i }).first();
+  await btn.click({ timeout: 8_000 }).catch(async () => {
+    await p.keyboard.press("Enter").catch(() => undefined);
+  });
+}
+
 /** Submete o formulário; se o clique no botão for interceptado, cai p/ Enter na senha. */
 async function submeter(p: Page): Promise<void> {
   await p
@@ -210,11 +236,10 @@ export async function iniciarReauthSegfy(opts: {
 export async function confirmarReauthSegfy(handle: ReauthHandle, codigo: string): Promise<ResultadoReauth> {
   const p = handle.page;
   try {
-    const campo = p.locator(SELETOR_OTP).first();
-    await campo.fill(codigo);
+    await preencherCodigo(p, codigo);
     await marcarLembrarDispositivo(p);
     await dispensarBannerCookies(p);
-    await submeter(p);
+    await submeterMfa(p);
     await esperarLogado(p);
     return await finalizarCaptura(handle);
   } finally {
