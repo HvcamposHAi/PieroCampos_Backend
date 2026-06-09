@@ -41,6 +41,11 @@ export const genericoDriver: PortalDriver = {
   seletores: { usuario: SEL_USUARIO, senha: SEL_SENHA, submit: SEL_SUBMIT, otp: SEL_OTP },
 
   async localizarProposta(page: Page, ctx: EmitirApoliceContext): Promise<void> {
+    // Se a seguradora tem portal de EMISSÃO distinto do login, navega até ele.
+    const urlEmissao = ctx.seguradora.urlEmissao;
+    if (urlEmissao && urlEmissao !== ctx.seguradora.urlPortal) {
+      await page.goto(urlEmissao, { waitUntil: "networkidle" }).catch(() => undefined);
+    }
     const numero = ctx.proposta.numeroProposta;
     if (!numero) return; // sem número não há como localizar — driver específico trata
     const busca = page.locator('input[type="search"], input[placeholder*="proposta" i], input[name*="busca" i]').first();

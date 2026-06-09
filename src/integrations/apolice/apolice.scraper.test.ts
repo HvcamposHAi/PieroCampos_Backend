@@ -30,6 +30,7 @@ const ctx: EmitirApoliceContext = {
     grupoIntegracao: "B_rpa",
     loginType: null,
     urlPortal: "https://portal.exemplo/login",
+    urlEmissao: null,
     vaultKey: null,
     emailOtp: null,
     tipoAutenticacao: null,

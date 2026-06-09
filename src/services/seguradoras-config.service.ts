@@ -25,6 +25,7 @@ export function rowParaRef(row: SeguradoraConfigRow, corretoraId: string): Segur
     grupoIntegracao: row.grupo_integracao,
     loginType: row.login_type,
     urlPortal: row.url_portal,
+    urlEmissao: row.url_emissao,
     vaultKey: row.vault_key,
     emailOtp: row.email_otp,
     tipoAutenticacao: row.tipo_autenticacao,

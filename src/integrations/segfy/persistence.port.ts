@@ -156,6 +156,7 @@ export interface SeguradoraConfigRow {
   ramos: string[];
   email_otp: string | null;
   url_portal: string | null;
+  url_emissao: string | null;
   vault_key: string | null;
   observacao_tecnica: string | null;
   ultimo_acesso: string | null;

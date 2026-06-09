@@ -20,6 +20,7 @@ function configRow(): SeguradoraConfigRow {
     ramos: ["auto"],
     email_otp: null,
     url_portal: "https://portal.exemplo/login",
+    url_emissao: null,
     vault_key: null,
     observacao_tecnica: null,
     ultimo_acesso: null,

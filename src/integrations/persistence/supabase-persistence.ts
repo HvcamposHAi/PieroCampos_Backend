@@ -311,7 +311,7 @@ export class SupabasePersistence implements PersistencePort {
   // ── Catálogo de seguradoras (seguradoras_config) ────────────────────────────
 
   private readonly SEG_COLS =
-    "id,nome_display,ativo,status_acesso,grupo_integracao,tipo_autenticacao,login_type,ramos,email_otp,url_portal,vault_key,observacao_tecnica,ultimo_acesso";
+    "id,nome_display,ativo,status_acesso,grupo_integracao,tipo_autenticacao,login_type,ramos,email_otp,url_portal,url_emissao,vault_key,observacao_tecnica,ultimo_acesso";
 
   async listarSeguradorasConfig(): Promise<SeguradoraConfigRow[]> {
     const { data, error } = await this.supabase

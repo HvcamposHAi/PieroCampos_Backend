@@ -23,6 +23,8 @@ export interface SeguradoraConfigRef {
   grupoIntegracao: GrupoIntegracao;
   loginType: string | null;
   urlPortal: string | null;
+  /** Portal de EMISSÃO (quando distinto do de login/cotação — ex.: Suhai, Sancor). */
+  urlEmissao: string | null;
   /** Ponteiro p/ cofre externo — NUNCA o segredo em si. */
   vaultKey: string | null;
   /** Caixa de e-mail p/ ler o OTP (grupo C_otp). */
