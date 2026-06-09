@@ -101,6 +101,15 @@ const schema = z
     // Mantida no schema só para não quebrar deploys que ainda a setam; NÃO é mais
     // lida no gate de runtime.
     APRENDIZADO_ENABLED: boolDeString.default(false),
+    // ── Mapeamento DINÂMICO de cotação (schema em DB + resolver LLM com cache) ──
+    // Gate MESTRE. default false = deploy INERTE: `resolverEntrada` cai direto no
+    // mapeamento HARDCODED de hoje (mapearParaCotacao) ANTES de qualquer leitura
+    // de DB/LLM. Ligar só após rodar as cláusulas + o seed (npm run mapper:seed) e
+    // ligar o toggle por-corretora no Admin. Efetivo = esta env E o toggle do DB.
+    MAPPER_DINAMICO_ENABLED: boolDeString.default(false),
+    // Modelo do resolver de campo (miss). Vazio → usa BIA_MODEL. Reusa ANTHROPIC_API_KEY.
+    MAPPER_LLM_MODEL: z.string().optional().default(""),
+    MAPPER_LLM_MAX_TOKENS: numComPadrao(256),
     // Modelo do destilador (offline). Default = mesmo da Bia.
     APRENDIZADO_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
     APRENDIZADO_MAX_TOKENS: numComPadrao(2048),

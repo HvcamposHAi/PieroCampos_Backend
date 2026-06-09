@@ -45,6 +45,7 @@ import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
 import { obterPlaybookAtivoTexto, lerAprendizadoAtivo } from "./aprendizado.service";
 import { mapearParaCotacao } from "./segfy-cotacao.service";
 import { dispararCotacao } from "./cotacao.service";
+import { SegfyReauthNecessariaError } from "../integrations/segfy/errors";
 import { cpfValido, formatarCpf } from "../lib/cpf";
 import { normalizarTelefoneBr } from "../lib/telefone";
 
@@ -462,13 +463,22 @@ export async function confirmarEdispararCotacao(p: {
 
   await sb.from("conversas").update({ estado: "aguardando_cotacao" }).eq("id", p.conversaId);
 
-  const cotacao = await dispararCotacao({
-    conversaId: p.conversaId,
-    clienteId: p.clienteId,
-    dados: p.dados,
-    ramo: ramoConversa,
-    corretoraId: corretoraConversa,
-  });
+  // Sessão do Segfy caída (pré-check) lança SegfyReauthNecessariaError ANTES de
+  // criar a cotação (sem card "parou em Autenticação"). Tratamos como "não cotou"
+  // → escala p/ humano (o operador já foi avisado p/ reautenticar).
+  let cotacao;
+  try {
+    cotacao = await dispararCotacao({
+      conversaId: p.conversaId,
+      clienteId: p.clienteId,
+      dados: p.dados,
+      ramo: ramoConversa,
+      corretoraId: corretoraConversa,
+    });
+  } catch (e) {
+    if (e instanceof SegfyReauthNecessariaError) cotacao = null;
+    else throw e;
+  }
   if (!cotacao) {
     // Cotação falhou (Segfy off / dados faltando / erro): escala para um humano
     // (a trigger do banco notifica os operadores). A conversa fica em holding —

@@ -19,7 +19,9 @@ export type CategoriaAuditoria =
   | "segfy"
   | "agente"
   | "aprendizado"
-  | "plataforma";
+  | "plataforma"
+  | "apolice"
+  | "mapeamento";
 
 export interface EventoAuditoriaInput {
   operadorId?: string | null;

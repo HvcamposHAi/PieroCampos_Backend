@@ -20,7 +20,8 @@
     "segfy:harness": "tsx src/scripts/segfy-harness.ts",
     "segfy:reauth": "tsx src/scripts/segfy-reauth.ts",
     "segfy:perfil": "tsx src/scripts/segfy-perfil.ts",
-    "segfy:harvest": "tsx src/scripts/segfy-harvest.ts"
+    "segfy:harvest": "tsx src/scripts/segfy-harvest.ts",
+    "mapper:seed": "tsx src/scripts/print-mapper-seed.ts"
   },
   "repository": {
     "type": "git",

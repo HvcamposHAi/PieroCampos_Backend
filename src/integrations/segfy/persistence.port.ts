@@ -62,8 +62,19 @@ export interface AtualizarCotacaoInput {
   validadeAte?: string;
 }
 
-/** Etapas do pipeline Segfy (área de consulta/observabilidade). */
-export type EtapaSegfy = "token" | "segurado" | "veiculo" | "calculo" | "coleta" | "salvar";
+/** Etapas do pipeline Segfy (área de consulta/observabilidade). As 4 últimas são
+ *  da EMISSÃO de apólice (reusam `cotacao_eventos`, cuja coluna `etapa` é texto). */
+export type EtapaSegfy =
+  | "token"
+  | "segurado"
+  | "veiculo"
+  | "calculo"
+  | "coleta"
+  | "salvar"
+  | "proposta"
+  | "login"
+  | "emissao"
+  | "download";
 export type StatusEtapa = "andamento" | "ok" | "erro";
 
 export interface RegistrarEtapaInput {
@@ -74,6 +85,90 @@ export interface RegistrarEtapaInput {
   /** Crítica humano-legível. NUNCA inclua token/CPF. */
   mensagem?: string;
   detalhe?: Record<string, unknown>;
+}
+
+// ── EMISSÃO de apólice (proposta → apólice) + catálogo de seguradoras ─────────
+
+export type StatusPropostaDb =
+  | "pendente"
+  | "transmitida"
+  | "em_analise"
+  | "pendencia_doc"
+  | "pendencia_vistoria"
+  | "problema_bonificacao"
+  | "recusada"
+  | "aprovada"
+  | "emitida";
+
+export interface SalvarPropostaInput {
+  clienteId: string;
+  cotacaoId: string | null;
+  seguradora: string;
+  numeroProposta?: string | null;
+  /** default no adapter: 'transmitida'. */
+  status?: StatusPropostaDb;
+  operadorTransmissaoId?: string | null;
+  observacao?: string | null;
+}
+
+export interface AtualizarPropostaInput {
+  status?: StatusPropostaDb;
+  pdfUrl?: string | null;
+  emitidaEm?: string;
+  transmitidaEm?: string;
+}
+
+/** Subconjunto da `propostas` que a emissão precisa (escopo já filtrado por corretora). */
+export interface PropostaRef {
+  id: string;
+  clienteId: string;
+  cotacaoId: string | null;
+  ramo: string | null;
+  seguradora: string;
+  status: StatusPropostaDb;
+  numeroProposta: string | null;
+}
+
+export interface SalvarApoliceInput {
+  clienteId: string;
+  propostaId: string;
+  numeroApolice: string;
+  ramo: string;
+  seguradora: string;
+  inicioVigencia: string | null;
+  fimVigencia: string | null;
+  premioTotal: number | null;
+  premioLiquido: number | null;
+  pdfUrl: string | null;
+}
+
+export type StatusAcessoDb = "ok" | "falha" | "credencial_expirada" | "instavel";
+
+/** Linha de `seguradoras_config` (catálogo de seguradoras, por corretora). */
+export interface SeguradoraConfigRow {
+  id: string;
+  nome_display: string;
+  ativo: boolean;
+  status_acesso: StatusAcessoDb;
+  grupo_integracao: "A_api" | "B_rpa" | "C_otp";
+  tipo_autenticacao: string | null;
+  login_type: string | null;
+  ramos: string[];
+  email_otp: string | null;
+  url_portal: string | null;
+  vault_key: string | null;
+  observacao_tecnica: string | null;
+  ultimo_acesso: string | null;
+}
+
+export interface AtualizarSeguradoraConfigInput {
+  ativo?: boolean;
+  grupo_integracao?: "A_api" | "B_rpa" | "C_otp";
+  tipo_autenticacao?: string | null;
+  login_type?: string | null;
+  url_portal?: string | null;
+  email_otp?: string | null;
+  observacao_tecnica?: string | null;
 }
 
 export interface PersistencePort {
@@ -89,6 +184,20 @@ export interface PersistencePort {
   atualizarCotacao(cotacaoId: string, patch: AtualizarCotacaoInput): Promise<void>;
   /** Registra uma etapa do pipeline Segfy (observabilidade na tela). */
   registrarEtapa(input: RegistrarEtapaInput): Promise<void>;
+
+  // Emissão de apólice
+  salvarProposta(input: SalvarPropostaInput): Promise<{ propostaId: string }>;
+  buscarProposta(propostaId: string): Promise<PropostaRef | null>;
+  atualizarPropostaStatus(propostaId: string, patch: AtualizarPropostaInput): Promise<void>;
+  salvarApolice(input: SalvarApoliceInput): Promise<{ apoliceId: string }>;
+
+  // Catálogo de seguradoras (tela /seguradoras + status via "Testar")
+  listarSeguradorasConfig(): Promise<SeguradoraConfigRow[]>;
+  buscarSeguradoraConfigPorId(id: string): Promise<SeguradoraConfigRow | null>;
+  buscarSeguradoraConfigPorNome(nomeDisplay: string): Promise<SeguradoraConfigRow | null>;
+  atualizarSeguradoraConfig(id: string, patch: AtualizarSeguradoraConfigInput): Promise<void>;
+  /** Única escrita em `status_acesso` (botão "Testar"); atualiza `ultimo_acesso`. */
+  registrarStatusAcesso(id: string, status: StatusAcessoDb, quando: string): Promise<void>;
 }
 
 /**
@@ -102,10 +211,25 @@ export class InMemoryPersistence implements PersistencePort {
   readonly cotacoesIniciadas: Array<IniciarCotacaoInput & { cotacaoId: string }> = [];
   readonly cotacoesAtualizadas: Array<{ cotacaoId: string } & AtualizarCotacaoInput> = [];
   readonly etapas: RegistrarEtapaInput[] = [];
+  readonly propostasSalvas: Array<SalvarPropostaInput & { propostaId: string }> = [];
+  readonly propostasAtualizadas: Array<{ propostaId: string } & AtualizarPropostaInput> = [];
+  readonly apolicesSalvas: Array<SalvarApoliceInput & { apoliceId: string }> = [];
+  readonly statusAcessoRegistrado: Array<{ id: string; status: StatusAcessoDb; quando: string }> = [];
+  readonly configsAtualizadas: Array<{ id: string } & AtualizarSeguradoraConfigInput> = [];
+  private seguradorasConfig: SeguradoraConfigRow[] = [];
+  private propostas = new Map<string, PropostaRef>();
   private seq = 0;
 
   semearCliente(cliente: ClienteRef): void {
     this.clientes.set(cliente.id, cliente);
+  }
+
+  semearSeguradoraConfig(row: SeguradoraConfigRow): void {
+    this.seguradorasConfig.push(row);
+  }
+
+  semearProposta(proposta: PropostaRef): void {
+    this.propostas.set(proposta.id, proposta);
   }
 
   async buscarClientePorId(id: string, _corretoraId?: string): Promise<ClienteRef | null> {
@@ -139,5 +263,64 @@ export class InMemoryPersistence implements PersistencePort {
 
   async registrarEtapa(input: RegistrarEtapaInput): Promise<void> {
     this.etapas.push(input);
+  }
+
+  async salvarProposta(input: SalvarPropostaInput): Promise<{ propostaId: string }> {
+    const propostaId = `prop_${++this.seq}`;
+    this.propostasSalvas.push({ ...input, propostaId });
+    this.propostas.set(propostaId, {
+      id: propostaId,
+      clienteId: input.clienteId,
+      cotacaoId: input.cotacaoId,
+      ramo: null,
+      seguradora: input.seguradora,
+      status: input.status ?? "transmitida",
+      numeroProposta: input.numeroProposta ?? null,
+    });
+    return { propostaId };
+  }
+
+  async buscarProposta(propostaId: string): Promise<PropostaRef | null> {
+    return this.propostas.get(propostaId) ?? null;
+  }
+
+  async atualizarPropostaStatus(propostaId: string, patch: AtualizarPropostaInput): Promise<void> {
+    this.propostasAtualizadas.push({ propostaId, ...patch });
+    const p = this.propostas.get(propostaId);
+    if (p && patch.status) p.status = patch.status;
+  }
+
+  async salvarApolice(input: SalvarApoliceInput): Promise<{ apoliceId: string }> {
+    const apoliceId = `apo_${++this.seq}`;
+    this.apolicesSalvas.push({ ...input, apoliceId });
+    return { apoliceId };
+  }
+
+  async listarSeguradorasConfig(): Promise<SeguradoraConfigRow[]> {
+    return [...this.seguradorasConfig];
+  }
+
+  async buscarSeguradoraConfigPorId(id: string): Promise<SeguradoraConfigRow | null> {
+    return this.seguradorasConfig.find((s) => s.id === id) ?? null;
+  }
+
+  async buscarSeguradoraConfigPorNome(nomeDisplay: string): Promise<SeguradoraConfigRow | null> {
+    const alvo = nomeDisplay.trim().toLowerCase();
+    return this.seguradorasConfig.find((s) => s.nome_display.trim().toLowerCase() === alvo) ?? null;
+  }
+
+  async atualizarSeguradoraConfig(id: string, patch: AtualizarSeguradoraConfigInput): Promise<void> {
+    this.configsAtualizadas.push({ id, ...patch });
+    const row = this.seguradorasConfig.find((s) => s.id === id);
+    if (row) Object.assign(row, patch);
+  }
+
+  async registrarStatusAcesso(id: string, status: StatusAcessoDb, quando: string): Promise<void> {
+    this.statusAcessoRegistrado.push({ id, status, quando });
+    const row = this.seguradorasConfig.find((s) => s.id === id);
+    if (row) {
+      row.status_acesso = status;
+      row.ultimo_acesso = quando;
+    }
   }
 }

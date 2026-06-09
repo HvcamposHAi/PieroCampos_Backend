@@ -20,6 +20,7 @@ import {
 } from "../../services/segfy-credenciais.service";
 import {
   avisoProativoSessao,
+  conexaoUtilizavel,
   confirmarReauth,
   gravarTokensHarvest,
   importarSessao,
@@ -37,6 +38,19 @@ import {
 import { obterTokensSegfy } from "./segfy.multicalculo";
 
 const router = Router();
+
+// Status de CONEXÃO da sessão Segfy — acessível ao OPERADOR (não só admin): a
+// cotação manual checa isto ANTES de disparar. Só leitura (sem hit no Segfy).
+router.get("/sessao/status", async (_req: Request, res: Response) => {
+  try {
+    const r = await conexaoUtilizavel();
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    // fail-open: não bloqueia a cotação se o próprio check falhar.
+    logger.warn("[segfy.routes] sessao/status falhou; fail-open", { erro: (e as Error).message });
+    res.json({ ok: true, conectado: true, status: "ausente", valida_ate: null });
+  }
+});
 
 router.get("/credenciais", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   try {

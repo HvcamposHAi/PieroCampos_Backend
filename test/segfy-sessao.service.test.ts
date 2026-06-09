@@ -50,6 +50,7 @@ import {
   importarSessao,
   avisoProativoSessao,
   gravarTokensHarvest,
+  conexaoUtilizavel,
 } from "../src/services/segfy-sessao.service";
 
 const CHAVE = "A".repeat(43) + "="; // 32 bytes base64
@@ -162,6 +163,24 @@ describe("importarSessao", () => {
   it("falha clara quando a linha de credenciais não existe", async () => {
     estado.updateReturn = []; // nenhuma linha singleton
     await expect(importarSessao({ cookieHeader: "trust=abc" })).rejects.toThrow(/não configuradas/);
+  });
+});
+
+describe("conexaoUtilizavel", () => {
+  it("tokens frescos → conectado true", async () => {
+    estado.selectRow = { data: linhaSessao({ tokens_cifrados: cifrar({ authAutomationToken: "a", userAutomationToken: "u" }), sessao_atualizada_em: new Date().toISOString() }), error: null };
+    const r = await conexaoUtilizavel();
+    expect(r.conectado).toBe(true);
+  });
+
+  it("sem tokens (só cookie) → conectado false", async () => {
+    estado.selectRow = { data: linhaSessao({ sessao_cifrada: cifrar({ cookieHeader: "x=y" }), tokens_cifrados: null }), error: null };
+    expect((await conexaoUtilizavel()).conectado).toBe(false);
+  });
+
+  it("sessão ausente → conectado false", async () => {
+    estado.selectRow = { data: null, error: null };
+    expect((await conexaoUtilizavel()).conectado).toBe(false);
   });
 });
 

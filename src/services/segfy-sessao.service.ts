@@ -243,6 +243,28 @@ export async function statusSessao(): Promise<SessaoInfo> {
   }
 }
 
+/** Margem mínima de validade dos tokens p/ considerar a conexão utilizável. */
+const MARGEM_CONEXAO_MS = 2 * 60 * 1000;
+
+/**
+ * Diz se a cotação CONSEGUE autenticar AGORA — i.e., há tokens colhidos frescos
+ * (validade > margem). É o que prediz o sucesso (o caminho de cotação usa o atalho
+ * de tokens). Apenas LEITURA do banco (sem hit no Segfy). Usado p/ checar a conexão
+ * ANTES de disparar a cotação. `conectado=false` ⇒ abrir reauth / não cotar.
+ */
+export async function conexaoUtilizavel(): Promise<{ conectado: boolean; status: StatusSessao; valida_ate: string | null }> {
+  const info = await statusSessao();
+  try {
+    const s = await restaurarSessao();
+    const conectado = !!(s?.tokens && (s.tokensValidadeMs ?? 0) > MARGEM_CONEXAO_MS);
+    return { conectado, status: info.status, valida_ate: info.valida_ate };
+  } catch (e) {
+    // fail-open: se a CHECAGEM em si falhar (não a sessão), deixa tentar cotar.
+    logger.warn("[segfy.sessao] conexaoUtilizavel falhou; fail-open", { erro: (e as Error).message });
+    return { conectado: true, status: info.status, valida_ate: info.valida_ate };
+  }
+}
+
 /**
  * Marca a sessão como expirada (reauth necessária). Best-effort.
  * Retorna `true` se houve TRANSIÇÃO (não estava expirada antes) — usado p/ avisar

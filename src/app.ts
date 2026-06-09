@@ -12,11 +12,13 @@ import { getEnv } from "./config/env";
 import { authSupabase } from "./middlewares/authSupabase";
 import { waRouter } from "./integrations/whatsapp/routes";
 import { cotacaoRouter } from "./integrations/cotacao/routes";
+import { apoliceRouter } from "./integrations/apolice/routes";
 import { segfyRouter, segfySessaoCronRouter, segfySessaoTokensRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { plataformaRouter } from "./integrations/plataforma/plataforma.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
 import { aprendizadoRouter, aprendizadoPublicoRouter } from "./integrations/aprendizado/aprendizado.routes";
+import { mapeamentoRouter } from "./integrations/quote/mapper/mapper.routes";
 import { auditoriaRouter, auditoriaPublicoRouter } from "./integrations/auditoria/auditoria.routes";
 import { auditarMutacoes } from "./middlewares/auditoria";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
@@ -88,11 +90,13 @@ export function criarApp(): express.Express {
 
   app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
   app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);
+  app.use("/api/apolice", authSupabase, auditarMutacoes("apolice"), apoliceRouter);
   app.use("/api/segfy", authSupabase, auditarMutacoes("segfy"), segfyRouter);
   app.use("/api/usuarios", authSupabase, auditarMutacoes("usuarios"), usuariosRouter);
   app.use("/api/plataforma", authSupabase, auditarMutacoes("plataforma"), plataformaRouter);
   app.use("/api/agente", authSupabase, auditarMutacoes("agente"), agenteRouter);
   app.use("/api/aprendizado", authSupabase, auditarMutacoes("aprendizado"), aprendizadoRouter);
+  app.use("/api/mapeamento", authSupabase, auditarMutacoes("mapeamento"), mapeamentoRouter);
   app.use("/api/auditoria", authSupabase, auditoriaRouter);
 
   app.use((_req, res) => {

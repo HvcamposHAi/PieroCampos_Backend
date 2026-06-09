@@ -16,6 +16,7 @@ import { logger } from "../../utils/logger";
 import { confirmarEdispararCotacao } from "../../services/bot.service";
 import { dispararCotacaoManual } from "../../services/cotacao-manual.service";
 import { cpfValido } from "../../lib/cpf";
+import { SegfyReauthNecessariaError, MSG_REAUTH_NECESSARIA } from "../segfy/errors";
 import { formatarComparativoParaWhatsApp, formatarOpcaoUnicaParaWhatsApp } from "../segfy/segfy.format";
 import type { ResultadoCotacaoItem } from "../segfy/segfy.types";
 import { getSupabaseAdmin } from "../whatsapp/supabase";
@@ -114,6 +115,11 @@ router.post("/manual", exigirOperadorAtivo, async (req: Request, res: Response) 
     });
     res.status(202).json({ ok: true, clienteId, cotacaoId });
   } catch (e) {
+    // Sessão do Segfy caída → 409 p/ o front abrir o modal de reauth (sem criar card).
+    if (e instanceof SegfyReauthNecessariaError) {
+      res.status(409).json({ ok: false, erro: "reauth_necessaria", mensagem: MSG_REAUTH_NECESSARIA });
+      return;
+    }
     logger.error("[cotacao.routes] cotação manual falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "cotacao_manual_falhou", mensagem: (e as Error).message });
   }
