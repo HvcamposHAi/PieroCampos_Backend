@@ -1,5 +1,6 @@
 /**
- * Pré-check de conexão + tratamento de reauth no disparo da cotação:
+ * Pré-check de conexão + tratamento de reauth no provider Segfy (choke point de
+ * bot + manual — `segfyAutoProvider.cotar`):
  *  - Sessão caída (pré-check) → LANÇA SegfyReauthNecessariaError ANTES de criar a
  *    cotação (sem card "parou em Autenticação"); avisa o operador (1x na transição).
  *  - Pré-check OK mas o login cai no 2FA durante a corrida → rede de segurança:
@@ -34,14 +35,15 @@ vi.mock("../src/services/segfy-seguradoras.service", () => ({
   listarSeguradorasAtivas: vi.fn(async () => []),
 }));
 
-import { dispararCotacaoSegfy } from "../src/services/segfy-cotacao.service";
+import { segfyAutoProvider } from "../src/integrations/quote/segfy-auto.provider";
 import { InMemoryPersistence } from "../src/integrations/segfy/persistence.port";
+import type { QuoteContext } from "../src/integrations/quote/quote-provider.port";
 import { _resetEnvCache } from "../src/config/env";
 
 function semearAuto(mem: InMemoryPersistence) {
   mem.semearCliente({ id: "cli1", cpf: "09065661930", nome: "Humberto", email: null, telefone: "+55", segfy_id: null, consentimento_lgpd: true });
 }
-const PARAMS = { conversaId: "c1", clienteId: "cli1", dados: { placa: "SFI7F72", cep: "81270320" } };
+const CTX: QuoteContext = { conversaId: "c1", clienteId: "cli1", ramo: "auto", dados: { placa: "SFI7F72", cep: "81270320" } };
 
 beforeEach(() => {
   process.env.WA_ENABLED = "false";
@@ -53,13 +55,13 @@ beforeEach(() => {
   conexaoUtilizavel.mockClear().mockResolvedValue({ conectado: true, status: "ativa", valida_ate: null });
 });
 
-describe("dispararCotacaoSegfy — pré-check de conexão", () => {
+describe("segfyAutoProvider.cotar — pré-check de conexão", () => {
   it("sessão CAÍDA: lança reauth ANTES de criar a cotação (sem card) e avisa", async () => {
     conexaoUtilizavel.mockResolvedValueOnce({ conectado: false, status: "expirada", valida_ate: null });
     const mem = new InMemoryPersistence();
     semearAuto(mem);
 
-    await expect(dispararCotacaoSegfy(PARAMS, mem)).rejects.toBeInstanceOf(SegfyReauthNecessariaError);
+    await expect(segfyAutoProvider.cotar(CTX, mem)).rejects.toBeInstanceOf(SegfyReauthNecessariaError);
     expect(mem.cotacoesIniciadas).toHaveLength(0); // NÃO criou cotação (sem card)
     expect(marcarSessaoExpirada).toHaveBeenCalledTimes(1);
     expect(notificarReauthNecessaria).toHaveBeenCalledTimes(1);
@@ -70,7 +72,7 @@ describe("dispararCotacaoSegfy — pré-check de conexão", () => {
     marcarSessaoExpirada.mockResolvedValueOnce(false);
     const mem = new InMemoryPersistence();
     semearAuto(mem);
-    await expect(dispararCotacaoSegfy(PARAMS, mem)).rejects.toBeInstanceOf(SegfyReauthNecessariaError);
+    await expect(segfyAutoProvider.cotar(CTX, mem)).rejects.toBeInstanceOf(SegfyReauthNecessariaError);
     expect(notificarReauthNecessaria).not.toHaveBeenCalled();
   });
 
@@ -78,7 +80,7 @@ describe("dispararCotacaoSegfy — pré-check de conexão", () => {
     // conexaoUtilizavel default = conectado:true → passa o pré-check; cotarAuto lança.
     const mem = new InMemoryPersistence();
     semearAuto(mem);
-    const r = await dispararCotacaoSegfy(PARAMS, mem);
+    const r = await segfyAutoProvider.cotar(CTX, mem);
     expect(r).toBeNull();
     expect(mem.cotacoesIniciadas).toHaveLength(1); // criou (observabilidade) e marcou erro
     expect(mem.cotacoesAtualizadas.some((c) => c.status === "erro")).toBe(true);

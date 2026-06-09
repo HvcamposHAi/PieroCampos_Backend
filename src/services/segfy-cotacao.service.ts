@@ -22,7 +22,7 @@ import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
-import { restaurarSessao, marcarSessaoExpirada, conexaoUtilizavel } from "./segfy-sessao.service";
+import { restaurarSessao, marcarSessaoExpirada } from "./segfy-sessao.service";
 import { notificarReauthNecessaria } from "./segfy-alertas.service";
 import { listarSeguradorasAtivas } from "./segfy-seguradoras.service";
 import { SegfyReauthNecessariaError } from "../integrations/segfy/errors";
