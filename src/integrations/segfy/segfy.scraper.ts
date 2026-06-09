@@ -236,10 +236,12 @@ export async function iniciarReauthSegfy(opts: {
 export async function confirmarReauthSegfy(handle: ReauthHandle, codigo: string): Promise<ResultadoReauth> {
   const p = handle.page;
   try {
-    await preencherCodigo(p, codigo);
+    // ORDEM IMPORTA: marca o "lembrar 30 dias" ANTES do código — o form de 2FA
+    // AUTO-SUBMETE ao 6º dígito; se marcássemos depois, já teria navegado.
     await marcarLembrarDispositivo(p);
+    await preencherCodigo(p, codigo);
     await dispensarBannerCookies(p);
-    await submeterMfa(p);
+    await submeterMfa(p); // fallback caso não auto-submeta
     await esperarLogado(p);
     return await finalizarCaptura(handle);
   } finally {
