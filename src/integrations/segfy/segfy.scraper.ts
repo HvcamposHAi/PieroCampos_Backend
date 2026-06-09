@@ -153,7 +153,7 @@ async function preencherCodigo(p: Page, codigo: string): Promise<void> {
     await boxes.first().click().catch(() => undefined);
     await p.keyboard.type(codigo, { delay: 60 });
     const ultimo = await boxes.nth(codigo.length - 1).inputValue().catch(() => "");
-    if (!ultimo) for (let i = 0; i < codigo.length; i++) await boxes.nth(i).fill(codigo[i]).catch(() => undefined);
+    if (!ultimo) for (let i = 0; i < codigo.length; i++) await boxes.nth(i).fill(codigo.charAt(i)).catch(() => undefined);
   } else {
     await boxes.first().fill(codigo).catch(() => undefined);
   }
