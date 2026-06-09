@@ -440,11 +440,45 @@ export async function cotarAuto(
   // 3) socket (entra na sala via auth.roomId) ANTES do disparo
   const socket = io(SOCKET_ORIGIN, { transports: ["websocket"], auth: { roomId: callback } });
   const itens = new Map<string, ResultadoCotacaoItem>();
+  // Knobs de coleta lidos direto do process.env (evita acoplar cotarAuto à
+  // validação completa do getEnv, que exigiria Supabase/Bia em testes unitários).
+  const ociosaMs = Number(process.env.SEGFY_COLETA_OCIOSA_MS ?? "") || 12_000;
+  const debug = ["1", "true", "yes", "on"].includes((process.env.SEGFY_DEBUG_COLETA ?? "").toLowerCase());
 
   const coleta = new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, TIMEOUT_RESULTADOS_MS);
+    let teto: ReturnType<typeof setTimeout>;
+    let ocioso: ReturnType<typeof setTimeout> | null = null;
+    const finalizar = (): void => {
+      clearTimeout(teto);
+      if (ocioso) clearTimeout(ocioso);
+      resolve();
+    };
+    // Teto absoluto (todas lentas/sem resposta).
+    teto = setTimeout(finalizar, TIMEOUT_RESULTADOS_MS);
+    // Janela de OCIOSIDADE: rearma a cada RESULT; encerra se ninguém mais responde.
+    const rearmarOcioso = (): void => {
+      if (ociosaMs <= 0) return;
+      if (ocioso) clearTimeout(ocioso);
+      ocioso = setTimeout(finalizar, ociosaMs);
+    };
+
     socket.onAny((_evento: string, payloadEvt: unknown) => {
-      const evt = payloadEvt as { action?: string; data?: unknown } | undefined;
+      const evt = payloadEvt as { action?: string; data?: Record<string, unknown> } | undefined;
+      // Rearma a ociosidade em QUALQUER evento (STEP/RESULT/PDF): enquanto alguma
+      // seguradora progride, seguimos esperando; só encerra quando TUDO silencia.
+      rearmarOcioso();
+      if (debug && evt?.action) {
+        const d = evt.data ?? {};
+        const comp = d.company as { name?: string; full_name?: string } | undefined;
+        logger.info("[segfy.coleta] evento", {
+          action: evt.action,
+          company: comp?.full_name ?? comp?.name,
+          status: typeof d.status === "string" ? d.status : undefined,
+          tem_premio: typeof d.premium === "number" && d.premium > 0,
+          percentage: typeof d.percentage === "number" ? d.percentage : undefined,
+          msg: typeof d.messages === "string" ? d.messages.slice(0, 120) : undefined,
+        });
+      }
       if (evt?.action !== "RESULT") return;
       try {
         const item = mapearResultadoParaItem(evt.data);
@@ -452,11 +486,8 @@ export async function cotarAuto(
       } catch (e) {
         logger.warn("Segfy: RESULT não parseável", { erro: e instanceof Error ? e.message : String(e) });
       }
-      // Resolve assim que todas as seguradoras pedidas responderem.
-      if (itens.size >= insurers.length) {
-        clearTimeout(timer);
-        resolve();
-      }
+      // Encerra assim que TODAS as seguradoras pedidas responderem.
+      if (itens.size >= insurers.length) finalizar();
     });
   });
 

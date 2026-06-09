@@ -7,6 +7,8 @@
  * Ex.:  npm run segfy:cotar -- 09065661930 SFI7F72 81270320 Administrador
  */
 import { obterTokensSegfy, cotarAuto } from "../integrations/segfy/segfy.multicalculo";
+import { restaurarSessao } from "../services/segfy-sessao.service";
+import { listarSeguradorasAtivas } from "../services/segfy-seguradoras.service";
 import { formatarComparativoParaWhatsApp } from "../integrations/segfy/segfy.format";
 import { logger } from "../utils/logger";
 
@@ -33,13 +35,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Login UMA vez (cacheado); todas as cotações reusam o mesmo token.
-  logger.info("Login (HTTP, sem browser)...");
-  const tokens = await obterTokensSegfy();
+  // Usa a SESSÃO colhida (tokens do agente local) — sem 2FA. Cota as MESMAS
+  // seguradoras ATIVAS do Admin (não o INSURERS_PADRAO), p/ refletir a produção.
+  const sessao = await restaurarSessao();
+  const tokens = await obterTokensSegfy(false, undefined, sessao ?? undefined);
+  const ativas = await listarSeguradorasAtivas();
+  logger.info("seguradoras ATIVAS que serão cotadas", { total: ativas.length });
 
   for (const [i, p] of pedidos.entries()) {
     logger.info(`Cotando ${i + 1}/${pedidos.length}`, { placa: p.placa });
-    const { resultados } = await cotarAuto(p, tokens);
+    const entrada = { ...p, insurers: ativas.length ? ativas : undefined };
+    const { resultados } = await cotarAuto(entrada, tokens);
     console.log(`\n=== Cotação ${i + 1}: ${p.placa} — ${resultados.length} seguradoras ===`);
     for (const r of resultados) {
       const linha = r.status === "cotado"

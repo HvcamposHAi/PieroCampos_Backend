@@ -45,6 +45,19 @@ describe("mapearResultadoParaItem", () => {
     expect(item.parcelas).toBe(1);
   });
 
+  it("recusada carrega o MOTIVO limpo (sem HTML); cotada não tem motivo", () => {
+    const recusada = mapearResultadoParaItem({
+      company: { name: "porto", full_name: "Porto Seguro" },
+      premium: null,
+      status: "failure",
+      messages: "Ano do Modelo deve estar entre 2025 e 2027.<br/><br><b>Erro</b>",
+    });
+    expect(recusada.status).toBe("failure");
+    expect(recusada.motivo).toBe("Ano do Modelo deve estar entre 2025 e 2027. Erro");
+    // cotada não precisa de motivo
+    expect(mapearResultadoParaItem(RESULT_EZZE).motivo).toBeUndefined();
+  });
+
   it("cai para Boleto quando não há Cartão de Crédito", () => {
     const item = mapearResultadoParaItem({
       company: { name: "mapfre" },

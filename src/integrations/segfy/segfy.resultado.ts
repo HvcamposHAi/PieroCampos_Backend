@@ -58,6 +58,18 @@ function melhorParcelamento(
   return { parcelas, valor_parcela: tabela[String(parcelas)] ?? 0 };
 }
 
+/** Limpa HTML/entidades de uma mensagem do Segfy e corta p/ exibição curta. */
+function limparMensagem(msg?: string): string | undefined {
+  if (!msg) return undefined;
+  const texto = msg
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return texto ? texto.slice(0, 180) : undefined;
+}
+
 /** Resumo curto das coberturas para o WhatsApp. */
 function resumoCoberturas(cov?: Record<string, unknown>): string {
   if (!cov) return "";
@@ -83,5 +95,7 @@ export function mapearResultadoParaItem(dataBruto: unknown): ResultadoCotacaoIte
     valor_parcela,
     coberturas_resumo: resumoCoberturas(d.company_coverages ?? undefined),
     status: statusOk ? "cotado" : (d.status ?? "recusado"),
+    // Recusadas levam o motivo (limpo) p/ a tela; cotadas não precisam.
+    motivo: statusOk ? undefined : limparMensagem(d.messages),
   };
 }

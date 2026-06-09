@@ -115,6 +115,8 @@ export const ResultadoCotacaoItemSchema = z.object({
   coberturas_resumo: z.string().default(""),
   // 'cotado' = oferta válida; outros valores = recusado/indisponível.
   status: z.string().default("cotado"),
+  // Motivo da recusa/indisponibilidade (texto limpo, sem HTML) p/ exibir ao operador.
+  motivo: z.string().optional(),
 });
 export type ResultadoCotacaoItem = z.infer<typeof ResultadoCotacaoItemSchema>;
 
