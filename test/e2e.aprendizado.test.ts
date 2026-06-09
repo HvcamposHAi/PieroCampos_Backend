@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   conversa: null as any,
   chamarBia: vi.fn(),
   obterPlaybook: vi.fn(),
+  lerAtivo: vi.fn(),
 }));
 
 vi.mock("../src/integrations/whatsapp/supabase", () => ({
@@ -74,6 +75,7 @@ vi.mock("../src/services/rag.service", () => ({
 }));
 vi.mock("../src/services/aprendizado.service", () => ({
   obterPlaybookAtivoTexto: h.obterPlaybook,
+  lerAprendizadoAtivo: h.lerAtivo,
 }));
 
 import { processarMensagem } from "../src/services/bot.service";
@@ -121,13 +123,13 @@ beforeEach(() => {
   _resetEnvCache();
   h.chamarBia.mockReset();
   h.obterPlaybook.mockReset();
+  h.lerAtivo.mockReset();
   h.chamarBia.mockResolvedValue(RESP);
 });
 
-describe("E2E — injeção do playbook na Bia", () => {
-  it("flag ON: consulta o playbook e injeta como systemAprendizado", async () => {
-    process.env.APRENDIZADO_ENABLED = "true";
-    _resetEnvCache();
+describe("E2E — injeção do playbook na Bia (gateada pelo toggle do banco)", () => {
+  it("toggle ON: consulta o playbook e injeta como systemAprendizado", async () => {
+    h.lerAtivo.mockResolvedValue(true);
     h.obterPlaybook.mockResolvedValue("DIRETRIZES APRENDIDAS: ...");
     h.conversa = novaConversa();
 
@@ -139,9 +141,8 @@ describe("E2E — injeção do playbook na Bia", () => {
     expect(arg.systemAprendizado).toBe("DIRETRIZES APRENDIDAS: ...");
   });
 
-  it("flag OFF: não consulta o playbook e systemAprendizado fica indefinido", async () => {
-    process.env.APRENDIZADO_ENABLED = "false";
-    _resetEnvCache();
+  it("toggle OFF: não consulta o playbook e systemAprendizado fica indefinido", async () => {
+    h.lerAtivo.mockResolvedValue(false);
     h.conversa = novaConversa();
 
     await mandar();
@@ -151,9 +152,8 @@ describe("E2E — injeção do playbook na Bia", () => {
     expect(arg.systemAprendizado).toBeUndefined();
   });
 
-  it("flag ON mas playbook vazio → systemAprendizado indefinido (fail-open)", async () => {
-    process.env.APRENDIZADO_ENABLED = "true";
-    _resetEnvCache();
+  it("toggle ON mas playbook vazio (sem versão ativa) → systemAprendizado indefinido", async () => {
+    h.lerAtivo.mockResolvedValue(true);
     h.obterPlaybook.mockResolvedValue("");
     h.conversa = novaConversa();
 

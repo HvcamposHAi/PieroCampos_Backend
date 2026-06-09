@@ -158,6 +158,58 @@ export async function obterPlaybookAtivoTexto(
 }
 
 // ----------------------------------------------------------------------------
+// Toggle global (Admin › Aprendizado) — fonte de verdade do liga/desliga
+// ----------------------------------------------------------------------------
+// Substitui a antiga env APRENDIZADO_ENABLED no gate de runtime: o controle agora
+// é do usuário, via botão na UI, persistido em `aprendizado_config` (singleton).
+// Lido a cada mensagem (cache curto, espelha o padrão de lerBotAtivoCanal).
+// FAIL-CLOSED: erro de leitura → false → a Bia se comporta como hoje (sem
+// diretrizes injetadas). Injetar é mudança aditiva de comportamento; o default
+// seguro é "não mudar nada".
+let _cacheAtivo: { valor: boolean; em: number } | null = null;
+const APRENDIZADO_TTL_MS = 30_000;
+
+export async function lerAprendizadoAtivo(): Promise<boolean> {
+  const agora = Date.now();
+  if (_cacheAtivo && agora - _cacheAtivo.em < APRENDIZADO_TTL_MS) return _cacheAtivo.valor;
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("aprendizado_config")
+      .select("ativo")
+      .eq("id", true)
+      .maybeSingle();
+    if (error) {
+      logger.warn("[aprendizado] leitura do toggle falhou; fail-closed (off)", { erro: error.message });
+      return false; // NÃO cacheia erro → re-tenta na próxima mensagem
+    }
+    const v = (data as { ativo?: boolean } | null)?.ativo === true;
+    _cacheAtivo = { valor: v, em: agora };
+    return v;
+  } catch (e) {
+    logger.warn("[aprendizado] exceção lendo toggle; fail-closed (off)", { erro: (e as Error).message });
+    return false;
+  }
+}
+
+/** Liga/desliga o toggle global. Upsert na linha singleton + invalida o cache. */
+export async function definirAprendizadoAtivo(ativo: boolean, porEmail: string | null): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const { error } = await sb.from("aprendizado_config").upsert(
+    { id: true, ativo, atualizado_em: new Date().toISOString(), atualizado_por: porEmail },
+    { onConflict: "id" },
+  );
+  if (error) throw new Error(`definirAprendizadoAtivo: ${error.message}`);
+  _cacheAtivo = { valor: ativo, em: Date.now() }; // reflete na hora dentro do processo
+  logger.info("[aprendizado] toggle alterado", { ativo, por: porEmail });
+}
+
+/** Apenas para testes: zera o cache do toggle. */
+export function _resetAprendizadoConfigCache(): void {
+  _cacheAtivo = null;
+}
+
+// ----------------------------------------------------------------------------
 // Seleção + rotulagem de conversas (job)
 // ----------------------------------------------------------------------------
 export interface ConversaRotulada {
@@ -544,7 +596,7 @@ export async function obterAdmin(): Promise<AprendizadoAdmin> {
   return {
     versoes: (pbRes.data ?? []) as PlaybookRow[],
     jobs: (jobRes.data ?? []) as Array<Record<string, unknown>>,
-    habilitado: getEnv().APRENDIZADO_ENABLED,
+    habilitado: await lerAprendizadoAtivo(),
   };
 }
 

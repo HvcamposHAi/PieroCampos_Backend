@@ -42,7 +42,7 @@ import {
   type MotivoHandoff,
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
-import { obterPlaybookAtivoTexto } from "./aprendizado.service";
+import { obterPlaybookAtivoTexto, lerAprendizadoAtivo } from "./aprendizado.service";
 import { mapearParaCotacao } from "./segfy-cotacao.service";
 import { dispararCotacao } from "./cotacao.service";
 import { cpfValido, formatarCpf } from "../lib/cpf";
@@ -751,10 +751,13 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   });
 
   // 3.2) Diretrizes aprendidas (Admin > Aprendizado): playbook destilado do
-  //       histórico, injetado como bloco cacheado. Só no fluxo ativo e atrás da
-  //       flag. Fail-open: erro/sem versão ativa → "" → a Bia roda como antes.
+  //       histórico, injetado como bloco cacheado. Só no fluxo ativo e atrás do
+  //       toggle do banco (controle do usuário, não mais env). Fail-closed na
+  //       leitura do toggle; fail-open na leitura do playbook: erro/sem versão
+  //       ativa → "" → a Bia roda como antes.
+  const aprendizadoLigado = await lerAprendizadoAtivo();
   let aprendizadoTexto = "";
-  if (env.APRENDIZADO_ENABLED && modo === "ativo") {
+  if (aprendizadoLigado && modo === "ativo") {
     try {
       aprendizadoTexto = await obterPlaybookAtivoTexto(conversa.categoria);
     } catch (e) {

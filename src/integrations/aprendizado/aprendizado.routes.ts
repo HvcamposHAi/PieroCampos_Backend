@@ -18,6 +18,7 @@ import { logger } from "../../utils/logger";
 import {
   arquivarVersao,
   ativarVersao,
+  definirAprendizadoAtivo,
   dispararDistillacao,
   obterAdmin,
 } from "../../services/aprendizado.service";
@@ -31,6 +32,25 @@ router.get("/", exigirAdmin, async (_req: Request, res: Response) => {
   } catch (e) {
     logger.error("[aprendizado.routes] obter falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
+  }
+});
+
+// Toggle global liga/desliga (controle do usuário). Admin-only; auditado pelo
+// middleware auditarMutacoes("aprendizado") montado no app.ts. NÃO gateia
+// distillar/cron — só a injeção em runtime das versões ativas na Bia.
+router.patch("/config", exigirAdmin, async (req: Request, res: Response) => {
+  const parsed = z.object({ ativo: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "corpo_invalido" });
+    return;
+  }
+  try {
+    await definirAprendizadoAtivo(parsed.data.ativo, req.user?.email ?? null);
+    const dados = await obterAdmin();
+    res.json({ ok: true, ...dados });
+  } catch (e) {
+    logger.error("[aprendizado.routes] config falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "config_failed", mensagem: (e as Error).message });
   }
 });
 

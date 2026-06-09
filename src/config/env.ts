@@ -33,6 +33,11 @@ const schema = z
     SEGFY_COTACAO_TIMEOUT_MS: numComPadrao(60_000),
     SEGFY_COTACAO_INTERVAL_MS: numComPadrao(3_000),
     SEGFY_HEADLESS: boolDeString.default(true),
+    // Coleta de resultados do multicálculo: encerra após N ms SEM novo RESULT
+    // (além do teto de 120s) — evita esperar 2min quando nem todas respondem.
+    SEGFY_COLETA_OCIOSA_MS: numComPadrao(12_000),
+    // Log verboso de cada evento STEP/RESULT do socket (diagnóstico). NUNCA loga PII.
+    SEGFY_DEBUG_COLETA: boolDeString.default(false),
     // Transporte da integração Segfy. 'http-reverse' (default) = engenharia
     // reversa dos endpoints internos usada hoje (segfy.multicalculo.ts); 'oficial'
     // = API comercial documentada (ainda SEM credenciais — só o CONTRATO existe,
@@ -45,6 +50,21 @@ const schema = z
     // e a sessão legada falham com erro gracioso e o operador usa "Importar sessão"
     // (cookie) — o contorno de 2FA SEM browser. NÃO afeta o login HTTP da cotação.
     SEGFY_SCRAPING_ENABLED: boolDeString.default(true),
+    // ── Geração de APÓLICE por seguradora (RPA por portal + API onde houver) ──
+    // Gate MESTRE. default false = deploy INERTE: a rota /api/apolice/.../gerar
+    // responde 409 `apolice_desabilitado` e NENHUM portal é tocado. Ligar só após
+    // rodar as cláusulas de banco (seed seguradoras_config + seguradora_credenciais
+    // + bucket apolices) e cadastrar credenciais por seguradora.
+    APOLICE_ENABLED: boolDeString.default(false),
+    // Gate do navegador (Playwright) da emissão/teste por portal. Espelha
+    // SEGFY_SCRAPING_ENABLED: checado ANTES de chromium.launch. false = isola o
+    // browser (emissão RPA e "Testar" de portal B_rpa/C_otp falham com erro
+    // gracioso `apolice_rpa_desabilitado`); o caminho A_api (HTTP) não é afetado.
+    APOLICE_RPA_ENABLED: boolDeString.default(false),
+    APOLICE_HEADLESS: boolDeString.default(true),
+    // Selector inerte (espelha SEGFY_TRANSPORT): 'rpa' | 'api' | 'off'. Não é lido
+    // no runtime (o registry resolve por grupo_integracao); pronto p/ futuro toggle.
+    APOLICE_TRANSPORT: z.enum(["rpa", "api", "off"]).default("off"),
     // Aviso de reautenticação (2FA) ao operador. Número E.164 que recebe o alerta
     // por WhatsApp quando a sessão do Segfy expira; vazio = só notificação in-app.
     SEGFY_ALERTA_WPP_E164: z.string().optional().default(""),
@@ -74,9 +94,12 @@ const schema = z
     ANTHROPIC_API_KEY: z.string().optional().default(""),
     BIA_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
     BIA_MAX_TOKENS: numComPadrao(1024),
-    // Aprendizado contínuo (playbook destilado). Desligado por padrão: enquanto
-    // false, nada novo roda em runtime e a Bia se comporta como hoje. Reusa a
-    // mesma ANTHROPIC_API_KEY/SDK da Bia (sem provedor externo de embeddings).
+    // Aprendizado contínuo (playbook destilado). Reusa a mesma ANTHROPIC_API_KEY/
+    // SDK da Bia (sem provedor externo de embeddings).
+    // DEPRECADA (inerte): o liga/desliga migrou para o toggle do banco
+    // `aprendizado_config` (controle do usuário na UI, ver lerAprendizadoAtivo).
+    // Mantida no schema só para não quebrar deploys que ainda a setam; NÃO é mais
+    // lida no gate de runtime.
     APRENDIZADO_ENABLED: boolDeString.default(false),
     // Modelo do destilador (offline). Default = mesmo da Bia.
     APRENDIZADO_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
