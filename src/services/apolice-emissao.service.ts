@@ -17,7 +17,29 @@ import { getApoliceProvider } from "../integrations/apolice/registry";
 import { subirApolicePdf } from "../integrations/apolice/apolice-storage";
 import { obterCredenciaisPortal } from "./seguradora-credenciais.service";
 import { rowParaRef } from "./seguradoras-config.service";
+import { buscarOTPEmail } from "../integrations/gmail/otp.gmail";
 import { logger } from "../utils/logger";
+
+/**
+ * Domínio registrável do remetente a partir da URL do portal (p/ filtrar o OTP
+ * por e-mail). Trata ccTLD de 2 níveis (.com.br, .org.br…): mantém os 3 últimos
+ * rótulos; senão os 2 últimos. Ex.: ssoportais3.tokiomarine.com.br → tokiomarine.com.br.
+ */
+export function dominioRemetenteDeUrl(url: string | null): string | null {
+  if (!url) return null;
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length < 2) return null;
+  const penultimo = labels[labels.length - 2];
+  const doisNiveis = new Set(["com", "org", "net", "gov", "edu"]);
+  const n = penultimo && doisNiveis.has(penultimo) && labels.length >= 3 ? 3 : 2;
+  return labels.slice(-n).join(".");
+}
 
 export interface EmitirApoliceArgs {
   propostaId: string;
@@ -78,12 +100,15 @@ export async function emitirApolice(
 
   const provider = deps.provider ?? getApoliceProvider(ref);
 
-  // C_otp: seam de OTP. Leitura da caixa `email_otp` ainda não implementada →
-  // erro claro quando o desafio aparece (premissa P/risco OTP). Sem desafio, no-op.
+  // C_otp: lê o código por e-mail (Gmail) filtrando pelo domínio do portal. Só é
+  // chamado pelo scraper QUANDO o desafio aparece. Sem domínio resolvível ou sem
+  // credenciais Gmail, buscarOTPEmail lança erro claro → emissão devolve erro.
   const obterOtp =
     ref.grupoIntegracao === "C_otp"
       ? async (): Promise<string> => {
-          throw new Error("otp_indisponivel");
+          const dominio = dominioRemetenteDeUrl(ref.urlPortal);
+          if (!dominio) throw new Error("otp_indisponivel");
+          return buscarOTPEmail({ dominioRemetente: dominio });
         }
       : undefined;
 

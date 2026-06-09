@@ -84,13 +84,19 @@ function extrairTexto(msg: MessageFull): string {
 }
 
 /**
- * Busca o código OTP mais recente enviado pela Segfy.
- * Faz polling (a cada 3s, timeout 90s) até achar um e-mail de @segfy.com
- * recebido dentro da janela com um código de 6 dígitos.
+ * Busca o código OTP de 6 dígitos mais recente recebido de um DOMÍNIO remetente,
+ * lendo a caixa Gmail configurada (refresh token). Faz polling até achar um
+ * e-mail dentro da janela. Genérico: serve para a Segfy e para os portais de
+ * seguradora que mandam código por e-mail (Akad/Justos/Tokio…).
  *
  * @throws se as credenciais Gmail não estiverem configuradas ou no timeout.
  */
-export async function buscarOTPSegfy(): Promise<string> {
+export async function buscarOTPEmail(opts: {
+  /** Sufixo de domínio do remetente (ex.: "tokiomarine.com.br"). */
+  dominioRemetente: string;
+  janelaMs?: number;
+  timeoutMs?: number;
+}): Promise<string> {
   const env = getEnv();
   if (!env.GMAIL_CLIENT_ID || !env.GMAIL_CLIENT_SECRET || !env.GMAIL_REFRESH_TOKEN_PIERO) {
     throw new Error(
@@ -98,16 +104,18 @@ export async function buscarOTPSegfy(): Promise<string> {
     );
   }
 
+  const janelaMs = opts.janelaMs ?? JANELA_MS;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
   const inicio = Date.now();
-  const limiteRecebimento = inicio - JANELA_MS; // só e-mails desta janela
+  const limiteRecebimento = inicio - janelaMs; // só e-mails desta janela
   const accessToken = await obterAccessToken();
   const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
   // q restringe ao remetente e a 1 dia; a janela fina é validada por internalDate.
-  const query = encodeURIComponent(`from:${DOMINIO_SEGFY} newer_than:1d`);
+  const query = encodeURIComponent(`from:${opts.dominioRemetente} newer_than:1d`);
 
-  logger.info("Gmail OTP: aguardando código 2FA da Segfy");
+  logger.info("Gmail OTP: aguardando código por e-mail", { remetente: opts.dominioRemetente });
 
-  while (Date.now() - inicio < TIMEOUT_MS) {
+  while (Date.now() - inicio < timeoutMs) {
     const lista = await axios.get<MessageList>(
       `${GMAIL_API}/messages?q=${query}&maxResults=5`,
       { ...auth, timeout: 20_000 },
@@ -132,5 +140,10 @@ export async function buscarOTPSegfy(): Promise<string> {
     await sleep(INTERVALO_MS);
   }
 
-  throw new Error("Gmail OTP: código 2FA não recebido dentro do tempo limite");
+  throw new Error("Gmail OTP: código não recebido dentro do tempo limite");
+}
+
+/** Wrapper retrocompatível: OTP da Segfy (remetente @segfy.com). */
+export async function buscarOTPSegfy(): Promise<string> {
+  return buscarOTPEmail({ dominioRemetente: DOMINIO_SEGFY });
 }
