@@ -65,6 +65,17 @@ const schema = z
     // Selector inerte (espelha SEGFY_TRANSPORT): 'rpa' | 'api' | 'off'. Não é lido
     // no runtime (o registry resolve por grupo_integracao); pronto p/ futuro toggle.
     APOLICE_TRANSPORT: z.enum(["rpa", "api", "off"]).default("off"),
+    // Token compartilhado do AGENTE LOCAL de apólice (igual ao SEGFY_SESSAO_CRON_TOKEN):
+    // o daemon na máquina do operador autentica com `x-cron-token` para pegar/reportar
+    // jobs. Vazio → rotas do agente respondem 404 (desabilitadas). NO RENDER fica
+    // `APOLICE_RPA_ENABLED=false` (servidor nunca sobe Chromium); o agente roda local
+    // com `=true`. O navegador SAI do Render — corrige a causa-raiz do erro de Chromium.
+    APOLICE_AGENT_TOKEN: z.string().optional().default(""),
+    // Gate do driver de portal por LLM (adapta seletores ao layout/dados da página).
+    // Espelha MAPPER_DINAMICO_ENABLED: efetivo = esta env E o toggle `portal_mapper_config`
+    // (DB, por corretora). default false → FAIL-CLOSED nos seletores tolerantes atuais
+    // (genericoDriver). Reusa ANTHROPIC_API_KEY + MAPPER_LLM_MODEL/MAPPER_LLM_MAX_TOKENS.
+    PORTAL_MAPPER_ENABLED: boolDeString.default(false),
     // Aviso de reautenticação (2FA) ao operador. Número E.164 que recebe o alerta
     // por WhatsApp quando a sessão do Segfy expira; vazio = só notificação in-app.
     SEGFY_ALERTA_WPP_E164: z.string().optional().default(""),

@@ -12,7 +12,7 @@ import { getEnv } from "./config/env";
 import { authSupabase } from "./middlewares/authSupabase";
 import { waRouter } from "./integrations/whatsapp/routes";
 import { cotacaoRouter } from "./integrations/cotacao/routes";
-import { apoliceRouter } from "./integrations/apolice/routes";
+import { apoliceRouter, apoliceAgenteRouter } from "./integrations/apolice/routes";
 import { segfyRouter, segfySessaoCronRouter, segfySessaoTokensRouter, segfySessaoReauthRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { plataformaRouter } from "./integrations/plataforma/plataforma.routes";
@@ -89,6 +89,9 @@ export function criarApp(): express.Express {
   app.use("/api/segfy/sessao/tokens", segfySessaoTokensRouter);
   // Pública (token compartilhado): agente local conduz a reauth 1-clique (2FA no app).
   app.use("/api/segfy/sessao/reauth/agente", segfySessaoReauthRouter);
+  // Pública (token compartilhado): agente local de APÓLICE pega/reporta jobs (testar/emitir).
+  // Montada ANTES de /api/apolice (authSupabase) p/ não exigir JWT do daemon.
+  app.use("/api/apolice/agente", apoliceAgenteRouter);
 
   app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
   app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);

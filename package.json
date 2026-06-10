@@ -22,6 +22,8 @@
     "segfy:perfil": "tsx src/scripts/segfy-perfil.ts",
     "segfy:harvest": "tsx src/scripts/segfy-harvest.ts",
     "segfy:agent": "tsx src/scripts/segfy-agent.ts",
+    "apolice:agent": "tsx src/scripts/apolice-agent.ts",
+    "apolice:harness": "tsx src/scripts/apolice-portal-harness.ts",
     "mapper:seed": "tsx src/scripts/print-mapper-seed.ts"
   },
   "repository": {
