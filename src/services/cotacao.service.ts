@@ -1,11 +1,12 @@
 /**
  * Orquestrador de cotação (multi-ramo, multi-provider). Ponto de seleção ÚNICO:
- * resolve o provider pelo `ramo` e delega. Os callers (bot.service e
- * cotacao-manual) chamam `dispararCotacao` em vez de `dispararCotacaoSegfy`
- * diretamente — assim auto continua indo ao Segfy e os demais ramos caem no
- * provider não-automatizado, sem o bot conhecer detalhes de cada sistema.
+ * resolve o provider por `ramo` + `sistema` da corretora (resolveProvider) e
+ * delega. Os callers (bot.service e cotacao-manual) chamam `dispararCotacao` em
+ * vez de `dispararCotacaoSegfy` diretamente — assim auto vai ao sistema escolhido
+ * pela corretora (Segfy por padrão, Aggilizador se configurado) e os demais ramos
+ * caem no provider não-automatizado, sem o bot conhecer detalhes de cada sistema.
  */
-import { getProvider } from "../integrations/quote/registry";
+import { resolveProvider } from "../integrations/quote/registry";
 import type { QuoteContext, QuoteResult } from "../integrations/quote/quote-provider.port";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { normalizarRamo, type Ramo } from "../lib/roteiros";
@@ -39,5 +40,6 @@ export async function dispararCotacao(
     dados: params.dados,
     origem: params.origem,
   };
-  return getProvider(ramo).cotar(ctx, persist, onIniciada);
+  const provider = await resolveProvider(params.corretoraId, ramo);
+  return provider.cotar(ctx, persist, onIniciada);
 }

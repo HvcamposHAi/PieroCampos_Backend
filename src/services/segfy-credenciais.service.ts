@@ -119,6 +119,7 @@ export async function salvarCredenciaisSegfy(input: {
     onConflict: "corretora_id",
   });
   if (error) throw new Error(`salvarCredenciaisSegfy: ${error.message}`);
+  _invalidarSistemaCache(corretoraId); // troca de sistema reflete na próxima cotação
   logger.info("[segfy.cred] credenciais salvas", { email: input.email, por: input.porEmail });
 }
 
@@ -183,6 +184,53 @@ export async function statusCredenciaisSegfy(
     ultimo_teste_ok: null,
     ultimo_teste_msg: null,
   };
+}
+
+// ----------------------------------------------------------------------------
+// Sistema de cotação efetivo da corretora (default 'segfy')
+// ----------------------------------------------------------------------------
+// Usado pelo registry (resolveProvider) para escolher o provider AUTOMATIZADO do
+// ramo auto por corretora. FAIL-OPEN → 'segfy': qualquer falha de leitura mantém
+// o comportamento atual (Segfy), nunca derruba a cotação. Cache TTL curto espelha
+// lerMapperDinamicoAtivo (evita 1 round-trip por cotação sem segurar mudanças).
+const SISTEMA_TTL_MS = 30_000;
+const _sistemaCache = new Map<string, { valor: string; em: number }>();
+
+/** Invalida o cache do sistema (chamado ao salvar credenciais). */
+export function _invalidarSistemaCache(corretoraId?: string): void {
+  if (corretoraId) _sistemaCache.delete(corretoraId);
+  else _sistemaCache.clear();
+}
+
+/** Sistema de cotação da corretora ('segfy' | 'aggilizador' | ...). FAIL-OPEN 'segfy'. */
+export async function lerSistemaCotacao(
+  corretoraId: string = CORRETORA_SEED_ID,
+): Promise<string> {
+  const agora = Date.now();
+  const cached = _sistemaCache.get(corretoraId);
+  if (cached && agora - cached.em < SISTEMA_TTL_MS) return cached.valor;
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("segfy_credenciais")
+      .select("sistema" as never)
+      .eq("corretora_id" as never, corretoraId as never)
+      .maybeSingle();
+    if (error) {
+      logger.warn("[segfy.cred] leitura do sistema falhou; fail-open (segfy)", {
+        erro: error.message,
+      });
+      return "segfy"; // não cacheia erro
+    }
+    const sistema = (data as { sistema?: string | null } | null)?.sistema ?? "segfy";
+    _sistemaCache.set(corretoraId, { valor: sistema, em: agora });
+    return sistema;
+  } catch (e) {
+    logger.warn("[segfy.cred] exceção lendo sistema; fail-open (segfy)", {
+      erro: (e as Error).message,
+    });
+    return "segfy";
+  }
 }
 
 /** Registra o resultado do "Testar conexão" (no-op se as creds vêm só do .env). */

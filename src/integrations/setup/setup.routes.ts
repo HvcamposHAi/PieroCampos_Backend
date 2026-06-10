@@ -13,7 +13,8 @@ import { obterSetup, salvarProdutos, salvarSistema } from "./setup.service";
 const router = Router();
 
 const sistemaSchema = z.object({
-  sistema: z.string().trim().min(2).max(40).default("segfy"),
+  // Providers conhecidos (espelha AUTO_POR_SISTEMA do registry + Cláusula A do banco).
+  sistema: z.enum(["segfy", "aggilizador"]).default("segfy"),
   url: z.string().trim().url("URL inválida").max(300).nullish(),
   email: z.string().trim().email("e-mail inválido").max(254),
   senha: z.string().min(1, "senha obrigatória").max(200),

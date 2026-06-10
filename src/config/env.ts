@@ -50,6 +50,16 @@ const schema = z
     // e a sessão legada falham com erro gracioso e o operador usa "Importar sessão"
     // (cookie) — o contorno de 2FA SEM browser. NÃO afeta o login HTTP da cotação.
     SEGFY_SCRAPING_ENABLED: boolDeString.default(true),
+    // ── Aggilizador (segundo sistema de cotação, selecionável por corretora) ──
+    // Gate MESTRE do provider Aggilizador. default false = deploy INERTE: o
+    // provider existe e é roteável (corretora com sistema='aggilizador'), mas
+    // falha com erro gracioso e escala p/ humano enquanto off — nada é tocado em
+    // prod até ligar. NÃO acopla com SEGFY_ENABLED (liga/desliga independentes).
+    // Ligar só após a fase de descoberta do protocolo definir o transporte.
+    AGGILIZADOR_ENABLED: boolDeString.default(false),
+    // URL de entrada do Aggilizador (login/cotação). Vazio = usa a `url` salva por
+    // corretora em segfy_credenciais. Informativa enquanto AGGILIZADOR_ENABLED=false.
+    AGGILIZADOR_API_URL: z.string().url().optional().or(z.literal("")).default(""),
     // ── Geração de APÓLICE por seguradora (RPA por portal + API onde houver) ──
     // Gate MESTRE. default false = deploy INERTE: a rota /api/apolice/.../gerar
     // responde 409 `apolice_desabilitado` e NENHUM portal é tocado. Ligar só após
