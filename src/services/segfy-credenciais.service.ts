@@ -25,6 +25,10 @@ export interface StatusCredenciais {
   configurado: boolean;
   fonte: FonteCredenciais;
   email: string | null;
+  /** Sistema de cotação da corretora (default 'segfy'). */
+  sistema: string | null;
+  /** URL do sistema (informativa p/ Segfy; entrada da auto-descoberta p/ outros). */
+  url: string | null;
   atualizado_em: string | null;
   atualizado_por: string | null;
   ultimo_teste_em: string | null;
@@ -90,6 +94,10 @@ export async function salvarCredenciaisSegfy(input: {
   email: string;
   senha: string;
   corretoraId?: string;
+  /** Sistema de cotação (default 'segfy' quando ausente). */
+  sistema?: string | null;
+  /** URL do sistema (informativa p/ Segfy; entrada p/ auto-descoberta). */
+  url?: string | null;
   porEmail?: string | null;
 }): Promise<void> {
   const corretoraId = input.corretoraId ?? CORRETORA_SEED_ID;
@@ -97,17 +105,19 @@ export async function salvarCredenciaisSegfy(input: {
   const senha_cifrada = cifrar(input.senha); // {iv,tag,ciphertext}
   // Por-corretora: 1 linha por corretora (UNIQUE(corretora_id) — cláusula 13).
   // id (PK text) = corretoraId; onConflict no corretora_id atualiza a existente.
-  const { error } = await sb.from("segfy_credenciais").upsert(
-    {
-      id: corretoraId,
-      corretora_id: corretoraId,
-      email: input.email,
-      senha_cifrada,
-      atualizado_por: input.porEmail ?? null,
-      atualizado_em: new Date().toISOString(),
-    } as never,
-    { onConflict: "corretora_id" },
-  );
+  const payload: Record<string, unknown> = {
+    id: corretoraId,
+    corretora_id: corretoraId,
+    email: input.email,
+    senha_cifrada,
+    atualizado_por: input.porEmail ?? null,
+    atualizado_em: new Date().toISOString(),
+  };
+  if (input.sistema !== undefined) payload.sistema = input.sistema ?? "segfy";
+  if (input.url !== undefined) payload.url = input.url;
+  const { error } = await sb.from("segfy_credenciais").upsert(payload as never, {
+    onConflict: "corretora_id",
+  });
   if (error) throw new Error(`salvarCredenciaisSegfy: ${error.message}`);
   logger.info("[segfy.cred] credenciais salvas", { email: input.email, por: input.porEmail });
 }
@@ -121,16 +131,20 @@ export async function statusCredenciaisSegfy(
     const { data } = await sb
       .from("segfy_credenciais")
       .select(
-        "email, atualizado_em, atualizado_por, ultimo_teste_em, ultimo_teste_ok, ultimo_teste_msg",
+        "email, sistema, url, atualizado_em, atualizado_por, ultimo_teste_em, ultimo_teste_ok, ultimo_teste_msg" as never,
       )
       .eq("corretora_id" as never, corretoraId as never)
       .maybeSingle();
-    const linha = data as Omit<LinhaCredenciais, "senha_cifrada"> | null;
+    const linha = data as
+      | (Omit<LinhaCredenciais, "senha_cifrada"> & { sistema?: string | null; url?: string | null })
+      | null;
     if (linha?.email) {
       return {
         configurado: true,
         fonte: "db",
         email: linha.email,
+        sistema: linha.sistema ?? "segfy",
+        url: linha.url ?? null,
         atualizado_em: linha.atualizado_em,
         atualizado_por: linha.atualizado_por,
         ultimo_teste_em: linha.ultimo_teste_em,
@@ -148,6 +162,8 @@ export async function statusCredenciaisSegfy(
       configurado: true,
       fonte: "env",
       email: env.SEGFY_LOGIN,
+      sistema: "segfy",
+      url: env.SEGFY_APP_URL ?? null,
       atualizado_em: null,
       atualizado_por: null,
       ultimo_teste_em: null,
@@ -159,6 +175,8 @@ export async function statusCredenciaisSegfy(
     configurado: false,
     fonte: "nenhuma",
     email: null,
+    sistema: "segfy",
+    url: null,
     atualizado_em: null,
     atualizado_por: null,
     ultimo_teste_em: null,

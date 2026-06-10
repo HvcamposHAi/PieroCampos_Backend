@@ -16,6 +16,7 @@ import { apoliceRouter, apoliceAgenteRouter } from "./integrations/apolice/route
 import { segfyRouter, segfySessaoCronRouter, segfySessaoTokensRouter, segfySessaoReauthRouter } from "./integrations/segfy/credenciais.routes";
 import { usuariosRouter } from "./integrations/usuarios/usuarios.routes";
 import { plataformaRouter } from "./integrations/plataforma/plataforma.routes";
+import { setupRouter } from "./integrations/setup/setup.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
 import { aprendizadoRouter, aprendizadoPublicoRouter } from "./integrations/aprendizado/aprendizado.routes";
 import { mapeamentoRouter } from "./integrations/quote/mapper/mapper.routes";
@@ -99,6 +100,7 @@ export function criarApp(): express.Express {
   app.use("/api/segfy", authSupabase, auditarMutacoes("segfy"), segfyRouter);
   app.use("/api/usuarios", authSupabase, auditarMutacoes("usuarios"), usuariosRouter);
   app.use("/api/plataforma", authSupabase, auditarMutacoes("plataforma"), plataformaRouter);
+  app.use("/api/setup", authSupabase, auditarMutacoes("plataforma"), setupRouter);
   app.use("/api/agente", authSupabase, auditarMutacoes("agente"), agenteRouter);
   app.use("/api/aprendizado", authSupabase, auditarMutacoes("aprendizado"), aprendizadoRouter);
   app.use("/api/mapeamento", authSupabase, auditarMutacoes("mapeamento"), mapeamentoRouter);
