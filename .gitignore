@@ -24,3 +24,5 @@ src/integrations/segfy/endpoints-mapeados.json
 segfy-*.png
 run-harvest.cmd
 segfy-harvest.log
+run-agent.cmd
+segfy-agent.log
