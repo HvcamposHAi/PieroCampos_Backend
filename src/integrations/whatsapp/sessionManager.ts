@@ -367,6 +367,56 @@ class SessionManager {
   }
 
   /**
+   * Envia texto do COPILOTO (gestor) ao próprio jid de quem escreveu. NÃO persiste
+   * em `mensagens` (thread do cliente) — o histórico do gestor vive em
+   * `gestor_mensagens`, gravado pelo agente-gestor.service. Mesmas precondições de
+   * conexão de `enviarTextoBot`.
+   */
+  async enviarTextoGestor(input: {
+    canalId: string;
+    jid: string;
+    texto: string;
+  }): Promise<{ messageId: string }> {
+    const entry = await this.garantirConectado(input.canalId);
+    const resultado = await entry.sock.sendMessage(input.jid, { text: input.texto });
+    return { messageId: resultado?.key?.id ?? "" };
+  }
+
+  /** Envia um DOCUMENTO (ex.: PDF de apólice) ao gestor. NÃO persiste em `mensagens`. */
+  async enviarDocumentoGestor(input: {
+    canalId: string;
+    jid: string;
+    documento: Buffer;
+    fileName: string;
+    mimetype: string;
+    caption?: string;
+  }): Promise<{ messageId: string }> {
+    const entry = await this.garantirConectado(input.canalId);
+    const resultado = await entry.sock.sendMessage(input.jid, {
+      document: input.documento,
+      fileName: input.fileName,
+      mimetype: input.mimetype,
+      caption: input.caption,
+    });
+    return { messageId: resultado?.key?.id ?? "" };
+  }
+
+  /** Envia uma IMAGEM (ex.: gráfico PNG) ao gestor. NÃO persiste em `mensagens`. */
+  async enviarImagemGestor(input: {
+    canalId: string;
+    jid: string;
+    imagem: Buffer;
+    caption?: string;
+  }): Promise<{ messageId: string }> {
+    const entry = await this.garantirConectado(input.canalId);
+    const resultado = await entry.sock.sendMessage(input.jid, {
+      image: input.imagem,
+      caption: input.caption,
+    });
+    return { messageId: resultado?.key?.id ?? "" };
+  }
+
+  /**
    * Encerra todos os sockets e marca os canais como `desconectado` no banco.
    * Chamado no SIGTERM/SIGINT (Render manda SIGTERM antes de hibernar), para a
    * tela não ficar mostrando `conectado` stale enquanto o processo morreu.

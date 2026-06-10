@@ -29,6 +29,15 @@ export type CategoriaConversa =
  */
 export type Ramo = "auto" | "residencial" | "vida" | "empresarial" | "saude";
 
+/** Todos os ramos suportados (ordem estável p/ UI e seed de corretora_ramos). */
+export const RAMOS_VALIDOS: readonly Ramo[] = [
+  "auto",
+  "residencial",
+  "vida",
+  "empresarial",
+  "saude",
+];
+
 export const RAMO_PADRAO: Ramo = "auto";
 
 /** Normaliza um ramo vindo do banco (string|null) para o tipo, default 'auto'. */

@@ -9,6 +9,7 @@
 import type { Page, Download } from "playwright";
 import type { EmitirApoliceContext } from "../apolice-provider.port";
 import type { DadosApoliceExtraidos, PortalDriver } from "./driver.port";
+import { resolverSeletor } from "../llm/portal-mapper.service";
 
 const SEL_USUARIO =
   'input[name="usuario"], input[name="email"], input[type="email"], input[type="text"], input:not([type])';
@@ -48,7 +49,17 @@ export const genericoDriver: PortalDriver = {
     }
     const numero = ctx.proposta.numeroProposta;
     if (!numero) return; // sem número não há como localizar — driver específico trata
-    const busca = page.locator('input[type="search"], input[placeholder*="proposta" i], input[name*="busca" i]').first();
+    // Campo de busca: LLM (se ligado) escolhe o seletor; senão hint tolerante.
+    const hintBusca = 'input[type="search"], input[placeholder*="proposta" i], input[name*="busca" i]';
+    const selBusca =
+      (await resolverSeletor({
+        seguradora: ctx.seguradora.nomeDisplay,
+        acao: "campo_busca_proposta",
+        descricaoAcao: "Campo onde digitar o número da proposta para localizá-la.",
+        corretoraId: ctx.corretoraId,
+        page,
+      })) ?? hintBusca;
+    const busca = page.locator(selBusca).first();
     if (await busca.isVisible({ timeout: 2_000 }).catch(() => false)) {
       await busca.fill(numero).catch(() => undefined);
       await page.keyboard.press("Enter").catch(() => undefined);
@@ -57,8 +68,18 @@ export const genericoDriver: PortalDriver = {
     await link.click({ timeout: 5_000 }).catch(() => undefined);
   },
 
-  async emitir(page: Page, _ctx: EmitirApoliceContext): Promise<Download | null> {
-    const botao = page.getByRole("button", { name: /emitir|gerar ap[oó]lice|finalizar/i }).first();
+  async emitir(page: Page, ctx: EmitirApoliceContext): Promise<Download | null> {
+    // Botão "emitir": LLM (se ligado) escolhe o seletor; senão hint tolerante.
+    const selEmitir = await resolverSeletor({
+      seguradora: ctx.seguradora.nomeDisplay,
+      acao: "botao_emitir",
+      descricaoAcao: "Botão que emite/gera a apólice (finaliza a emissão).",
+      corretoraId: ctx.corretoraId,
+      page,
+    });
+    const botao = selEmitir
+      ? page.locator(selEmitir).first()
+      : page.getByRole("button", { name: /emitir|gerar ap[oó]lice|finalizar/i }).first();
     const espera = page.waitForEvent("download", { timeout: 30_000 }).catch(() => null);
     await botao.click({ timeout: 8_000 }).catch(() => undefined);
     return espera;

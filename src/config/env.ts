@@ -50,6 +50,16 @@ const schema = z
     // e a sessão legada falham com erro gracioso e o operador usa "Importar sessão"
     // (cookie) — o contorno de 2FA SEM browser. NÃO afeta o login HTTP da cotação.
     SEGFY_SCRAPING_ENABLED: boolDeString.default(true),
+    // ── Aggilizador (segundo sistema de cotação, selecionável por corretora) ──
+    // Gate MESTRE do provider Aggilizador. default false = deploy INERTE: o
+    // provider existe e é roteável (corretora com sistema='aggilizador'), mas
+    // falha com erro gracioso e escala p/ humano enquanto off — nada é tocado em
+    // prod até ligar. NÃO acopla com SEGFY_ENABLED (liga/desliga independentes).
+    // Ligar só após a fase de descoberta do protocolo definir o transporte.
+    AGGILIZADOR_ENABLED: boolDeString.default(false),
+    // URL de entrada do Aggilizador (login/cotação). Vazio = usa a `url` salva por
+    // corretora em segfy_credenciais. Informativa enquanto AGGILIZADOR_ENABLED=false.
+    AGGILIZADOR_API_URL: z.string().url().optional().or(z.literal("")).default(""),
     // ── Geração de APÓLICE por seguradora (RPA por portal + API onde houver) ──
     // Gate MESTRE. default false = deploy INERTE: a rota /api/apolice/.../gerar
     // responde 409 `apolice_desabilitado` e NENHUM portal é tocado. Ligar só após
@@ -65,6 +75,17 @@ const schema = z
     // Selector inerte (espelha SEGFY_TRANSPORT): 'rpa' | 'api' | 'off'. Não é lido
     // no runtime (o registry resolve por grupo_integracao); pronto p/ futuro toggle.
     APOLICE_TRANSPORT: z.enum(["rpa", "api", "off"]).default("off"),
+    // Token compartilhado do AGENTE LOCAL de apólice (igual ao SEGFY_SESSAO_CRON_TOKEN):
+    // o daemon na máquina do operador autentica com `x-cron-token` para pegar/reportar
+    // jobs. Vazio → rotas do agente respondem 404 (desabilitadas). NO RENDER fica
+    // `APOLICE_RPA_ENABLED=false` (servidor nunca sobe Chromium); o agente roda local
+    // com `=true`. O navegador SAI do Render — corrige a causa-raiz do erro de Chromium.
+    APOLICE_AGENT_TOKEN: z.string().optional().default(""),
+    // Gate do driver de portal por LLM (adapta seletores ao layout/dados da página).
+    // Espelha MAPPER_DINAMICO_ENABLED: efetivo = esta env E o toggle `portal_mapper_config`
+    // (DB, por corretora). default false → FAIL-CLOSED nos seletores tolerantes atuais
+    // (genericoDriver). Reusa ANTHROPIC_API_KEY + MAPPER_LLM_MODEL/MAPPER_LLM_MAX_TOKENS.
+    PORTAL_MAPPER_ENABLED: boolDeString.default(false),
     // Aviso de reautenticação (2FA) ao operador. Número E.164 que recebe o alerta
     // por WhatsApp quando a sessão do Segfy expira; vazio = só notificação in-app.
     SEGFY_ALERTA_WPP_E164: z.string().optional().default(""),
@@ -128,6 +149,20 @@ const schema = z
     TRANSCRICAO_MAX_SEG: numComPadrao(300),
     TRANSCRICAO_MAX_BYTES: numComPadrao(25 * 1024 * 1024),
     TRANSCRICAO_TIMEOUT_MS: numComPadrao(30_000),
+    // ── Copiloto: assistente de BI 360 no WhatsApp para o GESTOR/corretor ──
+    // Gate MESTRE. default false = deploy INERTE: canais `tipo='gestor'` são
+    // IGNORADOS no eventHandlers (nenhum desvio, nenhuma leitura nova) e o pipeline
+    // do cliente segue idêntico. Ligar só após rodar as cláusulas (gestor_autorizado
+    // + gestor_assist_config + gestor_conversas/mensagens) e cadastrar números na
+    // allowlist. Efetivo por corretora = esta env E o toggle `gestor_assist_config.ativo`
+    // (FAIL-CLOSED). Reusa ANTHROPIC_API_KEY/BIA_MODEL da Bia.
+    GESTOR_ASSIST_ENABLED: boolDeString.default(false),
+    // Modelo do Copiloto. Vazio → usa BIA_MODEL. Reusa ANTHROPIC_API_KEY.
+    GESTOR_MODEL: z.string().optional().default(""),
+    GESTOR_MAX_TOKENS: numComPadrao(1024),
+    // Geração de GRÁFICOS do Copiloto (2º incremento, via Playwright). default false.
+    // INERTE nesta fase: a tool de gráfico não é oferecida ao modelo enquanto off.
+    GESTOR_GRAFICO_ENABLED: boolDeString.default(false),
     // Multi-tenant (SaaS). Corretora "seed" (Piero de Campos) — uuid LITERAL fixo
     // usado no backfill, nos defaults de persistência e nos testes. Deve casar com
     // a linha semeada na migração `corretoras`. Não trocar sem re-backfillar.

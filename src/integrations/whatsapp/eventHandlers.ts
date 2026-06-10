@@ -18,6 +18,8 @@ import {
 import { getEnv } from "../../config/env";
 import { transcreverAudio } from "../../lib/transcricao";
 import { processarFormularioRecebido, processarMensagem } from "../../services/bot.service";
+import { processarMensagemGestor } from "../../services/gestor/agente-gestor.service";
+import { lerTipoCanal } from "../../services/gestor/gestor-identidade.service";
 import { montarMensagemAlerta, type MotivoHandoff } from "../../services/handoff.service";
 import { logger } from "../../utils/logger";
 import { subirAudioWhatsapp } from "./audio-storage";
@@ -328,6 +330,12 @@ export function registrarHandlers(
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (!deveProcessarUpsert(type)) return;
+    // Canal do GESTOR (Copiloto): gate por env (off → ZERO leitura nova; pipeline
+    // do cliente intacto). Lê o tipo do canal uma vez por lote (cacheado). Mensagens
+    // de canal gestor seguem um pipeline ISOLADO que NUNCA toca a persistência do
+    // cliente (clientes/conversas/mensagens).
+    const ehCanalGestor =
+      env.GESTOR_ASSIST_ENABLED && (await lerTipoCanal(canalId)) === "gestor";
     for (const m of messages) {
       try {
         if (m.key.fromMe) continue; // saída — não processamos como entrada
@@ -346,6 +354,42 @@ export function registrarHandlers(
           : undefined;
         // Telefone real (best-effort) quando o jid é @lid; null mantém o fallback.
         const telefoneReal = await resolverTelefoneReal(sock, m, jidRemoto);
+
+        // (G) Canal do GESTOR → Copiloto (BI). Pipeline ISOLADO: identidade pela
+        // allowlist (fail-closed), tools read-only escopadas por corretora, histórico
+        // em tabelas próprias. NÃO cria cliente/conversa/mensagem. Increment: só texto.
+        if (ehCanalGestor) {
+          const textoGestor = extrairTexto(m);
+          if (!textoGestor) continue;
+          await processarMensagemGestor({
+            canalId,
+            jidRemoto,
+            telefoneReal,
+            textoGestor,
+            enviar: async (t) => {
+              await sessionManager.enviarTextoGestor({ canalId, jid: jidRemoto, texto: t });
+            },
+            enviarDocumento: async (doc) => {
+              await sessionManager.enviarDocumentoGestor({
+                canalId,
+                jid: jidRemoto,
+                documento: doc.documento,
+                fileName: doc.fileName,
+                mimetype: doc.mimetype,
+                caption: doc.caption,
+              });
+            },
+            enviarImagem: async (img) => {
+              await sessionManager.enviarImagemGestor({
+                canalId,
+                jid: jidRemoto,
+                imagem: img.imagem,
+                caption: img.caption,
+              });
+            },
+          });
+          continue;
+        }
 
         // (A) Questionário .xlsx devolvido pelo cliente → fluxo de formulário.
         const docXlsx = extrairDocumentoXlsx(m);

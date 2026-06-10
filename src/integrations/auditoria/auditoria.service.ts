@@ -21,7 +21,8 @@ export type CategoriaAuditoria =
   | "aprendizado"
   | "plataforma"
   | "apolice"
-  | "mapeamento";
+  | "mapeamento"
+  | "gestor";
 
 export interface EventoAuditoriaInput {
   operadorId?: string | null;

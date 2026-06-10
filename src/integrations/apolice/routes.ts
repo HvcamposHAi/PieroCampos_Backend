@@ -22,9 +22,13 @@ import {
   testarConectividade,
 } from "../../services/seguradoras-config.service";
 import { salvarCredenciaisPortal } from "../../services/seguradora-credenciais.service";
-import { emitirApolice } from "../../services/apolice-emissao.service";
 import { atualizarStatusProposta, criarPropostaDeCotacao } from "../../services/propostas.service";
+import { agenteReportar, enfileirar, pegarProximoTrabalho, statusJob } from "../../services/apolice-job.service";
+import { arquivarRegraPortal, aprovarRegraPortal, listarRegrasPortal } from "./llm/portal-admin.service";
 
+// `testarConectividade`/`emitirApolice` NÃO são mais chamados aqui (rodavam o
+// Chromium no Render → erro). Agora as rotas ENFILEIRAM um job; o AGENTE LOCAL
+// (apolice-agent) executa esses serviços na máquina do operador e reporta.
 const router = Router();
 
 const STATUS_PROPOSTA = [
@@ -115,20 +119,27 @@ router.post("/seguradoras/:id/testar", exigirAdmin, exigirCorretoraSelecionada, 
     return;
   }
   try {
-    const r = await testarConectividade(req.corretoraId!, id);
-    res.json(r);
+    // ENFILEIRA (não roda o navegador no servidor). O agente local executa e o
+    // status chega à tela via realtime (registrarStatusAcesso). 202 + jobId.
+    const r = await enfileirar({ tipo: "testar", alvo: id, corretoraId: req.corretoraId!, por: req.user?.email ?? null });
+    res.status(202).json({ ok: true, ...r });
   } catch (e) {
-    const msg = (e as Error).message;
-    if (msg === "seguradora_nao_encontrada") {
-      res.status(404).json({ ok: false, erro: msg });
-      return;
-    }
-    if (msg === "apolice_rpa_desabilitado") {
-      res.status(409).json({ ok: false, erro: msg, mensagem: "Teste por navegador desativado (APOLICE_RPA_ENABLED=false)." });
-      return;
-    }
-    logger.error("[apolice.routes] testar falhou", { erro: msg });
-    res.status(500).json({ ok: false, erro: "testar_falhou", mensagem: msg });
+    logger.error("[apolice.routes] enfileirar teste falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "testar_falhou", mensagem: (e as Error).message });
+  }
+});
+
+/** Status de um job (polling da UI). NUNCA devolve o código 2FA. */
+router.get("/jobs/:id", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  const id = req.params.id ?? "";
+  if (!id) {
+    res.status(400).json({ erro: "id_invalido" });
+    return;
+  }
+  try {
+    res.json({ ok: true, ...(await statusJob(id)) });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "status_falhou", mensagem: (e as Error).message });
   }
 });
 
@@ -194,16 +205,95 @@ router.post("/propostas/:propostaId/gerar", exigirAdmin, exigirCorretoraSelecion
     res.status(409).json({ ok: false, erro: "apolice_desabilitado", mensagem: "Geração de apólice desativada (APOLICE_ENABLED=false)." });
     return;
   }
-  const corretoraId = req.corretoraId!;
-  // 202 imediato — emissão (RPA/API) é lenta; tela acompanha via realtime (cotacao_eventos).
-  res.status(202).json({ ok: true, mensagem: "emissao_iniciada" });
-  void emitirApolice({ propostaId, corretoraId, operadorEmail: req.user?.email ?? null })
-    .then((r) => {
-      if ("erro" in r) logger.warn("[apolice.routes] emissão concluiu com erro", { propostaId, erro: r.erro });
-    })
-    .catch((e) => {
-      logger.error("[apolice.routes] emissão lançou", { propostaId, erro: (e as Error).message });
-    });
+  try {
+    // ENFILEIRA a emissão; o agente local roda o navegador e persiste. 202 + jobId.
+    const r = await enfileirar({ tipo: "emitir", alvo: propostaId, corretoraId: req.corretoraId!, por: req.user?.email ?? null });
+    res.status(202).json({ ok: true, ...r });
+  } catch (e) {
+    logger.error("[apolice.routes] enfileirar emissão falhou", { erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "gerar_falhou", mensagem: (e as Error).message });
+  }
+});
+
+// ── Curadoria das regras de seletor de portal (LLM) — Admin ──────────────────
+
+router.get("/portais/regras", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  try {
+    res.json({ ok: true, regras: await listarRegrasPortal(req.corretoraId!) });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "listar_regras_falhou", mensagem: (e as Error).message });
+  }
+});
+
+router.post("/portais/regras/:id/aprovar", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  try {
+    await aprovarRegraPortal(req.params.id ?? "", req.corretoraId!, req.user?.email ?? null);
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = (e as Error).message;
+    res.status(msg === "regra_nao_encontrada" ? 404 : 500).json({ ok: false, erro: msg });
+  }
+});
+
+router.post("/portais/regras/:id/arquivar", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  try {
+    await arquivarRegraPortal(req.params.id ?? "", req.corretoraId!);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "arquivar_falhou", mensagem: (e as Error).message });
+  }
 });
 
 export const apoliceRouter = router;
+
+// ── Router PÚBLICO do AGENTE LOCAL (token-gated, fora do authSupabase) ────────
+// Espelha segfySessaoTokensRouter: o daemon na máquina do operador (atrás de NAT)
+// faz polling com `x-cron-token` = APOLICE_AGENT_TOKEN. Vazio → 404 (desabilitado).
+const agente = Router();
+
+function exigirTokenAgente(req: Request, res: Response): boolean {
+  const token = getEnv().APOLICE_AGENT_TOKEN;
+  if (!token) {
+    res.status(404).json({ erro: "rota_nao_encontrada" });
+    return false;
+  }
+  if (req.header("x-cron-token") !== token) {
+    res.status(401).json({ erro: "token_invalido" });
+    return false;
+  }
+  return true;
+}
+
+agente.get("/trabalho", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  try {
+    const job = await pegarProximoTrabalho();
+    res.json({ ok: true, job });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "trabalho_falhou", mensagem: (e as Error).message });
+  }
+});
+
+const reportarSchema = z.object({
+  jobId: z.string().min(1),
+  fase: z.enum(["aguardando_codigo", "concluida", "erro"]),
+  resultado: z.record(z.unknown()).nullable().optional(),
+  mensagem: z.string().max(500).nullable().optional(),
+});
+
+agente.post("/reportar", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  const parsed = reportarSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  try {
+    const ok = await agenteReportar(parsed.data);
+    res.json({ ok });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "reportar_falhou", mensagem: (e as Error).message });
+  }
+});
+
+export const apoliceAgenteRouter = agente;
