@@ -20,6 +20,7 @@ import { setupRouter } from "./integrations/setup/setup.routes";
 import { agenteRouter } from "./integrations/agente/agente.routes";
 import { aprendizadoRouter, aprendizadoPublicoRouter } from "./integrations/aprendizado/aprendizado.routes";
 import { mapeamentoRouter } from "./integrations/quote/mapper/mapper.routes";
+import { gestorRouter } from "./integrations/gestor/gestor.routes";
 import { auditoriaRouter, auditoriaPublicoRouter } from "./integrations/auditoria/auditoria.routes";
 import { auditarMutacoes } from "./middlewares/auditoria";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
@@ -104,6 +105,7 @@ export function criarApp(): express.Express {
   app.use("/api/agente", authSupabase, auditarMutacoes("agente"), agenteRouter);
   app.use("/api/aprendizado", authSupabase, auditarMutacoes("aprendizado"), aprendizadoRouter);
   app.use("/api/mapeamento", authSupabase, auditarMutacoes("mapeamento"), mapeamentoRouter);
+  app.use("/api/gestor", authSupabase, auditarMutacoes("gestor"), gestorRouter);
   app.use("/api/auditoria", authSupabase, auditoriaRouter);
 
   app.use((_req, res) => {

@@ -139,6 +139,20 @@ const schema = z
     TRANSCRICAO_MAX_SEG: numComPadrao(300),
     TRANSCRICAO_MAX_BYTES: numComPadrao(25 * 1024 * 1024),
     TRANSCRICAO_TIMEOUT_MS: numComPadrao(30_000),
+    // ── Copiloto: assistente de BI 360 no WhatsApp para o GESTOR/corretor ──
+    // Gate MESTRE. default false = deploy INERTE: canais `tipo='gestor'` são
+    // IGNORADOS no eventHandlers (nenhum desvio, nenhuma leitura nova) e o pipeline
+    // do cliente segue idêntico. Ligar só após rodar as cláusulas (gestor_autorizado
+    // + gestor_assist_config + gestor_conversas/mensagens) e cadastrar números na
+    // allowlist. Efetivo por corretora = esta env E o toggle `gestor_assist_config.ativo`
+    // (FAIL-CLOSED). Reusa ANTHROPIC_API_KEY/BIA_MODEL da Bia.
+    GESTOR_ASSIST_ENABLED: boolDeString.default(false),
+    // Modelo do Copiloto. Vazio → usa BIA_MODEL. Reusa ANTHROPIC_API_KEY.
+    GESTOR_MODEL: z.string().optional().default(""),
+    GESTOR_MAX_TOKENS: numComPadrao(1024),
+    // Geração de GRÁFICOS do Copiloto (2º incremento, via Playwright). default false.
+    // INERTE nesta fase: a tool de gráfico não é oferecida ao modelo enquanto off.
+    GESTOR_GRAFICO_ENABLED: boolDeString.default(false),
     // Multi-tenant (SaaS). Corretora "seed" (Piero de Campos) — uuid LITERAL fixo
     // usado no backfill, nos defaults de persistência e nos testes. Deve casar com
     // a linha semeada na migração `corretoras`. Não trocar sem re-backfillar.
