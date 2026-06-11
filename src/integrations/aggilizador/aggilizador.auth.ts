@@ -68,6 +68,22 @@ function autoContratado(perm: AggilizadorLoginResponse["permissoesCorretora"]): 
 }
 
 /**
+ * Descreve uma resposta de login que veio SEM `token` (sem expor token/senha):
+ * status HTTP + chaves do objeto (ou tipo) + qualquer message/mensagem/erro.
+ * Revela envelope diferente do esperado, anti-bot/WAF (corpo HTML → tipo=string),
+ * ou erro de negócio que não veio como HTTP de erro.
+ */
+function diagSemToken(status: number, data: unknown): string {
+  if (data && typeof data === "object") {
+    const o = data as Record<string, unknown>;
+    const msg = [o.message, o.mensagem, o.erro, o.error].find((x) => typeof x === "string");
+    const chaves = Object.keys(o).join(",") || "{}";
+    return `HTTP ${status}; chaves=${chaves}${msg ? `; msg="${String(msg).slice(0, 140)}"` : ""}`;
+  }
+  return `HTTP ${status}; tipo=${typeof data}`;
+}
+
+/**
  * Autentica e devolve os dois tokens. Cacheia por e-mail; `forcar` ignora o cache.
  * Lança `AggilizadorAuthError` (credencial) ou `AggilizadorConfigError` (conta).
  */
@@ -83,6 +99,7 @@ export async function loginAggilizador(
 
   // 1) Login principal.
   let login: AggilizadorLoginResponse;
+  let loginStatus = 0;
   try {
     const r = await axios.post<AggilizadorLoginResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.login}`,
@@ -90,6 +107,7 @@ export async function loginAggilizador(
       { headers: AGGILIZADOR_HEADERS, timeout: 30_000 },
     );
     login = r.data;
+    loginStatus = r.status;
   } catch (e) {
     const status = axios.isAxiosError(e) ? e.response?.status : undefined;
     if (status === 401 || status === 403) {
@@ -101,7 +119,14 @@ export async function loginAggilizador(
     // que `ultimo_teste_msg` aponte a causa real (timeout/refused vs HTTP NNN).
     throw new AggilizadorAuthError(`Aggilizador: falha no login — ${erroCurtoAggilizador(e)}`);
   }
-  if (!login?.token) throw new AggilizadorAuthError("Login do Aggilizador não retornou token.");
+  if (!login?.token) {
+    // Respondeu, mas sem `token`: revela o FORMATO real da resposta (status +
+    // chaves + msg) — sem expor token/senha. Distingue envelope diferente de
+    // anti-bot (corpo HTML → tipo=string) de erro de negócio sem HTTP de erro.
+    const diag = diagSemToken(loginStatus, login);
+    logger.warn("[aggilizador.auth] login sem token", { diag });
+    throw new AggilizadorAuthError(`Login do Aggilizador não retornou token (${diag}).`);
+  }
   if (login.statusCorretora !== 1) {
     throw new AggilizadorConfigError(
       `Corretora inativa no Aggilizador (statusCorretora=${login.statusCorretora}).`,
@@ -113,6 +138,7 @@ export async function loginAggilizador(
 
   // 2) Login secundário (pdocs) → token do motor Multicálculo.
   let pdocs: AggilizadorPdocsResponse;
+  let pdocsStatus = 0;
   try {
     const r = await axios.post<AggilizadorPdocsResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.loginPdocs}`,
@@ -120,12 +146,15 @@ export async function loginAggilizador(
       { headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${login.token}` }, timeout: 30_000 },
     );
     pdocs = r.data;
+    pdocsStatus = r.status;
   } catch (e) {
     throw new AggilizadorAuthError(
       `Aggilizador: falha no login secundário (pdocs) — ${erroCurtoAggilizador(e)}`,
     );
   }
-  if (!pdocs?.token) throw new AggilizadorAuthError("Login pdocs não retornou token do Multicálculo.");
+  if (!pdocs?.token) {
+    throw new AggilizadorAuthError(`Login pdocs não retornou token (${diagSemToken(pdocsStatus, pdocs)}).`);
+  }
 
   const sessao: AggilizadorSessao = {
     tokenPrincipal: login.token,
