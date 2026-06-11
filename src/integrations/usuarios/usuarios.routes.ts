@@ -62,9 +62,13 @@ function tratarErro(res: Response, contexto: string, e: unknown): void {
   res.status(500).json({ erro: "erro_interno", mensagem: (e as Error).message });
 }
 
-router.get("/", exigirAdmin, async (_req: Request, res: Response) => {
+router.get("/", exigirAdmin, async (req: Request, res: Response) => {
   try {
-    const usuarios = await listarUsuarios();
+    // Escopo multi-tenant: admin de corretora vê só a sua; super-admin "dentro" de X
+    // vê X; super-admin no global (corretora_ativa_id null) → corretoraEfetiva null →
+    // vê todos. `exigirAdmin` já populou req.operador.
+    const corretoraId = req.operador ? corretoraEfetiva(req.operador) : null;
+    const usuarios = await listarUsuarios(corretoraId);
     res.json({ ok: true, usuarios });
   } catch (e) {
     tratarErro(res, "listar", e);

@@ -42,13 +42,18 @@ function normalizarEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-/** Lista todos os usuários (a UI mostra "Login pendente" quando supabase_user_id é null). */
-export async function listarUsuarios(): Promise<UsuarioAdmin[]> {
+/**
+ * Lista usuários ESCOPADOS por corretora (a UI mostra "Login pendente" quando
+ * supabase_user_id é null). `corretoraId` null/undefined ⇒ SEM filtro (super-admin
+ * no view global vê todos); informado ⇒ só os daquela corretora. Espelha o escopo
+ * de `corretoraEfetiva` usado na criação (POST). service_role ignora RLS, então o
+ * filtro aqui é a defesa multi-tenant deste endpoint.
+ */
+export async function listarUsuarios(corretoraId?: string | null): Promise<UsuarioAdmin[]> {
   const sb = getSupabaseAdmin();
-  const { data, error } = await sb
-    .from("operadores")
-    .select(COLUNAS)
-    .order("criado_em", { ascending: true });
+  let q = sb.from("operadores").select(COLUNAS).order("criado_em", { ascending: true });
+  if (corretoraId) q = q.eq("corretora_id" as never, corretoraId as never);
+  const { data, error } = await q;
   if (error) throw new Error(`listarUsuarios: ${error.message}`);
   return (data ?? []) as UsuarioAdmin[];
 }
