@@ -140,8 +140,10 @@ export async function loginAggilizador(
     const msg = strOuUndef(m.message) ?? "";
     if (/sess[aã]o ativa|active session|j[aá] existe uma sess/i.test(msg)) {
       throw new AggilizadorAuthError(
-        "Aggilizador: já existe uma sessão ativa com este usuário (o sistema permite só 1 sessão por login). " +
-          "Encerre a sessão aberta no navegador ou use um usuário DEDICADO para a integração.",
+        "Não foi possível conectar ao Aggilizador: já existe OUTRA sessão aberta com este usuário " +
+          "(o Aggilizador permite apenas 1 sessão por login). Feche a outra sessão — por exemplo, saia " +
+          "do Aggilizador no navegador — e tente novamente. Para uso contínuo, cadastre um usuário " +
+          "dedicado só para a integração.",
       );
     }
     const diag = diagSemToken(loginStatus, login);
