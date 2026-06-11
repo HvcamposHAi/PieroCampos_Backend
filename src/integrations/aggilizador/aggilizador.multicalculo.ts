@@ -16,7 +16,6 @@
  * de `calcularV2` e o domínio numérico de `estadoCivil`. Enquanto
  * `AGGILIZADOR_ENABLED=false`, este fluxo NÃO roda. Nunca logamos token/CPF/senha.
  */
-import axios from "axios";
 import { logger } from "../../utils/logger";
 import {
   AGGILIZADOR_MULTICALCULO_API,
@@ -24,8 +23,8 @@ import {
   AGGILIZADOR_PROD_API,
   AGGILIZADOR_PROD_BASE_URL,
 } from "./endpoints";
-import { AGGILIZADOR_HEADERS, loginAggilizador, type CredenciaisAggilizador } from "./aggilizador.auth";
-import { aggilizadorHttpsAgent } from "./aggilizador.tls";
+import { loginAggilizador, type CredenciaisAggilizador } from "./aggilizador.auth";
+import { aggGet, aggPost } from "./aggilizador.http";
 import { mapearResultadoAggilizador, todasRetornaram } from "./aggilizador.resultado";
 import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
 import type { EntradaAggilizador } from "./aggilizador.mapper";
@@ -120,12 +119,12 @@ export async function cotarAutoAggilizador(
 
   // 0) token — login (PROD + Multicálculo).
   const sessao = await comEtapa("token", () => loginAggilizador(credenciais), "autenticado no Aggilizador");
-  const headersProd = { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${sessao.tokenPrincipal}` };
-  const headersMc = { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${sessao.tokenMulticalculo}` };
-  const getProd = async <T>(path: string): Promise<T> =>
-    (await axios.get<T>(`${AGGILIZADOR_PROD_BASE_URL}${path}`, { headers: headersProd, timeout: 30_000, httpsAgent: aggilizadorHttpsAgent })).data;
-  const getMc = async <T>(path: string): Promise<T> =>
-    (await axios.get<T>(`${AGGILIZADOR_MULTICALCULO_BASE_URL}${path}`, { headers: headersMc, timeout: 30_000, httpsAgent: aggilizadorHttpsAgent })).data;
+  // Só o Authorization por host; os demais headers (fiéis ao navegador) + TLS +
+  // retry/diagnóstico vêm da camada `aggilizador.http`.
+  const authProd = { Authorization: `Bearer ${sessao.tokenPrincipal}` };
+  const authMc = { Authorization: `Bearer ${sessao.tokenMulticalculo}` };
+  const getProd = <T>(path: string): Promise<T> => aggGet<T>(`${AGGILIZADOR_PROD_BASE_URL}${path}`, authProd);
+  const getMc = <T>(path: string): Promise<T> => aggGet<T>(`${AGGILIZADOR_MULTICALCULO_BASE_URL}${path}`, authMc);
 
   // 1) segurado — pré-cadastro (CPF) + endereço (CEP).
   const segurado = await comEtapa(
@@ -218,10 +217,11 @@ export async function cotarAutoAggilizador(
       const payload: CalcularV2Payload = {
         cotacao: { segurado, calculos, automovel, coberturas: COBERTURAS_PADRAO },
       };
-      const resp = await axios.post<CalcularV2Response>(
+      const resp = await aggPost<CalcularV2Response>(
         `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.calcularV2}`,
         payload,
-        { headers: headersProd, timeout: 40_000, httpsAgent: aggilizadorHttpsAgent },
+        authProd,
+        40_000,
       );
       if (!resp.data?.idIntegracao) throw new Error("calcularV2 não retornou idIntegracao.");
       logger.info("[aggilizador] cotação disparada", {

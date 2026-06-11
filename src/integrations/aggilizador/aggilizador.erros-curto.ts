@@ -33,7 +33,15 @@ export function erroCurtoAggilizador(e: unknown): string {
           "";
       }
       const prefixo = status ? `HTTP ${status}` : "erro de rede";
-      return sanitizar(motivo ? `${prefixo}: ${motivo}` : `${prefixo}: ${e.message}`);
+      if (motivo) return sanitizar(`${prefixo}: ${motivo}`);
+      // Sem corpo (típico de bloqueio de borda/WAF): aponta o servidor de borda
+      // para o motivo ficar auto-evidente na tela (ex.: cloudflare/AWS).
+      const h = (e.response?.headers ?? {}) as Record<string, unknown>;
+      const borda = [h["server"], h["cf-ray"] ? "cf-ray" : "", h["via"]]
+        .filter((x) => typeof x === "string" && x)
+        .join(", ");
+      if (status && borda) return sanitizar(`${prefixo} (bloqueio de borda — ${borda}; sem corpo)`);
+      return sanitizar(`${prefixo}: ${e.message}`);
     }
   } catch {
     /* formato inesperado → fallback abaixo */

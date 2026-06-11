@@ -20,7 +20,7 @@ import { logger } from "../../utils/logger";
 import { AGGILIZADOR_PROD_API, AGGILIZADOR_PROD_BASE_URL } from "./endpoints";
 import { AggilizadorAuthError, AggilizadorConfigError } from "./errors";
 import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
-import { aggilizadorHttpsAgent } from "./aggilizador.tls";
+import { aggPost } from "./aggilizador.http";
 import type {
   AggilizadorLoginResponse,
   AggilizadorPdocsResponse,
@@ -32,16 +32,6 @@ export interface CredenciaisAggilizador {
   email: string;
   senha: string;
 }
-
-/** Headers de navegador que a API espera (origin/referer checados). */
-export const AGGILIZADOR_HEADERS: Record<string, string> = {
-  accept: "application/json, text/plain, */*",
-  "content-type": "application/json",
-  origin: "https://aggilizador.com.br",
-  referer: "https://aggilizador.com.br/",
-  "user-agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-};
 
 /** Margem para renovar antes de expirar (5 min). */
 const MARGEM_MS = 5 * 60 * 1000;
@@ -113,10 +103,9 @@ export async function loginAggilizador(
   let login: AggilizadorLoginResponse;
   let loginStatus = 0;
   try {
-    const r = await axios.post<AggilizadorLoginResponse>(
+    const r = await aggPost<AggilizadorLoginResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.login}`,
       { email: credenciais.email, senha: credenciais.senha },
-      { headers: AGGILIZADOR_HEADERS, timeout: 30_000, httpsAgent: aggilizadorHttpsAgent },
     );
     login = r.data;
     loginStatus = r.status;
@@ -165,14 +154,10 @@ export async function loginAggilizador(
   let pdocs: AggilizadorPdocsResponse;
   let pdocsStatus = 0;
   try {
-    const r = await axios.post<AggilizadorPdocsResponse>(
+    const r = await aggPost<AggilizadorPdocsResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.loginPdocs}`,
       {},
-      {
-        headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${token}` },
-        timeout: 30_000,
-        httpsAgent: aggilizadorHttpsAgent,
-      },
+      { Authorization: `Bearer ${token}` },
     );
     pdocs = r.data;
     pdocsStatus = r.status;
