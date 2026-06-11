@@ -70,6 +70,35 @@ describe("loginAggilizador", () => {
     await expect(loginAggilizador(CRED)).rejects.toBeInstanceOf(AggilizadorConfigError);
   });
 
+  it("token ANINHADO em data → autentica (envelope alternativo)", async () => {
+    vi.spyOn(axios, "post")
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            token: "JWT_P",
+            expires: FUTURO,
+            corretoraId: "corr-1",
+            statusCorretora: 1,
+            permissoesCorretora: { AUTO: { id: 1, contratado: true } },
+          },
+        },
+      })
+      .mockResolvedValueOnce({ data: { data: { token: "JWT_MC", expires: FUTURO } } });
+    const s = await loginAggilizador({ email: "aninhado@x.com", senha: "x" });
+    expect(s.tokenPrincipal).toBe("JWT_P");
+    expect(s.tokenMulticalculo).toBe("JWT_MC");
+  });
+
+  it("sessão já ativa (HTTP 201 sem token) → erro acionável de sessão única", async () => {
+    vi.spyOn(axios, "post").mockResolvedValue({
+      status: 201,
+      data: { message: "Já existe uma sessão ativa com esse usuário.", data: {}, idUsuarioAgger: 1, assinaturaId: 2 },
+    });
+    const err = (await loginAggilizador({ email: "sessao@x.com", senha: "x" }).catch((e) => e)) as Error;
+    expect(err).toBeInstanceOf(AggilizadorAuthError);
+    expect(err.message).toMatch(/sess[aã]o ativa|DEDICADO/i);
+  });
+
   it("HTTP 400 → erro diagnóstico com status+motivo, SEM vazar a senha", async () => {
     const cred = { email: "k@x.com", senha: "SenhaSecreta#123" };
     vi.spyOn(axios, "post").mockRejectedValue({

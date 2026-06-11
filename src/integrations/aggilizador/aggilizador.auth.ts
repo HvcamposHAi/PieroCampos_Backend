@@ -83,6 +83,17 @@ function diagSemToken(status: number, data: unknown): string {
   return `HTTP ${status}; tipo=${typeof data}`;
 }
 
+/** Mescla o envelope aninhado `data` com o topo (topo vence) num único record,
+ *  tolerando os 2 formatos observados (flat OU `{ message, data:{...} }`). */
+function mesclarEnvelope(resp: { data?: Record<string, unknown> } | undefined): Record<string, unknown> {
+  const root = (resp ?? {}) as Record<string, unknown>;
+  const data = (root.data as Record<string, unknown> | undefined) ?? {};
+  return { ...data, ...root };
+}
+function strOuUndef(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
 /**
  * Autentica e devolve os dois tokens. Cacheia por e-mail; `forcar` ignora o cache.
  * Lança `AggilizadorAuthError` (credencial) ou `AggilizadorConfigError` (conta).
@@ -119,22 +130,33 @@ export async function loginAggilizador(
     // que `ultimo_teste_msg` aponte a causa real (timeout/refused vs HTTP NNN).
     throw new AggilizadorAuthError(`Aggilizador: falha no login — ${erroCurtoAggilizador(e)}`);
   }
-  if (!login?.token) {
-    // Respondeu, mas sem `token`: revela o FORMATO real da resposta (status +
-    // chaves + msg) — sem expor token/senha. Distingue envelope diferente de
-    // anti-bot (corpo HTML → tipo=string) de erro de negócio sem HTTP de erro.
+
+  // Envelope tolerante: o token pode vir no topo OU dentro de `data`.
+  const m = mesclarEnvelope(login);
+  const token = strOuUndef(m.token);
+  if (!token) {
+    // Conflito de SESSÃO ÚNICA: o Aggilizador permite só 1 sessão por usuário e já
+    // há uma aberta (ex.: humano logado no navegador com o mesmo login).
+    const msg = strOuUndef(m.message) ?? "";
+    if (/sess[aã]o ativa|active session|j[aá] existe uma sess/i.test(msg)) {
+      throw new AggilizadorAuthError(
+        "Aggilizador: já existe uma sessão ativa com este usuário (o sistema permite só 1 sessão por login). " +
+          "Encerre a sessão aberta no navegador ou use um usuário DEDICADO para a integração.",
+      );
+    }
     const diag = diagSemToken(loginStatus, login);
     logger.warn("[aggilizador.auth] login sem token", { diag });
     throw new AggilizadorAuthError(`Login do Aggilizador não retornou token (${diag}).`);
   }
-  if (login.statusCorretora !== 1) {
-    throw new AggilizadorConfigError(
-      `Corretora inativa no Aggilizador (statusCorretora=${login.statusCorretora}).`,
-    );
+  const statusCorretora = typeof m.statusCorretora === "number" ? m.statusCorretora : 1;
+  if (statusCorretora !== 1) {
+    throw new AggilizadorConfigError(`Corretora inativa no Aggilizador (statusCorretora=${statusCorretora}).`);
   }
-  if (!autoContratado(login.permissoesCorretora)) {
+  if (!autoContratado(m.permissoesCorretora as AggilizadorLoginResponse["permissoesCorretora"])) {
     throw new AggilizadorConfigError("Módulo AUTO não contratado no Aggilizador para esta corretora.");
   }
+  const corretoraId = strOuUndef(m.corretoraId) ?? "";
+  const expires = typeof m.expires === "number" ? m.expires : Date.now() + 3 * 60 * 60 * 1000;
 
   // 2) Login secundário (pdocs) → token do motor Multicálculo.
   let pdocs: AggilizadorPdocsResponse;
@@ -143,7 +165,7 @@ export async function loginAggilizador(
     const r = await axios.post<AggilizadorPdocsResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.loginPdocs}`,
       {},
-      { headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${login.token}` }, timeout: 30_000 },
+      { headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${token}` }, timeout: 30_000 },
     );
     pdocs = r.data;
     pdocsStatus = r.status;
@@ -152,16 +174,19 @@ export async function loginAggilizador(
       `Aggilizador: falha no login secundário (pdocs) — ${erroCurtoAggilizador(e)}`,
     );
   }
-  if (!pdocs?.token) {
+  const mp = mesclarEnvelope(pdocs);
+  const tokenMulticalculo = strOuUndef(mp.token);
+  if (!tokenMulticalculo) {
     throw new AggilizadorAuthError(`Login pdocs não retornou token (${diagSemToken(pdocsStatus, pdocs)}).`);
   }
+  const expiresMulticalculo = typeof mp.expires === "number" ? mp.expires : Date.now() + 3 * 60 * 60 * 1000;
 
   const sessao: AggilizadorSessao = {
-    tokenPrincipal: login.token,
-    tokenMulticalculo: pdocs.token,
-    corretoraId: login.corretoraId,
-    expires: login.expires,
-    expiresMulticalculo: pdocs.expires,
+    tokenPrincipal: token,
+    tokenMulticalculo,
+    corretoraId,
+    expires,
+    expiresMulticalculo,
   };
   _cache.set(chave, sessao);
   logger.info("[aggilizador.auth] autenticado (HTTP, sem 2FA)", {

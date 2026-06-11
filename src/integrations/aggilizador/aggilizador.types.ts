@@ -29,21 +29,33 @@ export interface AggilizadorSessao {
   expiresMulticalculo: number;
 }
 
-/** Resposta do POST /usuario/login?device=desktop (HTTP 201). */
+/**
+ * Resposta do POST /usuario/login?device=desktop (HTTP 201).
+ * ⚠️ Observado em prod: o envelope VARIA. Login limpo vem ~flat (`{token,...}`);
+ * mas há um envelope `{ message, data:{...}, idUsuarioAgger, assinaturaId }` (ex.:
+ * "Já existe uma sessão ativa com esse usuário."). Por isso os campos são opcionais
+ * e o parser (`aggilizador.auth`) lê do topo OU de `data`, com `message` p/ diagnose.
+ */
 export interface AggilizadorLoginResponse {
-  token: string;
-  expires: number; // epoch ms
-  corretoraId: string;
-  statusCorretora: number; // 1 = ativa
+  token?: string;
+  expires?: number; // epoch ms
+  corretoraId?: string;
+  statusCorretora?: number; // 1 = ativa
   expirationDate?: string;
   permissoesCorretora?: Record<string, { id: number; contratado: boolean } | unknown>;
+  /** Envelope alternativo: campos aninhados em `data`. */
+  data?: Record<string, unknown>;
+  /** Mensagem de negócio (ex.: sessão já ativa). */
+  message?: string;
 }
 
 /** Resposta do POST /usuario/login/pdocs (HTTP 201). */
 export interface AggilizadorPdocsResponse {
-  token: string;
-  expires: number; // epoch ms
+  token?: string;
+  expires?: number; // epoch ms
   corretoraId?: string;
+  data?: Record<string, unknown>;
+  message?: string;
 }
 
 // ── Config / lookups ─────────────────────────────────────────────────────────
