@@ -69,4 +69,18 @@ describe("loginAggilizador", () => {
     );
     await expect(loginAggilizador(CRED)).rejects.toBeInstanceOf(AggilizadorConfigError);
   });
+
+  it("HTTP 400 → erro diagnóstico com status+motivo, SEM vazar a senha", async () => {
+    const cred = { email: "k@x.com", senha: "SenhaSecreta#123" };
+    vi.spyOn(axios, "post").mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 400, data: { message: "device desktop obrigatório" } },
+    });
+    const err = (await loginAggilizador(cred).catch((e) => e)) as Error;
+    expect(err).toBeInstanceOf(AggilizadorAuthError);
+    expect(err.message).toMatch(/HTTP 400/);
+    expect(err.message).toMatch(/device desktop/i);
+    // a mensagem NUNCA pode conter a senha (vai para ultimo_teste_msg/tela).
+    expect(err.message).not.toContain("SenhaSecreta#123");
+  });
 });

@@ -19,6 +19,7 @@ import axios from "axios";
 import { logger } from "../../utils/logger";
 import { AGGILIZADOR_PROD_API, AGGILIZADOR_PROD_BASE_URL } from "./endpoints";
 import { AggilizadorAuthError, AggilizadorConfigError } from "./errors";
+import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
 import type {
   AggilizadorLoginResponse,
   AggilizadorPdocsResponse,
@@ -96,7 +97,9 @@ export async function loginAggilizador(
         "Credenciais do Aggilizador inválidas (HTTP " + status + ") — corrija em Admin.",
       );
     }
-    throw new AggilizadorAuthError(); // rede/5xx/formato → erro de auth genérico
+    // rede/5xx/400/formato: inclui status + motivo sanitizado (sem senha) para
+    // que `ultimo_teste_msg` aponte a causa real (timeout/refused vs HTTP NNN).
+    throw new AggilizadorAuthError(`Aggilizador: falha no login — ${erroCurtoAggilizador(e)}`);
   }
   if (!login?.token) throw new AggilizadorAuthError("Login do Aggilizador não retornou token.");
   if (login.statusCorretora !== 1) {
@@ -117,8 +120,10 @@ export async function loginAggilizador(
       { headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${login.token}` }, timeout: 30_000 },
     );
     pdocs = r.data;
-  } catch {
-    throw new AggilizadorAuthError("Falha no login secundário (pdocs) do Aggilizador.");
+  } catch (e) {
+    throw new AggilizadorAuthError(
+      `Aggilizador: falha no login secundário (pdocs) — ${erroCurtoAggilizador(e)}`,
+    );
   }
   if (!pdocs?.token) throw new AggilizadorAuthError("Login pdocs não retornou token do Multicálculo.");
 
