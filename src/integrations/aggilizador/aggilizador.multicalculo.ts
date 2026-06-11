@@ -11,9 +11,10 @@
  *   5) coleta  : POLLING GET /calculo/cotacao/calculos/{id}/{versao} até todas
  *                retornarem (ou timeout) → ResultadoCotacaoItem[].
  *
- * ⚠️ VALIDAR-LIVE: o payload de `calcularV2` e a forma do item de polling com
- * `retorno:true` foram observados parcialmente. Enquanto `AGGILIZADOR_ENABLED=
- * false`, este fluxo NÃO roda em produção. Nunca logamos token/CPF/senha.
+ * ✅ A forma do polling com `retorno:true` está confirmada (ver resultado.ts).
+ * ⚠️ VALIDAR-LIVE resta só: o formato do `idIntegracao` por seguradora no payload
+ * de `calcularV2` e o domínio numérico de `estadoCivil`. Enquanto
+ * `AGGILIZADOR_ENABLED=false`, este fluxo NÃO roda. Nunca logamos token/CPF/senha.
  */
 import axios from "axios";
 import { logger } from "../../utils/logger";
@@ -41,10 +42,10 @@ import type {
   SeguradoraConfigItem,
 } from "./aggilizador.types";
 
-/** Teto absoluto de coleta (algumas seguradoras são lentas). */
+/** Teto absoluto de coleta (algumas seguradoras chegam a ~31s; mostra parcial no fim). */
 const TIMEOUT_POLLING_MS = 90_000;
-/** Intervalo entre polls. */
-const INTERVALO_POLLING_MS = 3_000;
+/** Intervalo entre polls (~6s observado no HAR; ~6 polls até todas responderem). */
+const INTERVALO_POLLING_MS = 6_000;
 
 /**
  * Coberturas-padrão (valores observados na sessão real). Servem de base p/ todas

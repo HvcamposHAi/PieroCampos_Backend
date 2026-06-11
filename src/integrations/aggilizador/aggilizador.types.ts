@@ -4,10 +4,11 @@
  * comparativo): a aba Cotações/Etapas e o formatador de WhatsApp não distinguem
  * o sistema de origem.
  *
- * ⚠️ Os payloads de `calcularV2` e a forma do item de POLLING com `retorno:true`
- * (com prêmio/parcelas/coberturas) foram observados parcialmente — pontos
- * marcados com VALIDAR-LIVE precisam de uma captura de cotação CONCLUÍDA para
- * travar o contrato. Enquanto `AGGILIZADOR_ENABLED=false`, nada disso roda.
+ * ✅ A forma do item de POLLING com `retorno:true` (premio anual no raiz =
+ * plano `principal`; detalhe em `resultados[].{coberturas,parcelamentos}`) está
+ * CONFIRMADA no HAR de cotação concluída (11/06/2026). Resta VALIDAR-LIVE só o
+ * formato do `idIntegracao` por seguradora no payload de `calcularV2` e o domínio
+ * numérico de `estadoCivil`. Enquanto `AGGILIZADOR_ENABLED=false`, nada roda.
  */
 
 // Reexporta o contrato de resultado (mesmo do Segfy) p/ o módulo ser autocontido.
@@ -174,22 +175,43 @@ export interface CalcularV2Response {
 
 // ── Polling ──────────────────────────────────────────────────────────────────
 
+/** Um plano/pacote ofertado por uma seguradora (item de `resultados[]`). */
+export interface PlanoResultado {
+  principal?: boolean;
+  selected?: boolean;
+  identificacao?: string | null;
+  /** Prêmio anual do plano em R$. */
+  premio?: number | null;
+  /** ≈ premio/12 (indicativo). */
+  premioMensal?: number | null;
+  franquia?: number | null;
+  /** Nº do cálculo na seguradora — necessário p/ transmissão de proposta (futuro). */
+  nroCalculo?: string | null;
+  /** Nome do PDF do orçamento (download futuro). */
+  pdfFileNameAgger?: string | null;
+  coberturas?: Record<string, unknown>;
+  /** [{ parcelas, premioPrimeiraParc, premioDemaisParc, tipoPag }] — tipoPag 1=cartão. */
+  parcelamentos?: Array<Record<string, unknown>> | null;
+}
+
 /**
- * Item do GET /calculo/cotacao/calculos/{id}/{versao}. Campos mínimos observados
- * na captura (cotação AINDA processando). ⚠️ VALIDAR-LIVE: a forma do item com
- * `retorno:true` (parcelas, coberturas detalhadas) precisa de uma captura de
- * cotação concluída — `.passthrough()` no schema preserva campos extras.
+ * Item do GET /calculo/cotacao/calculos/{id}/{versao} — ✅ forma confirmada no
+ * HAR de cotação concluída. `retorno:true` + `premio:0` + `resultados:[]` =
+ * seguradora respondeu sem oferta (recusa, não erro).
  */
 export interface PollingItem {
   seguradoraTxt: string;
+  seguradora?: number;
   retorno: boolean;
   retornoErro: boolean;
+  /** Prêmio anual do plano `principal` em R$. */
   premio: number;
+  premioMensal?: number | null;
   dataHoraEnvio?: string | null;
   dataHoraRetorno?: string | null;
   tempoResposta?: number | null;
   mensagem?: string | null;
-  /** Tabela de parcelamento, quando a seguradora retorna (forma a confirmar live). */
-  parcelamento?: unknown;
+  /** Planos ofertados; o `principal:true` é o destaque. */
+  resultados?: PlanoResultado[] | null;
   [extra: string]: unknown;
 }
