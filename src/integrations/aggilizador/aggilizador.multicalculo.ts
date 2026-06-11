@@ -25,6 +25,7 @@ import {
   AGGILIZADOR_PROD_BASE_URL,
 } from "./endpoints";
 import { AGGILIZADOR_HEADERS, loginAggilizador, type CredenciaisAggilizador } from "./aggilizador.auth";
+import { aggilizadorHttpsAgent } from "./aggilizador.tls";
 import { mapearResultadoAggilizador, todasRetornaram } from "./aggilizador.resultado";
 import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
 import type { EntradaAggilizador } from "./aggilizador.mapper";
@@ -122,9 +123,9 @@ export async function cotarAutoAggilizador(
   const headersProd = { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${sessao.tokenPrincipal}` };
   const headersMc = { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${sessao.tokenMulticalculo}` };
   const getProd = async <T>(path: string): Promise<T> =>
-    (await axios.get<T>(`${AGGILIZADOR_PROD_BASE_URL}${path}`, { headers: headersProd, timeout: 30_000 })).data;
+    (await axios.get<T>(`${AGGILIZADOR_PROD_BASE_URL}${path}`, { headers: headersProd, timeout: 30_000, httpsAgent: aggilizadorHttpsAgent })).data;
   const getMc = async <T>(path: string): Promise<T> =>
-    (await axios.get<T>(`${AGGILIZADOR_MULTICALCULO_BASE_URL}${path}`, { headers: headersMc, timeout: 30_000 })).data;
+    (await axios.get<T>(`${AGGILIZADOR_MULTICALCULO_BASE_URL}${path}`, { headers: headersMc, timeout: 30_000, httpsAgent: aggilizadorHttpsAgent })).data;
 
   // 1) segurado — pré-cadastro (CPF) + endereço (CEP).
   const segurado = await comEtapa(
@@ -220,7 +221,7 @@ export async function cotarAutoAggilizador(
       const resp = await axios.post<CalcularV2Response>(
         `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.calcularV2}`,
         payload,
-        { headers: headersProd, timeout: 40_000 },
+        { headers: headersProd, timeout: 40_000, httpsAgent: aggilizadorHttpsAgent },
       );
       if (!resp.data?.idIntegracao) throw new Error("calcularV2 não retornou idIntegracao.");
       logger.info("[aggilizador] cotação disparada", {

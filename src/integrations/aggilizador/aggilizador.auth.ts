@@ -20,6 +20,7 @@ import { logger } from "../../utils/logger";
 import { AGGILIZADOR_PROD_API, AGGILIZADOR_PROD_BASE_URL } from "./endpoints";
 import { AggilizadorAuthError, AggilizadorConfigError } from "./errors";
 import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
+import { aggilizadorHttpsAgent } from "./aggilizador.tls";
 import type {
   AggilizadorLoginResponse,
   AggilizadorPdocsResponse,
@@ -115,7 +116,7 @@ export async function loginAggilizador(
     const r = await axios.post<AggilizadorLoginResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.login}`,
       { email: credenciais.email, senha: credenciais.senha },
-      { headers: AGGILIZADOR_HEADERS, timeout: 30_000 },
+      { headers: AGGILIZADOR_HEADERS, timeout: 30_000, httpsAgent: aggilizadorHttpsAgent },
     );
     login = r.data;
     loginStatus = r.status;
@@ -167,7 +168,11 @@ export async function loginAggilizador(
     const r = await axios.post<AggilizadorPdocsResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.loginPdocs}`,
       {},
-      { headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${token}` }, timeout: 30_000 },
+      {
+        headers: { ...AGGILIZADOR_HEADERS, Authorization: `Bearer ${token}` },
+        timeout: 30_000,
+        httpsAgent: aggilizadorHttpsAgent,
+      },
     );
     pdocs = r.data;
     pdocsStatus = r.status;
