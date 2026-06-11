@@ -13,11 +13,13 @@ import { exigirAdmin, exigirCorretoraSelecionada } from "../../middlewares/authS
 import { getEnv } from "../../config/env";
 import { logger } from "../../utils/logger";
 import {
+  lerSistemaCotacao,
   obterCredenciaisSegfy,
   registrarTesteSegfy,
   salvarCredenciaisSegfy,
   statusCredenciaisSegfy,
 } from "../../services/segfy-credenciais.service";
+import { loginAggilizador } from "../aggilizador/aggilizador.auth";
 import {
   avisoProativoSessao,
   conexaoUtilizavel,
@@ -238,10 +240,22 @@ router.post("/credenciais/testar", exigirAdmin, exigirCorretoraSelecionada, asyn
     res.status(409).json({ ok: false, erro: "sem_credenciais", mensagem: "Cadastre o login e a senha antes de testar." });
     return;
   }
+  // O teste segue o SISTEMA da corretora: Aggilizador (login HTTP, sem 2FA) ou
+  // Segfy (Firebase/SSO + sessão device-trust). Sem isso, uma corretora Aggilizador
+  // testava no Firebase do Segfy e dava 400 (falso-negativo). Independe do
+  // AGGILIZADOR_ENABLED — validar credencial não exige a cotação ligada.
+  const sistema = await lerSistemaCotacao(req.corretoraId!);
   try {
-    // forcar=true → não usa cache; login de verdade com as credenciais salvas +
-    // a SESSÃO importada (cookie de device trust) — espelha o caminho de cotação
-    // e valida na hora se o cookie dispensa o 2FA (premissa P1′).
+    if (sistema === "aggilizador") {
+      // forcar=true → login real (ignora cache); valida login+pdocs e a permissão AUTO.
+      await loginAggilizador({ email: creds.email, senha: creds.password }, true);
+      await registrarTesteSegfy(true, "Login no Aggilizador OK", req.corretoraId!);
+      res.json({ ok: true, mensagem: "Login no Aggilizador OK." });
+      return;
+    }
+    // Segfy (default). forcar=true → não usa cache; login de verdade com as
+    // credenciais salvas + a SESSÃO importada (cookie de device trust) — espelha o
+    // caminho de cotação e valida na hora se o cookie dispensa o 2FA (premissa P1′).
     const sessao = await restaurarSessao();
     await obterTokensSegfy(true, { email: creds.email, password: creds.password }, sessao ?? undefined);
     await registrarTesteSegfy(true, "Login OK", req.corretoraId!);
@@ -249,7 +263,7 @@ router.post("/credenciais/testar", exigirAdmin, exigirCorretoraSelecionada, asyn
   } catch (e) {
     const msg = (e as Error).message;
     await registrarTesteSegfy(false, msg, req.corretoraId!);
-    logger.warn("[segfy.routes] teste de login falhou", { erro: msg });
+    logger.warn("[segfy.routes] teste de login falhou", { erro: msg, sistema });
     res.json({ ok: false, mensagem: msg });
   }
 });
