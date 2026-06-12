@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import axios from "axios";
-import { aggilizadorRequest } from "../src/integrations/aggilizador/aggilizador.http";
+import { aggilizadorRequest, secFetchSite } from "../src/integrations/aggilizador/aggilizador.http";
 
 /** Monta um erro no formato AxiosError (isAxiosError:true). */
 function axErr(status?: number, data?: unknown, code?: string) {
@@ -19,6 +19,36 @@ function axErr(status?: number, data?: unknown, code?: string) {
 
 beforeEach(() => vi.restoreAllMocks());
 afterEach(() => vi.useRealTimers());
+
+describe("secFetchSite — fiel ao navegador (causa do pdocs 403)", () => {
+  it("api-prod (subdomínio da origem) → same-site", () => {
+    expect(secFetchSite("https://api-prod.aggilizador.com.br/usuario/login/pdocs")).toBe("same-site");
+    expect(secFetchSite("https://api-prod.aggilizador.com.br/calculo/calcularV2")).toBe("same-site");
+    expect(secFetchSite("https://aggilizador.com.br/")).toBe("same-site");
+  });
+  it("multicalculo (outro domínio) → cross-site", () => {
+    expect(secFetchSite("https://api.multicalculo.net/calculo/cep?cep=80000000")).toBe("cross-site");
+  });
+  it("URL inválida → cross-site (fallback seguro)", () => {
+    expect(secFetchSite("not-a-url")).toBe("cross-site");
+  });
+});
+
+describe("aggilizadorRequest — sec-fetch-site injetado por host", () => {
+  it("injeta same-site para api-prod e respeita override do caller", async () => {
+    const spy = vi.spyOn(axios, "request").mockResolvedValue({ data: 1 } as never);
+    await aggilizadorRequest({
+      method: "POST",
+      url: "https://api-prod.aggilizador.com.br/usuario/login/pdocs",
+      headers: { Authorization: "Bearer x" },
+    });
+    const sent = (spy.mock.calls[0]![0] as { headers: Record<string, string> }).headers;
+    expect(sent["sec-fetch-site"]).toBe("same-site");
+    expect(sent["cache-control"]).toBe("no-cache");
+    expect(sent["priority"]).toBe("u=1, i");
+    expect(sent["Authorization"]).toBe("Bearer x");
+  });
+});
 
 describe("aggilizadorRequest — retry/backoff", () => {
   it("5xx transitório → repete e tem sucesso", async () => {

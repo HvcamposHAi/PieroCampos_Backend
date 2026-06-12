@@ -17,22 +17,47 @@ import axios, { type AxiosRequestConfig, type AxiosResponse } from "axios";
 import { logger } from "../../utils/logger";
 import { aggilizadorHttpsAgent } from "./aggilizador.tls";
 
-/** Headers fiéis a um Chrome desktop (origin/referer do app Aggilizador). */
+/**
+ * Headers fiéis a um Chrome desktop (origin/referer do app Aggilizador).
+ * ✅ Conferidos byte-a-byte com o HAR de sessão real (12/06/2026): TODA request
+ * do app leva accept/accept-language/cache-control/pragma/priority/content-type/
+ * origin/referer/sec-ch-* + user-agent. `sec-fetch-site` NÃO entra aqui porque
+ * varia por host de destino — é resolvido por `secFetchSite()` em cada chamada.
+ */
 export const AGGILIZADOR_HEADERS_BASE: Record<string, string> = {
   accept: "application/json, text/plain, */*",
   "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+  "cache-control": "no-cache",
   "content-type": "application/json",
   origin: "https://aggilizador.com.br",
+  pragma: "no-cache",
+  priority: "u=1, i",
   referer: "https://aggilizador.com.br/",
   "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-platform": '"Windows"',
   "sec-fetch-dest": "empty",
   "sec-fetch-mode": "cors",
-  "sec-fetch-site": "cross-site",
   "user-agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
 };
+
+/**
+ * Resolve o `sec-fetch-site` igual ao navegador (causa-raiz do pdocs 403):
+ * a origem é `aggilizador.com.br`, logo chamadas a `*.aggilizador.com.br`
+ * (api-prod) são **same-site**, e a `api.multicalculo.net` é **cross-site**.
+ * Mandar `cross-site` fixo para o api-prod fazia a borda/WAF devolver 403 vazio.
+ */
+export function secFetchSite(url: string): "same-site" | "cross-site" {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "aggilizador.com.br" || host.endsWith(".aggilizador.com.br")
+      ? "same-site"
+      : "cross-site";
+  } catch {
+    return "cross-site";
+  }
+}
 
 const MAX_TENTATIVAS = 3;
 const BACKOFF_MS = 1_500;
@@ -97,13 +122,15 @@ function diagnosticar(e: unknown, url: string): void {
  * `erroCurtoAggilizador` para a mensagem da tela).
  */
 export async function aggilizadorRequest<T = unknown>(config: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+  const url = String(config.url ?? "");
   const cfg: AxiosRequestConfig = {
     timeout: 30_000,
     ...config,
     httpsAgent: aggilizadorHttpsAgent,
-    headers: { ...AGGILIZADOR_HEADERS_BASE, ...(config.headers ?? {}) },
+    // `sec-fetch-site` resolvido por host (same-site p/ api-prod, cross-site p/
+    // multicalculo); o caller ainda pode sobrescrever qualquer header.
+    headers: { ...AGGILIZADOR_HEADERS_BASE, "sec-fetch-site": secFetchSite(url), ...(config.headers ?? {}) },
   };
-  const url = String(config.url ?? "");
   let ultimo: unknown;
   for (let tentativa = 0; tentativa < MAX_TENTATIVAS; tentativa++) {
     try {
