@@ -43,7 +43,21 @@ export const AGGILIZADOR_HEADERS_BASE: Record<string, string> = {
 };
 
 /**
- * Resolve o `sec-fetch-site` igual ao navegador (causa-raiz do pdocs 403):
+ * Header de autenticação do Aggilizador. ⚠️ O backend é AWS API Gateway com um
+ * Lambda authorizer que espera o **JWT CRU** em `Authorization` — SEM o prefixo
+ * "Bearer ". Provado por probe contra a API real (12/06/2026): `Bearer <jwt>`
+ * devolve **403 AccessDeniedException** ("explicit deny") em api-prod (pdocs,
+ * /cfg/seguradora/config, calcularV2) e em api.multicalculo.net
+ * (/app/seguradoraStatus); o `<jwt>` cru devolve 200/201. NUNCA reintroduzir
+ * "Bearer " aqui — é o que causava o 403 que parecia WAF.
+ */
+export function authHeader(token: string): Record<string, string> {
+  return { Authorization: token };
+}
+
+/**
+ * Resolve o `sec-fetch-site` igual ao navegador (fidelidade ao HAR; NÃO era a
+ * causa do 403 — o Bearer era):
  * a origem é `aggilizador.com.br`, logo chamadas a `*.aggilizador.com.br`
  * (api-prod) são **same-site**, e a `api.multicalculo.net` é **cross-site**.
  * Mandar `cross-site` fixo para o api-prod fazia a borda/WAF devolver 403 vazio.

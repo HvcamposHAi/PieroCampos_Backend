@@ -6,8 +6,8 @@
  *   1) POST /usuario/login?device=desktop { email, senha } → token PRINCIPAL
  *      (autoriza api-prod.aggilizador.com.br). Valida statusCorretora e a
  *      permissão de AUTO antes de prosseguir.
- *   2) POST /usuario/login/pdocs (Bearer do principal) → token MULTICÁLCULO
- *      (autoriza api.multicalculo.net).
+ *   2) POST /usuario/login/pdocs (token PRINCIPAL CRU no Authorization, SEM
+ *      "Bearer ") → token MULTICÁLCULO (autoriza api.multicalculo.net).
  *
  * O JWT dura ~3h; `expires` vem em EPOCH MS (não segundos). Cache em memória por
  * e-mail (multi-tenant: cada corretora tem o seu login), renovado com margem.
@@ -20,7 +20,7 @@ import { logger } from "../../utils/logger";
 import { AGGILIZADOR_PROD_API, AGGILIZADOR_PROD_BASE_URL } from "./endpoints";
 import { AggilizadorAuthError, AggilizadorConfigError } from "./errors";
 import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
-import { aggPost } from "./aggilizador.http";
+import { aggPost, authHeader } from "./aggilizador.http";
 import type {
   AggilizadorLoginResponse,
   AggilizadorPdocsResponse,
@@ -157,7 +157,7 @@ export async function loginAggilizador(
     const r = await aggPost<AggilizadorPdocsResponse>(
       `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.loginPdocs}`,
       {},
-      { Authorization: `Bearer ${token}` },
+      authHeader(token), // JWT cru (sem "Bearer ") — ver authHeader/probe 12/06.
     );
     pdocs = r.data;
     pdocsStatus = r.status;

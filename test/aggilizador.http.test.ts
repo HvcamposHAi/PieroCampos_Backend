@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import axios from "axios";
-import { aggilizadorRequest, secFetchSite } from "../src/integrations/aggilizador/aggilizador.http";
+import { aggilizadorRequest, secFetchSite, authHeader } from "../src/integrations/aggilizador/aggilizador.http";
 
 /** Monta um erro no formato AxiosError (isAxiosError:true). */
 function axErr(status?: number, data?: unknown, code?: string) {
@@ -20,7 +20,15 @@ function axErr(status?: number, data?: unknown, code?: string) {
 beforeEach(() => vi.restoreAllMocks());
 afterEach(() => vi.useRealTimers());
 
-describe("secFetchSite — fiel ao navegador (causa do pdocs 403)", () => {
+describe("authHeader — JWT cru, SEM Bearer (causa-raiz REAL do 403)", () => {
+  it("monta Authorization com o token cru, sem prefixo Bearer", () => {
+    const h = authHeader("eyJabc.def.ghi");
+    expect(h.Authorization).toBe("eyJabc.def.ghi");
+    expect(h.Authorization).not.toMatch(/Bearer/i);
+  });
+});
+
+describe("secFetchSite — fiel ao navegador (NÃO era a causa do 403)", () => {
   it("api-prod (subdomínio da origem) → same-site", () => {
     expect(secFetchSite("https://api-prod.aggilizador.com.br/usuario/login/pdocs")).toBe("same-site");
     expect(secFetchSite("https://api-prod.aggilizador.com.br/calculo/calcularV2")).toBe("same-site");

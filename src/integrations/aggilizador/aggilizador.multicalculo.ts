@@ -24,7 +24,7 @@ import {
   AGGILIZADOR_PROD_BASE_URL,
 } from "./endpoints";
 import { loginAggilizador, type CredenciaisAggilizador } from "./aggilizador.auth";
-import { aggGet, aggPost } from "./aggilizador.http";
+import { aggGet, aggPost, authHeader } from "./aggilizador.http";
 import { mapearResultadoAggilizador, todasRetornaram } from "./aggilizador.resultado";
 import { erroCurtoAggilizador } from "./aggilizador.erros-curto";
 import type { EntradaAggilizador } from "./aggilizador.mapper";
@@ -121,8 +121,8 @@ export async function cotarAutoAggilizador(
   const sessao = await comEtapa("token", () => loginAggilizador(credenciais), "autenticado no Aggilizador");
   // Só o Authorization por host; os demais headers (fiéis ao navegador) + TLS +
   // retry/diagnóstico vêm da camada `aggilizador.http`.
-  const authProd = { Authorization: `Bearer ${sessao.tokenPrincipal}` };
-  const authMc = { Authorization: `Bearer ${sessao.tokenMulticalculo}` };
+  const authProd = authHeader(sessao.tokenPrincipal); // JWT cru (sem "Bearer ")
+  const authMc = authHeader(sessao.tokenMulticalculo); // idem — ver authHeader/probe 12/06
   const getProd = <T>(path: string): Promise<T> => aggGet<T>(`${AGGILIZADOR_PROD_BASE_URL}${path}`, authProd);
   const getMc = <T>(path: string): Promise<T> => aggGet<T>(`${AGGILIZADOR_MULTICALCULO_BASE_URL}${path}`, authMc);
 
