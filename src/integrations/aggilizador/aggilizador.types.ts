@@ -134,6 +134,7 @@ export interface SeguradoPayload {
   cpfCnpj: string;
   estadoCivil: number;
   dataNasc: string; // ISO 8601
+  dataPrimHabil?: string | null;
   sexo: string; // "M" | "F"
   fone1: string;
   cep: string;
@@ -143,6 +144,50 @@ export interface SeguradoPayload {
   bairro: string;
   logradouro: string;
   isPCD: boolean;
+}
+
+/** Condutor do veículo (o principal = o próprio segurado). */
+export interface CondutorPayload {
+  relacComSegurado: number; // 1 = o próprio segurado
+  tpResidencia: number; // 1
+  dataPrimHabil: string | null;
+  principal: boolean;
+  cpfCnpj: string;
+  nome: string;
+  dataNasc: string;
+  sexo: string;
+  estadoCivil: number;
+  tempoHabilitacao: number | null;
+}
+
+/**
+ * Veículo do payload de `calcularV2` (`cotacao.automoveis[]`). ✅ Forma confirmada
+ * por probe (13/06): o array `automoveis` + `condutores` é OBRIGATÓRIO — enviar
+ * `automovel` singular causa 502 (Lambda quebra). `valReferenciado`/`combustivel`/
+ * `kmAnual` toleram null/0 (o motor resolve pela FIPE); refinar é futuro.
+ */
+export interface CarroPayload {
+  descricao: string;
+  fabricante: number | null;
+  combustivel: number | null;
+  anoFabricacao: number;
+  anoModelo: number;
+  fipe: string;
+  chassi?: string;
+  placa: string;
+  cepPernoite: string;
+  kmAnual: number | null;
+  tpUso: number; // 1 = particular
+  zeroKm: boolean;
+  tipo: string; // "v" leve
+  residentes: unknown[];
+  valReferenciado: number;
+  garagemResidencia: string;
+  garagemTrabalho: string;
+  garagemEstudo: string;
+  associado: boolean;
+  periodoUso: string;
+  condutores: CondutorPayload[];
 }
 
 /** Veículo do payload de cálculo. */
@@ -190,16 +235,45 @@ export type CalculoSeguradora = CoberturasPayload & {
   configsGlobais: boolean;
   credenciaisValidas: boolean;
   valorDeNovo: number;
+  // Campos do HAR exigidos pelo motor (default seguro).
+  parcelasBaixar: boolean;
+  aplicacaoId: number;
+  cargaIniciada: boolean | null;
 };
 
-/** Payload completo do POST /calculo/calcularV2. */
+/** Resultado vazio por canal (a UI do Aggilizador envia o esqueleto). */
+type ResultadosVazios = { errors: unknown[]; successes: unknown[] };
+
+/**
+ * Payload completo do POST /calculo/calcularV2. ✅ Forma confirmada por probe
+ * (13/06): `cotacao` precisa de `automoveis[]` (NÃO `automovel`) + os campos de
+ * topo (tipo/ramo/vigência/tpCobertura/results/loaded/isClearDraft/renovacao) e o
+ * `negocio` no raiz. Omitir qualquer um pode derrubar a Lambda (502).
+ */
 export interface CalcularV2Payload {
   cotacao: {
     segurado: SeguradoPayload;
     calculos: CalculoSeguradora[];
-    automovel: AutomovelPayload;
-    coberturas: CoberturasPayload;
+    automoveis: CarroPayload[];
+    results: Record<string, ResultadosVazios>;
+    loaded: boolean;
+    isClearDraft: boolean;
+    tipo: number; // 5
+    integracaoInfo: number; // 1
+    vigenciaIni: string;
+    vigenciaFim: string;
+    renovacao: boolean;
+    renovacaoGarantida: boolean;
+    bonusAnterior: number;
+    sinistrosAnterior: number;
+    numeroRenovacao: number | null;
+    seguradoraAnteriorId: number | null;
+    vigFimAnterior: string | null;
+    CI: unknown;
+    tpCobertura: number; // 1
+    ramo: number; // 31 (auto SUSEP)
   };
+  negocio: null;
 }
 
 /** Resposta do POST /calculo/calcularV2. */

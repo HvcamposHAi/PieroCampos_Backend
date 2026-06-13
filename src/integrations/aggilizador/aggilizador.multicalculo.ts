@@ -22,6 +22,7 @@ import {
   AGGILIZADOR_MULTICALCULO_BASE_URL,
   AGGILIZADOR_PROD_API,
   AGGILIZADOR_PROD_BASE_URL,
+  RAMO_AUTO_SUSEP,
 } from "./endpoints";
 import { loginAggilizador, type CredenciaisAggilizador } from "./aggilizador.auth";
 import { aggGet, aggPost, authHeader } from "./aggilizador.http";
@@ -35,8 +36,10 @@ import type {
   CalcularV2Payload,
   CalcularV2Response,
   CalculoSeguradora,
+  CarroPayload,
   CepResponse,
   CoberturasPayload,
+  CondutorPayload,
   ResultadoCotacaoItem,
   SeguradoPayload,
   SeguradoraConfigItem,
@@ -125,6 +128,9 @@ export function selecionarCalculosAuto(
     configsGlobais: true,
     credenciaisValidas: true,
     valorDeNovo,
+    parcelasBaixar: false,
+    aplicacaoId: 3,
+    cargaIniciada: false,
   }));
 
   let motivoZero: string | null = null;
@@ -139,6 +145,93 @@ export function selecionarCalculosAuto(
         "Nenhuma seguradora ativa e válida está habilitada para AUTO no momento (verifique o status das seguradoras).";
   }
   return { calculos, motivoZero };
+}
+
+/** Vigência anual padrão (hoje → +1 ano), em ISO. */
+function vigenciaAnual(): { ini: string; fim: string } {
+  const ini = new Date();
+  const fim = new Date(ini);
+  fim.setFullYear(fim.getFullYear() + 1);
+  return { ini: ini.toISOString(), fim: fim.toISOString() };
+}
+
+/**
+ * Monta o payload COMPLETO do calcularV2. Função PURA (testável).
+ * ✅ Forma confirmada por probe (13/06): `automoveis[]` com condutor PRINCIPAL +
+ * campos de topo (tipo/ramo/vigência/tpCobertura/results/loaded/isClearDraft/
+ * renovação) + `negocio:null`. Enviar `automovel` singular ou omitir os campos de
+ * topo derruba a Lambda (502). O Aggilizador não coleta o questionário → km/
+ * garagem ficam NEUTROS (o motor resolve pela FIPE); `valReferenciado`/
+ * `combustivel` precisos são refinamento futuro (não bloqueiam o disparo).
+ */
+export function montarPayloadCalculo(
+  segurado: SeguradoPayload,
+  calculos: CalculoSeguradora[],
+  veiculo: AutomovelPayload,
+  entrada: EntradaAggilizador,
+): CalcularV2Payload {
+  const condutor: CondutorPayload = {
+    relacComSegurado: 1, // o próprio segurado
+    tpResidencia: 1,
+    dataPrimHabil: null,
+    principal: true,
+    cpfCnpj: segurado.cpfCnpj,
+    nome: segurado.nome,
+    dataNasc: segurado.dataNasc,
+    sexo: segurado.sexo,
+    estadoCivil: segurado.estadoCivil,
+    tempoHabilitacao: null,
+  };
+  const carro: CarroPayload = {
+    descricao: veiculo.modelo ?? "",
+    fabricante: veiculo.codFabr ?? null,
+    combustivel: null,
+    anoFabricacao: Number(veiculo.anoFab) || 0,
+    anoModelo: Number(veiculo.anoMod) || 0,
+    fipe: veiculo.fipe,
+    chassi: veiculo.chassi,
+    placa: entrada.placa,
+    cepPernoite: entrada.cep,
+    kmAnual: null,
+    tpUso: 1, // particular
+    zeroKm: entrada.zeroKm,
+    tipo: veiculo.tipoVeic || "v",
+    residentes: [],
+    valReferenciado: 0,
+    garagemResidencia: "0",
+    garagemTrabalho: "0",
+    garagemEstudo: "0",
+    associado: false,
+    periodoUso: "0",
+    condutores: [condutor],
+  };
+  const { ini, fim } = vigenciaAnual();
+  const res = (): { errors: unknown[]; successes: unknown[] } => ({ errors: [], successes: [] });
+  return {
+    cotacao: {
+      segurado,
+      calculos,
+      automoveis: [carro],
+      results: { main: res(), alternatives: res(), all: res(), porAssinatura: res(), ofertaCruzada: res() },
+      loaded: false,
+      isClearDraft: false,
+      tipo: 5,
+      integracaoInfo: 1,
+      vigenciaIni: ini,
+      vigenciaFim: fim,
+      renovacao: false,
+      renovacaoGarantida: false,
+      bonusAnterior: 0,
+      sinistrosAnterior: 0,
+      numeroRenovacao: null,
+      seguradoraAnteriorId: null,
+      vigFimAnterior: null,
+      CI: null,
+      tpCobertura: 1,
+      ramo: RAMO_AUTO_SUSEP,
+    },
+    negocio: null,
+  };
 }
 
 export interface ResultadoCotacaoAggilizador {
@@ -273,9 +366,7 @@ export async function cotarAutoAggilizador(
         automovel.valorDeNovo,
       );
       if (motivoZero) throw new Error(motivoZero);
-      const payload: CalcularV2Payload = {
-        cotacao: { segurado, calculos, automovel, coberturas: COBERTURAS_PADRAO },
-      };
+      const payload: CalcularV2Payload = montarPayloadCalculo(segurado, calculos, automovel, entrada);
       const resp = await aggPost<CalcularV2Response>(
         `${AGGILIZADOR_PROD_BASE_URL}${AGGILIZADOR_PROD_API.calcularV2}`,
         payload,
