@@ -40,6 +40,7 @@ import type {
   ResultadoCotacaoItem,
   SeguradoPayload,
   SeguradoraConfigItem,
+  SeguradoraStatusItem,
 } from "./aggilizador.types";
 
 /** Teto absoluto de coleta (algumas seguradoras chegam a ~31s; mostra parcial no fim). */
@@ -72,6 +73,72 @@ export interface EtapaEventoAggilizador {
   etapa: "token" | "segurado" | "veiculo" | "calculo" | "coleta";
   status: "andamento" | "ok" | "erro";
   mensagem?: string;
+}
+
+/**
+ * Seleciona as seguradoras elegíveis para o cálculo de AUTO e monta `calculos[]`.
+ * Função PURA (sem rede) → testável isoladamente.
+ *
+ * Regras (confirmadas no HAR 12/06):
+ *  - `ativo`/`credenciaisValidas` podem vir no TOPO ou em `configsSeg` (lê ambos).
+ *  - opera AUTO = `seguradoraStatus.autoStatus===1` cruzando `seguradora`↔`id`.
+ *    Se o status não veio (lista vazia), NÃO filtra por ramo (fallback seguro).
+ *  - respeita `escondeLead` (ocultas).
+ *  - usa o `idIntegracao` PRONTO da config; só remonta se faltar.
+ *
+ * Retorna os `calculos` e, se vazio, um `motivoZero` específico p/ a tela.
+ */
+export function selecionarCalculosAuto(
+  configs: SeguradoraConfigItem[] | unknown,
+  escondidas: number[] | unknown,
+  statusSeg: SeguradoraStatusItem[] | unknown,
+  corretoraId: string,
+  valorDeNovo: number,
+): { calculos: CalculoSeguradora[]; motivoZero: string | null } {
+  const lista = Array.isArray(configs) ? (configs as SeguradoraConfigItem[]) : [];
+  const ocultas = new Set(Array.isArray(escondidas) ? (escondidas as number[]) : []);
+
+  const ativa = (s: SeguradoraConfigItem): boolean => (s.ativo ?? s.configsSeg?.ativo ?? false) === true;
+  const credOk = (s: SeguradoraConfigItem): boolean =>
+    (s.credenciaisValidas ?? s.configsSeg?.credenciaisValidas ?? false) === true;
+
+  const autoAtivas = new Set(
+    (Array.isArray(statusSeg) ? (statusSeg as SeguradoraStatusItem[]) : [])
+      .filter((st) => st?.autoStatus === 1)
+      .map((st) => st.id),
+  );
+  // Se o status não veio, libera todas (fallback) em vez de zerar a cotação.
+  const operaAuto = (s: SeguradoraConfigItem): boolean => autoAtivas.size === 0 || autoAtivas.has(s.seguradora);
+
+  const elegiveis = lista.filter((s) => ativa(s) && credOk(s) && operaAuto(s) && !ocultas.has(s.seguradora));
+  const calculos: CalculoSeguradora[] = elegiveis.map((s) => ({
+    ...COBERTURAS_PADRAO,
+    ativo: true,
+    nome: s.nomeSeguradora,
+    nomeSeguradora: s.nomeSeguradora,
+    login: s.login,
+    senha: s.senha,
+    seguradora: s.seguradora,
+    idIntegracao: s.idIntegracao ?? `_seguradora_${s.seguradora}_corretora_${corretoraId}_`,
+    percComissao: s.percComissao ?? 0,
+    percDesconto: s.percDesconto ?? 0,
+    configsGlobais: true,
+    credenciaisValidas: true,
+    valorDeNovo,
+  }));
+
+  let motivoZero: string | null = null;
+  if (calculos.length === 0) {
+    const nAtivasCred = lista.filter((s) => ativa(s) && credOk(s)).length;
+    if (lista.length === 0) motivoZero = "Nenhuma seguradora configurada no Aggilizador para esta corretora.";
+    else if (nAtivasCred === 0)
+      motivoZero =
+        "Nenhuma seguradora com credenciais válidas no Aggilizador — revise as credenciais das seguradoras.";
+    else
+      motivoZero =
+        "Nenhuma seguradora ativa e válida está habilitada para AUTO no momento (verifique o status das seguradoras).";
+  }
+  return { calculos, motivoZero };
 }
 
 export interface ResultadoCotacaoAggilizador {
@@ -118,7 +185,7 @@ export async function cotarAutoAggilizador(
   }
 
   // 0) token — login (PROD + Multicálculo).
-  const sessao = await comEtapa("token", () => loginAggilizador(credenciais), "autenticado no Aggilizador");
+  const sessao = await comEtapa("token", () => loginAggilizador(credenciais), "autenticado");
   // Só o Authorization por host; os demais headers (fiéis ao navegador) + TLS +
   // retry/diagnóstico vêm da camada `aggilizador.http`.
   const authProd = authHeader(sessao.tokenPrincipal); // JWT cru (sem "Bearer ")
@@ -188,32 +255,24 @@ export async function cotarAutoAggilizador(
   const { idIntegracao, versao } = await comEtapa(
     "calculo",
     async () => {
-      const [configs, escondidas] = await Promise.all([
+      // Config das seguradoras (host PROD) + ocultas (escondeLead) + status
+      // operacional por ramo (host MULTICÁLCULO). Status é OPCIONAL: se falhar,
+      // NÃO filtramos por ramo (fallback) em vez de zerar a cotação.
+      const [configs, escondidas, statusSeg] = await Promise.all([
         getProd<SeguradoraConfigItem[]>(AGGILIZADOR_PROD_API.seguradoraConfig),
         getProd<number[]>(AGGILIZADOR_PROD_API.escondeLead).catch(() => [] as number[]),
+        getMc<SeguradoraStatusItem[]>(AGGILIZADOR_MULTICALCULO_API.seguradoraStatus).catch(
+          () => [] as SeguradoraStatusItem[],
+        ),
       ]);
-      const ocultas = new Set(Array.isArray(escondidas) ? escondidas : []);
-      const calculos: CalculoSeguradora[] = (Array.isArray(configs) ? configs : [])
-        .filter((s) => s.ativo && s.credenciaisValidas && !ocultas.has(s.seguradora))
-        .map((s) => ({
-          ...COBERTURAS_PADRAO,
-          ativo: true,
-          nome: s.nomeSeguradora,
-          nomeSeguradora: s.nomeSeguradora,
-          login: s.login,
-          senha: s.senha,
-          seguradora: s.seguradora,
-          // ⚠️ VALIDAR-LIVE: formato observado do idIntegracao por seguradora.
-          idIntegracao: `_seguradora_${s.seguradora}_corretora_${sessao.corretoraId}_`,
-          percComissao: s.percComissao ?? 0,
-          percDesconto: s.percDesconto ?? 0,
-          configsGlobais: true,
-          credenciaisValidas: true,
-          valorDeNovo: automovel.valorDeNovo,
-        }));
-      if (calculos.length === 0) {
-        throw new Error("Nenhuma seguradora ativa/válida configurada no Aggilizador para esta corretora.");
-      }
+      const { calculos, motivoZero } = selecionarCalculosAuto(
+        configs,
+        escondidas,
+        statusSeg,
+        sessao.corretoraId,
+        automovel.valorDeNovo,
+      );
+      if (motivoZero) throw new Error(motivoZero);
       const payload: CalcularV2Payload = {
         cotacao: { segurado, calculos, automovel, coberturas: COBERTURAS_PADRAO },
       };

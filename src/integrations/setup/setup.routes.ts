@@ -9,12 +9,17 @@ import { z } from "zod";
 import { exigirAdmin, exigirCorretoraSelecionada } from "../../middlewares/authSupabase";
 import { logger } from "../../utils/logger";
 import { obterSetup, salvarProdutos, salvarSistema } from "./setup.service";
+import { SISTEMAS_PUBLICOS, SISTEMA_PADRAO, sistemaValido } from "../quote/sistemas.catalog";
 
 const router = Router();
 
 const sistemaSchema = z.object({
-  // Providers conhecidos (espelha AUTO_POR_SISTEMA do registry + Cláusula A do banco).
-  sistema: z.enum(["segfy", "aggilizador"]).default("segfy"),
+  // Aceita qualquer sistema do catálogo único (sem enum fixo → N sistemas).
+  sistema: z
+    .string()
+    .trim()
+    .default(SISTEMA_PADRAO)
+    .refine(sistemaValido, { message: "sistema de cotação desconhecido" }),
   url: z.string().trim().url("URL inválida").max(300).nullish(),
   email: z.string().trim().email("e-mail inválido").max(254),
   senha: z.string().min(1, "senha obrigatória").max(200),
@@ -22,6 +27,12 @@ const sistemaSchema = z.object({
 
 const produtosSchema = z.object({
   ramos: z.array(z.enum(["auto", "residencial", "vida", "empresarial", "saude"])).max(10),
+});
+
+// Catálogo público de sistemas de cotação (popula o select do front + capacidade
+// `exige2fa`). Não expõe nada sensível; basta admin. Sem escopo de corretora.
+router.get("/sistemas", exigirAdmin, (_req: Request, res: Response) => {
+  res.json({ ok: true, sistemas: SISTEMAS_PUBLICOS });
 });
 
 router.get("/", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {

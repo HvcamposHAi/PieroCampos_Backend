@@ -377,11 +377,12 @@ export async function cotarAuto(
 
   // 0) token de automação. Emite SEMPRE andamento→ok (inclusive no reuso de
   // token) via comEtapa — emissão simétrica evita "ok sem andamento" que
-  // confundia a leitura da etapa "Autenticação no Segfy".
+  // confundia a leitura da etapa "Autenticação". Mensagem NEUTRA (sem marca):
+  // o sistema de cotação é escolhido por corretora.
   const tk = await comEtapa(
     "token",
     async () => tokens ?? (await obterTokensSegfy(false, credenciais, sessao)),
-    tokens ? "token reutilizado" : "autenticado no Segfy",
+    tokens ? "token reutilizado" : "autenticado",
   );
   const { automationToken: token } = tk;
 

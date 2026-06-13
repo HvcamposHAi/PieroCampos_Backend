@@ -60,16 +60,39 @@ export interface AggilizadorPdocsResponse {
 
 // ── Config / lookups ─────────────────────────────────────────────────────────
 
-/** Item de /cfg/seguradora/config — credenciais por seguradora da corretora. */
+/**
+ * Item de /cfg/seguradora/config — credenciais por seguradora da corretora.
+ * ✅ Forma real confirmada no HAR (12/06): a maioria dos campos vem no TOPO
+ * (`login`, `senha`, `seguradora`, `ativo`, `idIntegracao` PRONTO), mas
+ * **`credenciaisValidas` só existe dentro de `configsSeg`** — por isso a leitura
+ * tolera os dois lugares (ver `valido()` em aggilizador.multicalculo).
+ */
 export interface SeguradoraConfigItem {
   nomeSeguradora: string;
   login: string;
   senha: string;
-  seguradora: number; // ID numérico interno
+  seguradora: number; // ID numérico interno (== seguradoraStatus.id)
   ativo: boolean;
-  credenciaisValidas: boolean;
-  percComissao: number | null;
-  percDesconto: number | null;
+  /** ⚠️ NO HAR vem só em `configsSeg.credenciaisValidas` (topo costuma faltar). */
+  credenciaisValidas?: boolean | null;
+  percComissao?: number | null;
+  percDesconto?: number | null;
+  /** idIntegracao já montado pela API (`_seguradora_{n}_corretora_{uuid}_`). */
+  idIntegracao?: string;
+  id?: string; // uuid da config (não confundir com `seguradora`)
+  /** Bloco aninhado: a fonte real de `credenciaisValidas`/`ativo` em muitos itens. */
+  configsSeg?: {
+    credenciaisValidas?: boolean | null;
+    ativo?: boolean;
+    usuario?: string | null;
+  };
+}
+
+/** Item de /app/seguradoraStatus/ — status operacional por seguradora/ramo. */
+export interface SeguradoraStatusItem {
+  id: number; // == SeguradoraConfigItem.seguradora
+  nome?: string;
+  autoStatus?: number; // 1=ativo, -1=inativo, 0=degradado
 }
 
 /** Resposta de /cadastros/cliente (pré-preenchimento; pode vir parcial/null). */

@@ -8,8 +8,8 @@ import { normalizarRamo } from "../../lib/roteiros";
 import { lerSistemaCotacao } from "../../services/segfy-credenciais.service";
 import type { QuoteProvider } from "./quote-provider.port";
 import { segfyAutoProvider } from "./segfy-auto.provider";
-import { aggilizadorAutoProvider } from "./aggilizador-auto.provider";
 import { naoAutomatizadoProvider } from "./nao-automatizado.provider";
+import { SISTEMAS } from "./sistemas.catalog";
 
 const REGISTRO: Record<Ramo, QuoteProvider> = {
   auto: segfyAutoProvider,
@@ -20,15 +20,17 @@ const REGISTRO: Record<Ramo, QuoteProvider> = {
 };
 
 /**
- * Provider AUTOMATIZADO por SISTEMA de cotação (multi-tenant: cada corretora
- * escolhe o seu em `segfy_credenciais.sistema`). Vale só onde o ramo já tem um
- * provider automatizado (hoje 'auto'); ramos não-auto ignoram o sistema (sempre
- * naoAutomatizado). Sistema desconhecido/ausente → Segfy (default seguro).
+ * Provider AUTOMATIZADO por SISTEMA de cotação — DERIVADO do catálogo único
+ * (`sistemas.catalog`), sem lista paralela. Multi-tenant: cada corretora escolhe
+ * o seu em `segfy_credenciais.sistema`. Vale só onde o ramo já tem provider
+ * automatizado (hoje 'auto'); ramos não-auto ignoram o sistema. Sistema
+ * desconhecido/ausente → Segfy (default seguro, via fallback em resolveProvider).
  */
-const AUTO_POR_SISTEMA: Record<string, QuoteProvider> = {
-  segfy: segfyAutoProvider,
-  aggilizador: aggilizadorAutoProvider,
-};
+const AUTO_POR_SISTEMA: Record<string, QuoteProvider> = Object.fromEntries(
+  Object.values(SISTEMAS)
+    .filter((s) => s.automatizado)
+    .map((s) => [s.id, s.provider]),
+);
 
 /**
  * Provider do ramo (regra por-RAMO, pura/síncrona). `normalizarRamo` colapsa
