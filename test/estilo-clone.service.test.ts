@@ -89,11 +89,20 @@ describe("parseConversa (export WhatsApp)", () => {
     expect(p.remetentes).toEqual(["João Corretor", "Cliente Maria"]);
     expect(p.porRemetente["João Corretor"]).toHaveLength(2);
   });
-  it("iOS: formato com colchetes", () => {
+  it("iOS: formato com colchetes [data, hora]", () => {
     const txt =
       "[12/06/2026, 14:32:11] João: Bora resolver\n[12/06/2026, 14:33:00] Maria: Ok";
     const p = parseConversa(txt)!;
     expect(p.remetentes).toContain("João");
+  });
+  it("colchetes [hora, data] (locale time-first do WhatsApp)", () => {
+    const txt =
+      "[11:07, 08/06/2026] Humberto Campos: Bom dia\n" +
+      "[11:09, 08/06/2026] Schu: blz\n" +
+      "[08:41, 09/06/2026] Humberto Campos: tudo bem?";
+    const p = parseConversa(txt)!;
+    expect(p.remetentes).toEqual(["Humberto Campos", "Schu"]);
+    expect(p.porRemetente["Humberto Campos"]).toHaveLength(2);
   });
   it("texto avulso (sem cabeçalho) → null", () => {
     expect(parseConversa("Opa tudo bem\nbora resolver isso rapidinho")).toBeNull();

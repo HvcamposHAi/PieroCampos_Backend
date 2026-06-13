@@ -110,8 +110,25 @@ export async function coletarAmostrasDaLinha(
 //   Android: "12/06/2026 14:32 - João Corretor: mensagem"
 //   iOS:     "[12/06/2026, 14:32:11] João Corretor: mensagem"
 // Linhas seguintes sem cabeçalho = continuação da mensagem anterior.
-const RE_LINHA_EXPORT =
-  /^\[?\d{1,2}\/\d{1,2}\/\d{2,4}[,]?\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp][Mm])?\]?\s*[-–]?\s*([^:]{1,60}?):\s(.*)$/;
+// Cabeçalho "iOS"/colchetes: "[11:07, 08/06/2026] Nome: msg" OU "[08/06/2026, 11:07:33] Nome: msg"
+// (data e hora em QUALQUER ordem dentro dos colchetes — varia por locale/SO).
+const RE_BRACKET = /^\[([^\]]{6,40})\]\s*([^:]{1,60}?):\s(.*)$/;
+// Cabeçalho "Android": "08/06/2026 11:07 - Nome: msg" (data hora - Nome:).
+const RE_DASH =
+  /^(\d{1,2}\/\d{1,2}\/\d{2,4}[,]?\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp][Mm])?)\s*[-–]\s*([^:]{1,60}?):\s(.*)$/;
+const RE_TEM_DATA = /\d{1,2}\/\d{1,2}\/\d{2,4}/;
+const RE_TEM_HORA = /\d{1,2}:\d{2}/;
+
+/** Extrai (remetente, corpo) de uma linha de export, nos dois formatos. null se não casar. */
+function casarLinhaExport(linha: string): { remetente: string; corpo: string } | null {
+  const mb = RE_BRACKET.exec(linha);
+  if (mb && RE_TEM_DATA.test(mb[1] ?? "") && RE_TEM_HORA.test(mb[1] ?? "")) {
+    return { remetente: (mb[2] ?? "").trim(), corpo: (mb[3] ?? "").trim() };
+  }
+  const md = RE_DASH.exec(linha);
+  if (md) return { remetente: (md[2] ?? "").trim(), corpo: (md[3] ?? "").trim() };
+  return null;
+}
 
 export interface ConversaParseada {
   remetentes: string[];
@@ -131,11 +148,10 @@ export function parseConversa(texto: string): ConversaParseada | null {
   let casou = 0;
 
   for (const linha of linhas) {
-    const m = RE_LINHA_EXPORT.exec(linha);
+    const m = casarLinhaExport(linha);
     if (m) {
       casou++;
-      const remetente = (m[1] ?? "").trim();
-      const corpo = (m[2] ?? "").trim();
+      const { remetente, corpo } = m;
       if (!remetente) continue;
       let arr = porRemetente[remetente];
       if (!arr) {
