@@ -111,6 +111,8 @@ export interface BuildSystemPromptInput {
   camposExcluidos?: string[];
   /** Perguntas customizadas da linha (anexadas como campos opcionais). Default = []. */
   camposCustom?: PerguntaCustom[];
+  /** Sistema de cotação da corretora — define os campos auto do roteiro. Default = segfy. */
+  sistema?: string;
 }
 
 const CONTEXTO_HOLDING_PADRAO = "MODO DE ATENDIMENTO: a equipe já está cuidando deste atendimento.";
@@ -130,7 +132,13 @@ const LINHA_ABERTURA_ATIVO =
  * claude.client. Esta parte muda a cada turno e por isso NÃO é cacheada.
  */
 export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string {
-  const roteiro = getRoteiroEfetivo(input.categoria, input.camposExcluidos, input.camposCustom);
+  const roteiro = getRoteiroEfetivo(
+    input.categoria,
+    input.camposExcluidos,
+    input.camposCustom,
+    "auto",
+    input.sistema,
+  );
   const modo: ModoBia = input.modo ?? "ativo";
   const partes: string[] = [];
 
@@ -154,6 +162,8 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
       input.dadosColetados,
       input.camposExcluidos,
       input.camposCustom,
+      "auto",
+      input.sistema,
     );
     partes.push(
       "CLIENTE RECORRENTE (REVISÃO DE DADOS): já temos os dados abaixo de um atendimento anterior. NÃO recomece o roteiro nem pergunte campo a campo.",

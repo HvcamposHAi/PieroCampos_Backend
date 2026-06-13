@@ -68,16 +68,23 @@ export interface Roteiro {
 }
 
 /**
- * Perguntas extras exigidas pelo MULTICÁLCULO do Segfy (Auto), com ÁRVORES DE
- * DECISÃO. A Bia coleta essas além dos campos comerciais; o mapeamento p/ a API
- * está em `segfy-cotacao.service.ts` (MAP_*). Campos condicionais ficam como
- * opcionais e a `dica` indica quando perguntar.
+ * Campos do ramo AUTO comuns a TODOS os sistemas (identificam segurado+veículo).
+ * Vêm SEMPRE primeiro no bloco específico de sistema.
+ */
+const CAMPOS_AUTO_COMUNS: CampoRoteiro[] = [
+  { chave: "cpf", rotulo: "CPF", obrigatorio: true, dica: "Obrigatório p/ a cotação (consulta do segurado). Peça com naturalidade e reforce a LGPD." },
+  { chave: "placa", rotulo: "Placa do veículo", obrigatorio: true, dica: "Identifica o veículo e a FIPE automaticamente" },
+];
+
+/**
+ * Bloco específico do MULTICÁLCULO do Segfy (Auto): questionário com ÁRVORES DE
+ * DECISÃO + profissão. O mapeamento p/ a API está em `segfy-cotacao.service.ts`
+ * (MAP_*). Campos condicionais ficam opcionais e a `dica` indica quando perguntar.
+ * O Segfy busca nome/nascimento/sexo na própria API → NÃO são coletados aqui.
  *
  * ⚠️ Espelhar no front (bot-scripts.ts) — ver nota no topo deste arquivo.
  */
-const PERGUNTAS_SEGFY_AUTO: CampoRoteiro[] = [
-  { chave: "cpf", rotulo: "CPF", obrigatorio: true, dica: "Obrigatório p/ a cotação no Segfy (consulta do segurado). Peça com naturalidade e reforce a LGPD." },
-  { chave: "placa", rotulo: "Placa do veículo", obrigatorio: true, dica: "Identifica o veículo e a FIPE automaticamente" },
+const CAMPOS_AUTO_SEGFY: CampoRoteiro[] = [
   { chave: "profissao", rotulo: "Profissão", obrigatorio: true },
   { chave: "garagem", rotulo: "Garagem na residência?", obrigatorio: false, dica: "Tem garagem/portão fechado em casa? sim/não" },
   { chave: "trabalha", rotulo: "Trabalha?", obrigatorio: false, dica: "Se SIM → perguntar garagem_trabalho" },
@@ -91,6 +98,41 @@ const PERGUNTAS_SEGFY_AUTO: CampoRoteiro[] = [
   { chave: "sexo_condutor_jovem", rotulo: "Sexo do condutor jovem", obrigatorio: false, dica: "Só se condutor_jovem=sim: masculino/feminino" },
   { chave: "idade_condutor_secundario", rotulo: "Idade do condutor jovem", obrigatorio: false, dica: "Só se condutor_jovem=sim: 18-24 ou 25" },
 ];
+
+/**
+ * Bloco específico do Aggilizador (Auto): SEM questionário (coberturas fixas no
+ * `calcularV2`), mas o segurado precisa de nascimento+sexo coletados na conversa
+ * (o Aggilizador não tem a API insured do Segfy). `estado_civil` já vem no bloco
+ * comercial do roteiro. Mapeamento em `aggilizador.mapper.ts`.
+ */
+const CAMPOS_AUTO_AGGILIZADOR: CampoRoteiro[] = [
+  { chave: "data_nascimento", rotulo: "Data de nascimento", obrigatorio: true, dica: "Obrigatória p/ a cotação no Aggilizador" },
+  { chave: "sexo", rotulo: "Sexo", obrigatorio: true, dica: "masculino/feminino — obrigatório p/ a cotação no Aggilizador" },
+];
+
+/**
+ * Campos do ramo AUTO por SISTEMA de cotação. Fonte ÚNICA (genérica): plugar um
+ * 3º sistema = adicionar uma entrada aqui (espelhar no front). Só `renovacao` e
+ * `seguro_novo` recebem este bloco (endosso/não-renovado seguem sem questionário).
+ */
+const CAMPOS_AUTO_POR_SISTEMA: Record<string, CampoRoteiro[]> = {
+  segfy: [...CAMPOS_AUTO_COMUNS, ...CAMPOS_AUTO_SEGFY],
+  aggilizador: [...CAMPOS_AUTO_COMUNS, ...CAMPOS_AUTO_AGGILIZADOR],
+};
+
+/** Sistema default p/ resolução de campos (FAIL-OPEN: roteiro mais rico = Segfy). */
+export const SISTEMA_CAMPOS_PADRAO = "segfy";
+
+/** Bloco default (Segfy) — referência direta evita `| undefined` do index access. */
+const CAMPOS_AUTO_DEFAULT: CampoRoteiro[] = [...CAMPOS_AUTO_COMUNS, ...CAMPOS_AUTO_SEGFY];
+
+/** Bloco de campos auto do sistema (default Segfy se desconhecido). */
+function camposAutoDoSistema(sistema: string | null | undefined): CampoRoteiro[] {
+  return CAMPOS_AUTO_POR_SISTEMA[sistema ?? SISTEMA_CAMPOS_PADRAO] ?? CAMPOS_AUTO_DEFAULT;
+}
+
+/** Categorias do ramo auto que recebem o bloco de campos por sistema. */
+const CATEGORIAS_AUTO_COM_SISTEMA: ReadonlySet<CategoriaConversa> = new Set(["renovacao", "seguro_novo"]);
 
 const RENOVACAO: Roteiro = {
   id: "renovacao",
@@ -110,7 +152,7 @@ const RENOVACAO: Roteiro = {
     { chave: "cep", rotulo: "CEP", obrigatorio: true, dica: "CEP onde o carro pernoita. Consulte (tool consultar_cep) e CONFIRME o logradouro com o cliente." },
     { chave: "numero", rotulo: "Número", obrigatorio: true, dica: "Número do endereço." },
     { chave: "complemento", rotulo: "Complemento", obrigatorio: false, dica: "Pergunte sempre (apto/bloco/casa); aceite 'sem complemento'." },
-    ...PERGUNTAS_SEGFY_AUTO,
+    // Bloco de campos por SISTEMA é anexado em getRoteiro (Segfy=questionário; Aggilizador=nasc/sexo).
   ],
 };
 
@@ -133,7 +175,7 @@ const SEGURO_NOVO: Roteiro = {
     { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true },
     { chave: "renovacao_outro_corretor", rotulo: "Vinha de outro corretor?", obrigatorio: false },
     { chave: "bonus", rotulo: "Bônus atual", obrigatorio: false },
-    ...PERGUNTAS_SEGFY_AUTO,
+    // Bloco de campos por SISTEMA é anexado em getRoteiro (Segfy=questionário; Aggilizador=nasc/sexo).
   ],
 };
 
@@ -299,9 +341,17 @@ export const ROTEIROS_POR_RAMO: Record<Ramo, Partial<Record<CategoriaConversa, R
 export function getRoteiro(
   categoria: CategoriaConversa | null | undefined,
   ramo: Ramo = RAMO_PADRAO,
+  sistema: string = SISTEMA_CAMPOS_PADRAO,
 ): Roteiro | null {
   if (!categoria) return null;
-  return ROTEIROS_POR_RAMO[ramo]?.[categoria] ?? null;
+  const base = ROTEIROS_POR_RAMO[ramo]?.[categoria] ?? null;
+  if (!base) return null;
+  // Anexa o bloco de campos do SISTEMA só no ramo auto e nas categorias que o
+  // usam (renovacao/seguro_novo). Default Segfy reproduz o roteiro de hoje.
+  if (ramo === "auto" && CATEGORIAS_AUTO_COM_SISTEMA.has(categoria)) {
+    return { ...base, campos: [...base.campos, ...camposAutoDoSistema(sistema)] };
+  }
+  return base;
 }
 
 /** Categorias que têm roteiro estruturado (as configuráveis na tela). */
@@ -321,12 +371,15 @@ export interface CatalogoCategoria {
 /**
  * Catálogo dos campos por categoria, para a tela do Admin escolher o que a Bia
  * pergunta. Fonte ÚNICA — o front consome daqui (não duplica em bot-scripts).
- * Inclui PERGUNTAS_SEGFY_AUTO (já embutidas em cada roteiro auto).
+ * Compõe o bloco de campos do SISTEMA (default segfy = questionário; aggilizador
+ * = nascimento/sexo) via getRoteiro.
  */
-export function getCatalogoCampos(ramo: Ramo = RAMO_PADRAO): CatalogoCategoria[] {
-  const mapa = ROTEIROS_POR_RAMO[ramo] ?? ROTEIROS_AUTO;
+export function getCatalogoCampos(
+  ramo: Ramo = RAMO_PADRAO,
+  sistema: string = SISTEMA_CAMPOS_PADRAO,
+): CatalogoCategoria[] {
   return CATEGORIAS_COM_ROTEIRO.flatMap((id) => {
-    const r = mapa[id];
+    const r = getRoteiro(id, ramo, sistema);
     return r ? [{ id, titulo: r.titulo, campos: r.campos }] : [];
   });
 }
@@ -350,8 +403,9 @@ export function getRoteiroEfetivo(
   excluidos: readonly string[] = [],
   custom: readonly PerguntaCustom[] = [],
   ramo: Ramo = RAMO_PADRAO,
+  sistema: string = SISTEMA_CAMPOS_PADRAO,
 ): Roteiro | null {
-  const base = getRoteiro(categoria, ramo);
+  const base = getRoteiro(categoria, ramo, sistema);
   if (!base) return null;
   const fora = new Set(excluidos);
   const campos = base.campos.filter((c) => c.obrigatorio || !fora.has(c.chave));
@@ -366,8 +420,9 @@ export function calcularProgresso(
   categoria: CategoriaConversa | null | undefined,
   dados: Record<string, unknown>,
   ramo: Ramo = RAMO_PADRAO,
+  sistema: string = SISTEMA_CAMPOS_PADRAO,
 ): { preenchidos: number; total: number; pendentesObrigatorios: CampoRoteiro[]; completo: boolean } {
-  const roteiro = getRoteiro(categoria, ramo);
+  const roteiro = getRoteiro(categoria, ramo, sistema);
   if (!roteiro) return { preenchidos: 0, total: 0, pendentesObrigatorios: [], completo: false };
   const obrig = roteiro.campos.filter((c) => c.obrigatorio);
   const preenchidos = obrig.filter((c) => dados[c.chave] != null && dados[c.chave] !== "").length;
@@ -388,8 +443,9 @@ export function montarResumoRevisao(
   excluidos: readonly string[] = [],
   custom: readonly PerguntaCustom[] = [],
   ramo: Ramo = RAMO_PADRAO,
+  sistema: string = SISTEMA_CAMPOS_PADRAO,
 ): string[] {
-  const roteiro = getRoteiroEfetivo(categoria, excluidos, custom, ramo);
+  const roteiro = getRoteiroEfetivo(categoria, excluidos, custom, ramo, sistema);
   if (!roteiro) return [];
   const linhas: string[] = [];
   for (const c of roteiro.campos) {
@@ -426,5 +482,11 @@ export const CHAVES_VALIDAS: ReadonlySet<string> = new Set([
     .flatMap((mapa) => Object.values(mapa))
     .filter((r): r is Roteiro => !!r)
     .flatMap((r) => r.campos.map((c) => c.chave)),
+  // Blocos de campos auto por SISTEMA saíram dos roteiros base → incluir o
+  // SUPERSET aqui (todas as chaves de todos os sistemas: questionário Segfy +
+  // data_nascimento/sexo do Aggilizador) p/ a whitelist de persistência.
+  ...Object.values(CAMPOS_AUTO_POR_SISTEMA)
+    .flat()
+    .map((c) => c.chave),
   ...CHAVES_AUTO,
 ]);

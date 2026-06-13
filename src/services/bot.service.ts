@@ -32,7 +32,7 @@ import {
   SYSTEM_PROMPT_BASE,
   type ModoBia,
 } from "../lib/system-prompt";
-import { obterConfigEfetiva } from "./agente-config.service";
+import { obterConfigEfetiva, lerSistemaDoCanal } from "./agente-config.service";
 import { logger } from "../utils/logger";
 import {
   classificarMotivoHandoff,
@@ -215,7 +215,8 @@ export async function gerarMensagemBia(
   const conversa = await carregarConversa(conversaId);
   if (!conversa) return null;
 
-  const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados);
+  const sistema = await lerSistemaDoCanal(conversa.canal_id);
+  const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados, "auto", sistema);
   const systemDinamico = buildSystemPromptDinamico({
     categoria: conversa.categoria,
     contextoRAG: "",
@@ -224,6 +225,7 @@ export async function gerarMensagemBia(
     proximoCampo: progresso.pendentesObrigatorios[0] ?? null,
     campoForcado: null,
     modo: "holding",
+    sistema,
     contextoHolding:
       "MODO DE ATENDIMENTO: o operador pediu que você (Bia) envie uma mensagem proativa ao cliente AGORA.",
     oferecerModalidade: false,
@@ -303,10 +305,11 @@ export function escolherCampoForcado(
   dadosBot: Record<string, unknown>,
   dadosColetados: Record<string, unknown>,
   categoria: CategoriaConversa | null,
+  sistema?: string,
 ): import("../lib/roteiros").CampoRoteiro | null {
   const fila = lerFilaForcada(dadosBot);
   if (fila.length === 0) return null;
-  const roteiro = getRoteiro(categoria);
+  const roteiro = getRoteiro(categoria, "auto", sistema);
   if (!roteiro) return null;
   for (const chave of fila) {
     const v = dadosColetados[chave];
@@ -397,9 +400,11 @@ export async function finalizarSeRoteiroCompleto(p: {
   conversaId: string;
   categoria: CategoriaConversa | null;
   dados: Record<string, unknown>;
+  /** Sistema da corretora (define os obrigatórios do auto). Default = segfy. */
+  sistema?: string;
 }): Promise<{ completo: boolean }> {
-  if (!p.categoria || !getRoteiro(p.categoria)) return { completo: false };
-  const progresso = calcularProgresso(p.categoria, p.dados);
+  if (!p.categoria || !getRoteiro(p.categoria, "auto", p.sistema)) return { completo: false };
+  const progresso = calcularProgresso(p.categoria, p.dados, "auto", p.sistema);
   if (!progresso.completo) return { completo: false };
 
   const sb = getSupabaseAdmin();
@@ -705,13 +710,17 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     });
   }
 
-  const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados);
+  // Sistema da corretora (Segfy/Aggilizador/…): define os campos auto do roteiro.
+  // FAIL-OPEN → segfy. Resolvido uma vez e reusado em progresso/prompt/finalização.
+  const sistema = await lerSistemaDoCanal(conversa.canal_id);
+  const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados, "auto", sistema);
   const proximoCampo = progresso.pendentesObrigatorios[0] ?? null;
   // Pedido do operador (fila campos_forcados em dados_bot): prioridade máxima.
   const campoForcado = escolherCampoForcado(
     conversa.dados_bot,
     conversa.dados_coletados,
     conversa.categoria,
+    sistema,
   );
   // Coleta concluída: a Bia pede a decisão de cotar (e ganha a tool confirmar_cotacao).
   const ehConfirmacao = conversa.estado === "aguardando_confirmacao_cotacao";
@@ -758,6 +767,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     revisaoPendente,
     camposExcluidos,
     camposCustom,
+    sistema,
   });
 
   // 3.2) Diretrizes aprendidas (Admin > Aprendizado): playbook destilado do
@@ -891,6 +901,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
         conversaId: conversa.id,
         categoria: conversa.categoria,
         dados: dadosPos,
+        sistema,
       });
     } else {
       // Cliente ainda não confirmou: mantém a revisão, com teto (na 2ª tentativa
@@ -945,6 +956,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     conversaId: conversa.id,
     categoria: conversa.categoria,
     dados: dadosMerge,
+    sistema,
   });
 }
 
@@ -1031,8 +1043,9 @@ export async function processarFormularioRecebido(
     return;
   }
 
-  // Drift guard: mescla só chaves do roteiro da conversa.
-  const roteiro = getRoteiro(conversa.categoria);
+  // Drift guard: mescla só chaves do roteiro da conversa (do SISTEMA da corretora).
+  const sistema = await lerSistemaDoCanal(conversa.canal_id);
+  const roteiro = getRoteiro(conversa.categoria, "auto", sistema);
   const validasDoRoteiro = new Set((roteiro?.campos ?? []).map((c) => c.chave));
   const novos: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(parsed.respostas)) {
@@ -1064,6 +1077,7 @@ export async function processarFormularioRecebido(
     conversaId: conversa.id,
     categoria: conversa.categoria,
     dados: dadosMerge,
+    sistema,
   });
 
   if (!completo) {

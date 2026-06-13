@@ -7,7 +7,6 @@ import {
   getRoteiroEfetivo,
   CHAVES_VALIDAS,
   normalizarRamo,
-  ROTEIROS,
 } from "./roteiros";
 
 const CAMPOS_AUTO_EXCLUSIVOS = [
@@ -21,9 +20,10 @@ const CAMPOS_AUTO_EXCLUSIVOS = [
 ];
 
 describe("roteiros multi-ramo", () => {
-  it("ramo omitido = auto (retrocompatível)", () => {
+  it("ramo omitido = auto + sistema omitido = segfy (retrocompatível)", () => {
     expect(getRoteiro("renovacao")).toEqual(getRoteiro("renovacao", "auto"));
-    expect(getRoteiro("renovacao")).toBe(ROTEIROS.renovacao);
+    // sistema default = segfy (roteiro composto idêntico)
+    expect(getRoteiro("renovacao")).toEqual(getRoteiro("renovacao", "auto", "segfy"));
   });
 
   it("getRoteiroEfetivo('renovacao') sem ramo == saída do auto", () => {

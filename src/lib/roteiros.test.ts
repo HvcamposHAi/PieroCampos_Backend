@@ -3,7 +3,12 @@
 // Ambos os lados travam o drift contra esta tabela; mudar um roteiro exige
 // atualizar os dois arquivos juntos. Categorias usam o ENUM do banco.
 import { describe, it, expect } from "vitest";
-import { ROTEIROS, CHAVES_VALIDAS } from "./roteiros";
+import { getCatalogoCampos, CHAVES_VALIDAS } from "./roteiros";
+
+// Roteiro EFETIVO do sistema default (segfy): o bloco de campos por sistema é
+// composto em getRoteiro/getCatalogoCampos, então o contrato (que inclui o
+// questionário Segfy) é validado contra a saída COMPOSTA, não o objeto base.
+const CATALOGO_SEGFY = getCatalogoCampos();
 
 const SEGFY: Record<string, boolean> = {
   cpf: true,
@@ -76,7 +81,7 @@ const CONTRATO: Record<string, Record<string, boolean>> = {
 describe("roteiros — contrato de catálogo (paridade com o front)", () => {
   for (const [cat, esperado] of Object.entries(CONTRATO)) {
     it(`'${cat}': chaves e flags obrigatorio conforme o contrato`, () => {
-      const roteiro = ROTEIROS[cat as keyof typeof ROTEIROS];
+      const roteiro = CATALOGO_SEGFY.find((c) => c.id === cat);
       expect(roteiro, `roteiro ${cat} ausente`).toBeTruthy();
       const real: Record<string, boolean> = {};
       for (const c of roteiro!.campos) real[c.chave] = c.obrigatorio;

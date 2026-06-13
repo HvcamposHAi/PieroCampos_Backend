@@ -20,20 +20,66 @@ import {
   CATEGORIAS_COM_ROTEIRO,
   getCatalogoCampos,
   getRoteiro,
+  SISTEMA_CAMPOS_PADRAO,
   type CatalogoCategoria,
   type PerguntaCustom,
 } from "../lib/roteiros";
+import { lerSistemaCotacao } from "./segfy-credenciais.service";
 import { logger } from "../utils/logger";
 
-/** Mapa por categoria → chaves de campos opcionais desligados. */
+/** Mapa por categoria → chaves de campos opcionais desligados (RESOLVIDO p/ 1 sistema). */
 export type CamposExcluidos = Record<string, string[]>;
-/** Mapa por categoria → perguntas customizadas da linha. */
+/** Mapa por categoria → perguntas customizadas da linha (RESOLVIDO p/ 1 sistema). */
 export type PerguntasCustomizadas = Record<string, PerguntaCustom[]>;
-/** Forma frouxa aceita na ENTRADA (id é opcional; o serviço normaliza). */
-export type PerguntasCustomizadasInput = Record<
-  string,
-  Array<{ id?: string; chave?: string; pergunta?: string; dica?: string | null }>
->;
+/**
+ * Forma CRUA persistida no jsonb: por categoria, ou um array LEGADO (vale p/ todos
+ * os sistemas) ou um objeto por SISTEMA `{ segfy: [...], aggilizador: [...] }`.
+ * A leitura tolera ambos; a escrita do front manda o aninhado.
+ */
+export type CamposExcluidosRaw = Record<string, string[] | Record<string, string[]>>;
+export type PerguntasCustomizadasRaw = Record<string, PerguntaCustom[] | Record<string, PerguntaCustom[]>>;
+/** Forma frouxa aceita na ENTRADA (id é opcional; o serviço normaliza). Aninhada OU legada. */
+type EntradaCustom = Array<{ id?: string; chave?: string; pergunta?: string; dica?: string | null }>;
+export type PerguntasCustomizadasInput = Record<string, EntradaCustom | Record<string, EntradaCustom>>;
+
+/** true se o valor é o formato ANINHADO por-sistema (objeto), não um array legado. */
+function ehAninhado(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * Resolve a fatia de UMA categoria para um sistema: array legado ⇒ vale p/ todos;
+ * objeto ⇒ a fatia do sistema (ou []). Genérico (string[] ou PerguntaCustom[]).
+ */
+function fatiaCategoria<T>(val: unknown, sistema: string): T[] {
+  if (Array.isArray(val)) return val as T[];
+  if (ehAninhado(val)) {
+    const s = val[sistema];
+    return Array.isArray(s) ? (s as T[]) : [];
+  }
+  return [];
+}
+
+/** Achata um mapa cru `{cat: array|{sistema:array}}` → `{cat: array}` para um sistema. */
+function resolverPorSistema<T>(raw: unknown, sistema: string): Record<string, T[]> {
+  const out: Record<string, T[]> = {};
+  if (!ehAninhado(raw)) return out;
+  for (const [cat, val] of Object.entries(raw)) {
+    const arr = fatiaCategoria<T>(val, sistema);
+    if (arr.length) out[cat] = arr;
+  }
+  return out;
+}
+
+/** Lê o sistema de cotação da corretora p/ resolução de campos (FAIL-OPEN → segfy). */
+async function lerSistemaCampos(corretoraId: string | null): Promise<string> {
+  if (!corretoraId) return SISTEMA_CAMPOS_PADRAO;
+  try {
+    return (await lerSistemaCotacao(corretoraId)) || SISTEMA_CAMPOS_PADRAO;
+  } catch {
+    return SISTEMA_CAMPOS_PADRAO;
+  }
+}
 
 export type TomVoz =
   | "proximo_caloroso"
@@ -88,13 +134,14 @@ export interface AgenteConfigRow {
   objetivo: Objetivo;
   emojis: Emojis;
   estilo_amostra: string | null;
-  campos_excluidos: CamposExcluidos;
-  perguntas_customizadas: PerguntasCustomizadas;
+  /** CRU: array legado OU `{sistema: [...]}` aninhado. */
+  campos_excluidos: CamposExcluidosRaw;
+  perguntas_customizadas: PerguntasCustomizadasRaw;
   atualizado_em: string | null;
   atualizado_por: string | null;
 }
 
-/** Config já resolvida (padrão+override) que o bot.service consome. */
+/** Config já resolvida (padrão+override + SISTEMA) que o bot.service consome. */
 export interface ConfigEfetiva {
   tomVoz: TomVoz;
   persona: string | null;
@@ -105,16 +152,21 @@ export interface ConfigEfetiva {
   objetivo: Objetivo;
   emojis: Emojis;
   estiloAmostra: string | null;
+  /** Já RESOLVIDOS p/ o `sistema` da corretora (formato plano {categoria: [...]}). */
   camposExcluidos: CamposExcluidos;
   perguntasCustomizadas: PerguntasCustomizadas;
+  /** Sistema de cotação da corretora (governa o roteiro de campos). */
+  sistema: string;
   temperature: number;
 }
 
 export interface AgenteConfigAdmin {
   padrao: AgenteConfigRow | null;
   linhas: Array<{ canal_id: string; apelido: string; config: AgenteConfigRow | null }>;
-  /** Catálogo de campos por categoria (fonte: roteiros.ts) para a tela. */
+  /** Catálogo de campos por categoria do SISTEMA da corretora (fonte: roteiros.ts). */
   catalogo: CatalogoCategoria[];
+  /** Sistema da corretora (o drawer edita a fatia deste sistema). */
+  sistema: string;
 }
 
 const COLUNAS =
@@ -161,8 +213,11 @@ export function mergeConfig(
     objetivo,
     emojis,
     estiloAmostra: preferir(override?.estilo_amostra, padrao?.estilo_amostra),
+    // CRUS aqui (podem ser aninhados por sistema); obterConfigEfetiva resolve p/
+    // o sistema da corretora. `sistema` é placeholder default — sobrescrito lá.
     camposExcluidos: comoMapa<string[]>(fonteCampos?.campos_excluidos),
     perguntasCustomizadas: comoMapa<PerguntaCustom[]>(fonteCampos?.perguntas_customizadas),
+    sistema: SISTEMA_CAMPOS_PADRAO,
     temperature: CRIATIVIDADE_TEMPERATURA[criatividade],
   };
 }
@@ -192,13 +247,33 @@ export async function obterConfigEfetiva(canalId: string | null): Promise<Config
       ? linhas.find((l) => l.canal_id === canalId && l.ativo !== false) ?? null
       : null;
     if (!padrao && !override) return null;
-    return mergeConfig(padrao, override);
+    const efetiva = mergeConfig(padrao, override);
+    // Resolve os campos da cotação para o SISTEMA da corretora (achata o aninhado
+    // por-sistema; array legado vale p/ todos). Assim o bot consome o formato plano.
+    const sistema = await lerSistemaCampos(corretoraId);
+    const fonteCampos = override ?? padrao;
+    return {
+      ...efetiva,
+      sistema,
+      camposExcluidos: resolverPorSistema<string>(fonteCampos?.campos_excluidos, sistema),
+      perguntasCustomizadas: resolverPorSistema<PerguntaCustom>(fonteCampos?.perguntas_customizadas, sistema),
+    };
   } catch (e) {
     logger.warn("[agente.cfg] exceção na leitura; sem personalização", {
       erro: (e as Error).message,
     });
     return null;
   }
+}
+
+/**
+ * Sistema de cotação da corretora DONA do canal (FAIL-OPEN → segfy). Independe de
+ * existir config do agente (resolve direto pela corretora do canal). O bot usa
+ * isto p/ montar o roteiro de campos do sistema certo.
+ */
+export async function lerSistemaDoCanal(canalId: string | null): Promise<string> {
+  const corretoraId = canalId ? await corretoraDoCanal(canalId) : null;
+  return lerSistemaCampos(corretoraId);
 }
 
 /** corretora_id do canal (isolamento da config por linha). null se não achar. */
@@ -234,24 +309,40 @@ export async function obterConfigAdmin(corretoraId: string): Promise<AgenteConfi
     apelido: k.apelido,
     config: configs.find((c) => c.canal_id === k.id) ?? null,
   }));
-  return { padrao, linhas, catalogo: getCatalogoCampos() };
+  // Catálogo e fatia editável seguem o SISTEMA da corretora (o drawer mostra os
+  // campos do sistema e edita campos_excluidos[categoria][sistema]).
+  const sistema = await lerSistemaCampos(corretoraId);
+  return { padrao, linhas, catalogo: getCatalogoCampos("auto", sistema), sistema };
+}
+
+/** Opcionais válidos de uma categoria PARA um sistema (obrigatórios nunca entram). */
+function opcionaisDoSistema(cat: string, sistema: string): Set<string> {
+  const roteiro = getRoteiro(cat as never, "auto", sistema);
+  return new Set((roteiro?.campos ?? []).filter((c) => !c.obrigatorio).map((c) => c.chave));
 }
 
 /**
- * Saneia os mapas por categoria antes de gravar:
- *  - campos_excluidos: mantém só categorias com roteiro e só chaves de campos
- *    OPCIONAIS conhecidos (obrigatórios NUNCA podem ser desligados — Segfy/LGPD).
- *  - perguntas_customizadas: força prefixo custom_, dedup por chave, limites.
+ * Saneia `campos_excluidos` no formato ANINHADO por sistema, PRESERVANDO as
+ * fatias de cada sistema. Tolera entrada LEGADA (array) validando contra o
+ * sistema default. Só chaves de campos OPCIONAIS conhecidos do (categoria,sistema)
+ * entram — obrigatórios NUNCA podem ser desligados (compliance/LGPD).
  */
-function sanearCamposExcluidos(bruto: CamposExcluidos | undefined): CamposExcluidos {
-  const out: CamposExcluidos = {};
+function sanearCamposExcluidos(bruto: CamposExcluidosRaw | undefined): CamposExcluidosRaw {
+  const out: CamposExcluidosRaw = {};
   for (const cat of CATEGORIAS_COM_ROTEIRO) {
-    const roteiro = getRoteiro(cat);
-    if (!roteiro) continue;
-    const opcionais = new Set(roteiro.campos.filter((c) => !c.obrigatorio).map((c) => c.chave));
-    const pedidos = Array.isArray(bruto?.[cat]) ? bruto![cat] : [];
-    const validos = [...new Set(pedidos)].filter((ch) => opcionais.has(ch));
-    if (validos.length > 0) out[cat] = validos;
+    const val = bruto?.[cat];
+    if (Array.isArray(val)) {
+      const ok = [...new Set(val)].filter((ch) => opcionaisDoSistema(cat, SISTEMA_CAMPOS_PADRAO).has(ch));
+      if (ok.length) out[cat] = ok; // mantém formato legado (array)
+    } else if (ehAninhado(val)) {
+      const porSistema: Record<string, string[]> = {};
+      for (const [sis, arr] of Object.entries(val)) {
+        if (!Array.isArray(arr)) continue;
+        const ok = [...new Set(arr)].filter((ch) => opcionaisDoSistema(cat, sis).has(ch));
+        if (ok.length) porSistema[sis] = ok;
+      }
+      if (Object.keys(porSistema).length) out[cat] = porSistema;
+    }
   }
   return out;
 }
@@ -259,26 +350,43 @@ function sanearCamposExcluidos(bruto: CamposExcluidos | undefined): CamposExclui
 const RE_CHAVE_CUSTOM = /^custom_[a-z0-9_]{1,40}$/;
 const MAX_CUSTOM_POR_CATEGORIA = 10;
 
-function sanearPerguntasCustom(bruto: PerguntasCustomizadasInput | undefined): PerguntasCustomizadas {
-  const out: PerguntasCustomizadas = {};
+/** Normaliza uma lista crua de perguntas custom (regex/dedup/limites). */
+function limparCustom(lista: EntradaCustom): PerguntaCustom[] {
+  const vistos = new Set<string>();
+  const limpas: PerguntaCustom[] = [];
+  for (const q of lista) {
+    const pergunta = (q?.pergunta ?? "").trim();
+    const chave = (q?.chave ?? "").trim();
+    if (!pergunta || !RE_CHAVE_CUSTOM.test(chave) || vistos.has(chave)) continue;
+    vistos.add(chave);
+    limpas.push({
+      id: q.id || chave,
+      chave,
+      pergunta: pergunta.slice(0, 200),
+      dica: q.dica ? String(q.dica).slice(0, 200) : null,
+    });
+    if (limpas.length >= MAX_CUSTOM_POR_CATEGORIA) break;
+  }
+  return limpas;
+}
+
+/** Saneia `perguntas_customizadas` aninhado por sistema, tolerando legado (array). */
+function sanearPerguntasCustom(bruto: PerguntasCustomizadasInput | undefined): PerguntasCustomizadasRaw {
+  const out: PerguntasCustomizadasRaw = {};
   for (const cat of CATEGORIAS_COM_ROTEIRO) {
-    const lista = Array.isArray(bruto?.[cat]) ? bruto![cat] : [];
-    const vistos = new Set<string>();
-    const limpas: PerguntaCustom[] = [];
-    for (const q of lista) {
-      const pergunta = (q?.pergunta ?? "").trim();
-      const chave = (q?.chave ?? "").trim();
-      if (!pergunta || !RE_CHAVE_CUSTOM.test(chave) || vistos.has(chave)) continue;
-      vistos.add(chave);
-      limpas.push({
-        id: q.id || chave,
-        chave,
-        pergunta: pergunta.slice(0, 200),
-        dica: q.dica ? String(q.dica).slice(0, 200) : null,
-      });
-      if (limpas.length >= MAX_CUSTOM_POR_CATEGORIA) break;
+    const val = bruto?.[cat];
+    if (Array.isArray(val)) {
+      const limpas = limparCustom(val);
+      if (limpas.length) out[cat] = limpas; // legado (array)
+    } else if (ehAninhado(val)) {
+      const porSistema: Record<string, PerguntaCustom[]> = {};
+      for (const [sis, arr] of Object.entries(val)) {
+        if (!Array.isArray(arr)) continue;
+        const limpas = limparCustom(arr as EntradaCustom);
+        if (limpas.length) porSistema[sis] = limpas;
+      }
+      if (Object.keys(porSistema).length) out[cat] = porSistema;
     }
-    if (limpas.length > 0) out[cat] = limpas;
   }
   return out;
 }
@@ -296,7 +404,8 @@ export interface SalvarConfigInput {
   objetivo: Objetivo;
   emojis: Emojis;
   estilo_amostra?: string | null;
-  campos_excluidos?: CamposExcluidos;
+  /** Aninhado por sistema `{cat:{sistema:[...]}}` (ou legado array). */
+  campos_excluidos?: CamposExcluidosRaw;
   perguntas_customizadas?: PerguntasCustomizadasInput;
   ativo?: boolean;
   porEmail?: string | null;
