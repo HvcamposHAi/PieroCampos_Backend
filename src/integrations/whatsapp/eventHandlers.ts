@@ -23,6 +23,7 @@ import { lerTipoCanal } from "../../services/gestor/gestor-identidade.service";
 import { montarMensagemAlerta, type MotivoHandoff } from "../../services/handoff.service";
 import { logger } from "../../utils/logger";
 import { subirAudioWhatsapp } from "./audio-storage";
+import { capturarMensagemOperador } from "./estilo-captura";
 import { enfileirarCampoForcado } from "./conversas.dados";
 import {
   atualizarCanal,
@@ -338,7 +339,24 @@ export function registrarHandlers(
       env.GESTOR_ASSIST_ENABLED && (await lerTipoCanal(canalId)) === "gestor";
     for (const m of messages) {
       try {
-        if (m.key.fromMe) continue; // saída — não processamos como entrada
+        if (m.key.fromMe) {
+          // CAPTURA DE ESTILO (gated): mensagem que o operador digitou DE FATO no
+          // WhatsApp (fromMe). capturarMensagemOperador descarta as que SAÍRAM da
+          // plataforma (Bia/composer) pelo id — só fica o que o humano escreveu.
+          // Só ao vivo (não backlog) e best-effort (nunca afeta o pipeline).
+          if (env.ESTILO_CAPTURA_ENABLED && type === "notify" && !m.key.remoteJid?.endsWith("@g.us")) {
+            const textoProprio = extrairTexto(m);
+            if (textoProprio) {
+              void capturarMensagemOperador({
+                canalId,
+                messageId: m.key.id ?? null,
+                texto: textoProprio,
+                enviadaEm: m.messageTimestamp ? new Date(Number(m.messageTimestamp) * 1000) : undefined,
+              });
+            }
+          }
+          continue; // saída — não processamos como entrada
+        }
         if (!m.key.remoteJid) continue;
         if (m.key.remoteJid.endsWith("@g.us")) continue; // ignora grupos por enquanto
         // Backlog ("append"): só processa se for recente (janela de 24h).

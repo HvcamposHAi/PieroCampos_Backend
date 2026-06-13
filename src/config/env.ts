@@ -137,6 +137,25 @@ const schema = z
     // Token compartilhado p/ o endpoint /api/aprendizado/cron (pinger externo).
     // Vazio → endpoint cron desabilitado (só o botão do Admin dispara).
     APRENDIZADO_CRON_TOKEN: z.string().optional().default(""),
+    // ── Clonagem AUTOMÁTICA do estilo do operador (Admin > Bia > Clonar estilo) ──
+    // Gate MESTRE da geração assistida do campo `estilo_amostra`: o admin clica
+    // "Gerar automaticamente" e o backend colhe mensagens reais do operador
+    // (origem='operador'), redige PII e destila um perfil de estilo via Claude para
+    // ele REVISAR e salvar. default false = deploy INERTE: a rota /api/agente/estilo/gerar
+    // responde 404 e NADA muda — o campo continua editável manualmente como hoje.
+    // Não toca o hot-path da Bia (só muda COMO o campo é preenchido). Reusa a mesma
+    // ANTHROPIC_API_KEY/SDK da Bia (sem provedor externo).
+    ESTILO_CLONE_ENABLED: boolDeString.default(false),
+    // Captura CONTÍNUA das mensagens que o operador digita DE FATO no WhatsApp da
+    // linha (fromMe cujo id NÃO saiu da plataforma = humano, não a Bia). Alimenta o
+    // corpus `operador_estilo_corpus` que a fonte "linha" destila — o jeito REAL do
+    // operador, não dado sintético/IA. default false = INERTE: o handler do Baileys
+    // ignora fromMe como hoje (zero captura, zero escrita nova). Ligar só após rodar
+    // a cláusula do corpus. Independe de ESTILO_CLONE_ENABLED (captura vs geração).
+    ESTILO_CAPTURA_ENABLED: boolDeString.default(false),
+    // Modelo do destilador de estilo (offline). Vazio → usa BIA_MODEL. Reusa ANTHROPIC_API_KEY.
+    ESTILO_MODEL: z.string().optional().default(""),
+    ESTILO_MAX_TOKENS: numComPadrao(1024),
     // Transcrição de notas de voz (STT). Desligado por padrão: enquanto false,
     // áudio sem caption é ignorado como hoje (zero HTTP / zero escrita nova). O
     // Claude NÃO transcreve áudio (Messages API só aceita texto/imagem), por isso

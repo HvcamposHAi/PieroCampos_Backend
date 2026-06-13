@@ -25,6 +25,7 @@ import {
   registrarMensagemSaidaBotDocumento,
 } from "./persistence";
 import { useSupabaseAuthState } from "./supabaseAuthState";
+import { marcarEnvioProprio } from "./estilo-captura";
 
 interface SessionEntry {
   canalId: string;
@@ -259,6 +260,7 @@ class SessionManager {
     const entry = await this.garantirConectado(input.canalId);
     const resultado = await entry.sock.sendMessage(input.jid, { text: input.texto });
     const messageId = resultado?.key?.id ?? "";
+    marcarEnvioProprio(messageId); // anti-race: não capturar nosso próprio envio como "humano"
     await registrarMensagemSaida({
       canalId: input.canalId,
       conversaId: input.conversaId,
@@ -310,7 +312,8 @@ class SessionManager {
       jid = proprioE164 ? e164ParaJid(proprioE164) : null;
     }
     if (!jid) throw new Error("alerta_sem_destino");
-    await entry.sock.sendMessage(jid, { text: input.texto });
+    const resultado = await entry.sock.sendMessage(jid, { text: input.texto });
+    marcarEnvioProprio(resultado?.key?.id ?? ""); // não capturar o eco do alerta como "humano"
   }
 
   /**
@@ -326,6 +329,7 @@ class SessionManager {
     const entry = await this.garantirConectado(input.canalId);
     const resultado = await entry.sock.sendMessage(input.jid, { text: input.texto });
     const messageId = resultado?.key?.id ?? "";
+    marcarEnvioProprio(messageId); // anti-race: não capturar nosso próprio envio como "humano"
     await registrarMensagemSaidaBot({
       canalId: input.canalId,
       conversaId: input.conversaId,
@@ -356,6 +360,7 @@ class SessionManager {
       caption: input.caption,
     });
     const messageId = resultado?.key?.id ?? "";
+    marcarEnvioProprio(messageId); // anti-race: não capturar nosso próprio envio como "humano"
     await registrarMensagemSaidaBotDocumento({
       canalId: input.canalId,
       conversaId: input.conversaId,
@@ -379,7 +384,9 @@ class SessionManager {
   }): Promise<{ messageId: string }> {
     const entry = await this.garantirConectado(input.canalId);
     const resultado = await entry.sock.sendMessage(input.jid, { text: input.texto });
-    return { messageId: resultado?.key?.id ?? "" };
+    const messageId = resultado?.key?.id ?? "";
+    marcarEnvioProprio(messageId);
+    return { messageId };
   }
 
   /** Envia um DOCUMENTO (ex.: PDF de apólice) ao gestor. NÃO persiste em `mensagens`. */
@@ -398,7 +405,9 @@ class SessionManager {
       mimetype: input.mimetype,
       caption: input.caption,
     });
-    return { messageId: resultado?.key?.id ?? "" };
+    const messageId = resultado?.key?.id ?? "";
+    marcarEnvioProprio(messageId);
+    return { messageId };
   }
 
   /** Envia uma IMAGEM (ex.: gráfico PNG) ao gestor. NÃO persiste em `mensagens`. */
@@ -413,7 +422,9 @@ class SessionManager {
       image: input.imagem,
       caption: input.caption,
     });
-    return { messageId: resultado?.key?.id ?? "" };
+    const messageId = resultado?.key?.id ?? "";
+    marcarEnvioProprio(messageId);
+    return { messageId };
   }
 
   /**
