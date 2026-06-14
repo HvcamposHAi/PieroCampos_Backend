@@ -182,6 +182,22 @@ const schema = z
     // Geração de GRÁFICOS do Copiloto (2º incremento, via Playwright). default false.
     // INERTE nesta fase: a tool de gráfico não é oferecida ao modelo enquanto off.
     GESTOR_GRAFICO_ENABLED: boolDeString.default(false),
+    // ── Descoberta & Forja de Integrações (ADI) — agente que descobre portais ──
+    // Gate da CAPTURA/INFERÊNCIA (roda no daemon local, nunca no Render). default
+    // false = deploy INERTE: rotas de descoberta respondem 404 e nenhum browser de
+    // descoberta sobe. Liga só na máquina do operador (igual SEGFY_SCRAPING_ENABLED).
+    DESCOBERTA_ENABLED: boolDeString.default(false),
+    // Gate da EXECUÇÃO por adapter gerado. default false = FAIL-CLOSED: `resolveProvider`
+    // NUNCA consulta adapter_spec e mantém o caminho legado (Segfy/Aggilizador) byte-a-
+    // byte. Efetivo por corretora = esta env E o toggle `descoberta_config.exec_ativo`.
+    DESCOBERTA_EXEC_ENABLED: boolDeString.default(false),
+    // Modelo do inferenciador de premissas (analisa HAR/DOM). Vazio → usa BIA_MODEL.
+    DESCOBERTA_LLM_MODEL: z.string().optional().default(""),
+    DESCOBERTA_LLM_MAX_TOKENS: numComPadrao(4096),
+    // Token compartilhado do DAEMON local de descoberta (igual APOLICE_AGENT_TOKEN):
+    // o agente na máquina do operador autentica com `x-cron-token` para pegar/reportar
+    // jobs de descoberta. Vazio → rotas do agente respondem 404 (desabilitadas).
+    DESCOBERTA_AGENT_TOKEN: z.string().optional().default(""),
     // Multi-tenant (SaaS). Corretora "seed" (Piero de Campos) — uuid LITERAL fixo
     // usado no backfill, nos defaults de persistência e nos testes. Deve casar com
     // a linha semeada na migração `corretoras`. Não trocar sem re-backfillar.

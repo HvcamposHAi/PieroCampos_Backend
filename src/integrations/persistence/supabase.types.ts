@@ -147,6 +147,149 @@ export interface Database {
         };
         Relationships: [];
       };
+      // ── Descoberta & Forja de Integrações (ADI) — cláusulas A–D ──────────
+      pagina_contrato: {
+        Row: {
+          id: string;
+          corretora_id: string;
+          sistema: string;
+          ramo: string;
+          operacao: string;
+          url_base: string | null;
+          versao: number;
+          openapi: Json;
+          premissas: Json;
+          ramos_disponiveis: Json;
+          seguranca: Json;
+          fluxo: Json;
+          status: string;
+          aprovado_por: string | null;
+          aprovado_em: string | null;
+          criado_em: string;
+          atualizado_em: string;
+        };
+        Insert: {
+          id?: string;
+          corretora_id: string;
+          sistema: string;
+          ramo: string;
+          operacao?: string;
+          url_base?: string | null;
+          versao?: number;
+          openapi?: Json;
+          premissas?: Json;
+          ramos_disponiveis?: Json;
+          seguranca?: Json;
+          fluxo?: Json;
+          status?: string;
+          aprovado_por?: string | null;
+          aprovado_em?: string | null;
+        };
+        Update: {
+          openapi?: Json;
+          premissas?: Json;
+          ramos_disponiveis?: Json;
+          seguranca?: Json;
+          fluxo?: Json;
+          status?: string;
+          aprovado_por?: string | null;
+          aprovado_em?: string | null;
+          atualizado_em?: string;
+        };
+        Relationships: [];
+      };
+      adapter_spec: {
+        Row: {
+          id: string;
+          corretora_id: string;
+          contrato_id: string;
+          sistema: string;
+          ramo: string;
+          operacao: string;
+          spec: Json;
+          versao: number;
+          ativo: boolean;
+          status: string;
+          criado_em: string;
+          atualizado_em: string;
+        };
+        Insert: {
+          id?: string;
+          corretora_id: string;
+          contrato_id: string;
+          sistema: string;
+          ramo: string;
+          operacao?: string;
+          spec: Json;
+          versao?: number;
+          ativo?: boolean;
+          status?: string;
+        };
+        Update: {
+          spec?: Json;
+          ativo?: boolean;
+          status?: string;
+          atualizado_em?: string;
+        };
+        Relationships: [];
+      };
+      descoberta_execucao: {
+        Row: {
+          id: string;
+          corretora_id: string;
+          contrato_id: string | null;
+          sistema: string;
+          ramo: string | null;
+          tipo: string;
+          status: string;
+          etapa: string | null;
+          har_ref: string | null;
+          resumo: Json | null;
+          custo_tokens: number | null;
+          erro: string | null;
+          criado_em: string;
+        };
+        Insert: {
+          id?: string;
+          corretora_id: string;
+          contrato_id?: string | null;
+          sistema: string;
+          ramo?: string | null;
+          tipo?: string;
+          status?: string;
+          etapa?: string | null;
+          har_ref?: string | null;
+          resumo?: Json | null;
+          custo_tokens?: number | null;
+          erro?: string | null;
+        };
+        Update: {
+          status?: string;
+          etapa?: string | null;
+          resumo?: Json | null;
+          erro?: string | null;
+        };
+        Relationships: [];
+      };
+      descoberta_config: {
+        Row: {
+          corretora_id: string;
+          exec_ativo: boolean;
+          atualizado_em: string;
+          atualizado_por: string | null;
+        };
+        Insert: {
+          corretora_id: string;
+          exec_ativo?: boolean;
+          atualizado_por?: string | null;
+        };
+        Update: {
+          exec_ativo?: boolean;
+          atualizado_por?: string | null;
+          atualizado_em?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -10,6 +10,7 @@ import type { QuoteProvider } from "./quote-provider.port";
 import { segfyAutoProvider } from "./segfy-auto.provider";
 import { naoAutomatizadoProvider } from "./nao-automatizado.provider";
 import { SISTEMAS } from "./sistemas.catalog";
+import { lerAdapterAtivoProvider } from "../descoberta/descoberta.service";
 
 const REGISTRO: Record<Ramo, QuoteProvider> = {
   auto: segfyAutoProvider,
@@ -58,5 +59,10 @@ export async function resolveProvider(
   const base = getProvider(ramo);
   if (!base.automatizado) return base; // ramo não-auto: sistema é irrelevante
   const sistema = await lerSistemaCotacao(corretoraId);
+  // ADI: adapter gerado pela descoberta tem prioridade quando aprovado+ativo.
+  // FAIL-CLOSED: gated por env + toggle DB; null em qualquer falha/flag-off →
+  // segue no caminho legado byte-a-byte (Segfy/Aggilizador). Ver descoberta.service.
+  const adapter = await lerAdapterAtivoProvider(corretoraId, sistema, normalizarRamo(ramo));
+  if (adapter) return adapter;
   return AUTO_POR_SISTEMA[sistema] ?? segfyAutoProvider;
 }
