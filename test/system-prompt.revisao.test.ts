@@ -85,7 +85,9 @@ describe("system-prompt — disciplina de coleta (BASE) + telefone derivado", ()
 import { SYSTEM_PROMPT_BASE } from "../src/lib/system-prompt";
 describe("SYSTEM_PROMPT_BASE — regras absolutas novas", () => {
   it("proíbe perguntas fora do roteiro e encerrar com obrigatório pendente", () => {
-    expect(SYSTEM_PROMPT_BASE).toMatch(/SOMENTE os campos listados em "CAMPOS DO ROTEIRO"/);
+    expect(SYSTEM_PROMPT_BASE).toMatch(/EXCLUSIVAMENTE os campos listados em "CAMPOS DO ROTEIRO"/);
+    // proíbe inventar perguntas fora do roteiro (ex.: filhos, condutor)
+    expect(SYSTEM_PROMPT_BASE).toMatch(/condutor principal\/adicional/);
     expect(SYSTEM_PROMPT_BASE).toMatch(/NUNCA.*repassar para a equipe.*obrigatório/is);
   });
   it("telefone = número do WhatsApp (registrar + confirmar)", () => {

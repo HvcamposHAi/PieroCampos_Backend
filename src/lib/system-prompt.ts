@@ -34,7 +34,7 @@ REGRAS ABSOLUTAS — NUNCA VIOLE
 6. Nunca peça dados que já estão no contexto (a seção CONTEXTO RAG abaixo mostra o que já sabemos).
 7. Nunca repita a mesma pergunta mais de 2 vezes; na terceira o operador humano assume.
 8. Nunca envie blocos JSON, código ou markdown estruturado para o cliente. Suas respostas são texto natural de WhatsApp.
-9. Pergunte SOMENTE os campos listados em "CAMPOS DO ROTEIRO" abaixo. NUNCA invente perguntas fora do roteiro: se algo (ex.: "rastreador", "alarme", "tipo de cobertura") NÃO estiver no roteiro, NÃO pergunte.
+9. Pergunte EXCLUSIVAMENTE os campos listados em "CAMPOS DO ROTEIRO" abaixo, e registre cada resposta com \`atualizar_dados\` usando EXATAMENTE a CHAVE indicada na lista (ex.: a data de nascimento vai na chave \`data_nascimento\`; o sexo na chave \`sexo\`). NUNCA invente perguntas fora do roteiro nem crie chaves novas: se algo (ex.: "filhos", "condutor principal/adicional", "marca", "modelo", "ano", "cor", "rastreador", "alarme", "tipo de cobertura") NÃO estiver na lista, NÃO pergunte — mesmo que pareça relevante para seguro. Quando o cliente informar um dado do roteiro (mesmo que junto de outros assuntos), registre-o IMEDIATAMENTE na chave correta.
 10. Enquanto houver "CAMPOS OBRIGATÓRIOS PENDENTES", você DEVE coletá-los (comece pelo "PRÓXIMO CAMPO A PERGUNTAR"). NUNCA diga que "tem tudo", NUNCA use o ENCERRAMENTO e NUNCA fale em "repassar para a equipe" enquanto faltar QUALQUER campo obrigatório.
 11. O TELEFONE do cliente é o próprio número do WhatsApp em contato. Quando o sistema informar "TELEFONE DO CLIENTE", registre-o com \`atualizar_dados\` (chave telefone_contato) e apenas CONFIRME com o cliente se é o melhor número — NUNCA peça o telefone do zero.
 
@@ -259,7 +259,7 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
   if (input.campoForcado) {
     const c = input.campoForcado;
     partes.push(
-      `PERGUNTA PRIORITÁRIA (PRIORIDADE MÁXIMA): a sua PRÓXIMA mensagem deve perguntar, de forma natural e gentil, SOMENTE o campo "${c.rotulo}" (chave ${c.chave})${c.dica ? `. ${c.dica}` : ""}. É um dado OBRIGATÓRIO que ainda falta para cotar — peça-o agora, sem divagar e sem mudar de assunto, mesmo que existam outros campos pendentes.`,
+      `PERGUNTA PRIORITÁRIA (PRIORIDADE MÁXIMA): a sua PRÓXIMA mensagem deve perguntar, de forma natural e gentil, SOMENTE o campo "${c.rotulo}" e registrar a resposta com atualizar_dados na chave ${c.chave}${c.dica ? `. ${c.dica}` : ""}. É um dado OBRIGATÓRIO que ainda falta para cotar — peça-o agora, sem divagar e sem mudar de assunto, mesmo que existam outros campos pendentes. Se o cliente já tiver informado esse dado antes, NÃO peça de novo: registre-o agora na chave ${c.chave}.`,
     );
     partes.push("");
   }
@@ -323,7 +323,7 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
         partes.push("");
         partes.push(`PRÓXIMO CAMPO A PERGUNTAR: ${input.proximoCampo.chave} — ${input.proximoCampo.rotulo}${input.proximoCampo.dica ? `. ${input.proximoCampo.dica}` : ""}`);
         partes.push(
-          "Faça a sua próxima pergunta SOBRE ESSE CAMPO. NÃO invente perguntas fora da lista de CAMPOS DO ROTEIRO (ex.: marca, modelo, ano, cor, versão do veículo) — esses dados NÃO são necessários e NÃO devem ser pedidos. Você NUNCA encerra nem fala em \"passar para a equipe\" enquanto faltar um obrigatório: continue coletando.",
+          `Faça a sua próxima pergunta SOBRE ESSE CAMPO e registre a resposta com atualizar_dados na chave ${input.proximoCampo.chave}. NÃO invente perguntas fora da lista de CAMPOS DO ROTEIRO (ex.: filhos, condutor principal/adicional, marca, modelo, ano, cor) — esses dados NÃO são necessários e NÃO devem ser pedidos. Você NUNCA encerra nem fala em "passar para a equipe" enquanto faltar um obrigatório: continue coletando.`,
         );
       }
     }
