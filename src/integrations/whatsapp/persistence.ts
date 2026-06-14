@@ -13,6 +13,7 @@
 import { logger } from "../../utils/logger";
 import { getSupabaseAdmin } from "./supabase";
 import { getRoteiro, type CategoriaConversa } from "../../lib/roteiros";
+import { lerSistemaDoCanal } from "../../services/agente-config.service";
 import { CORRETORA_SEED_ID } from "../persistence/supabase-persistence";
 import type { CanalRow, CanalUpdate, ConversaRow, MensagemInsert } from "./wa.types";
 
@@ -264,12 +265,18 @@ const ESTADOS_REABRE_REVISAO: ReadonlySet<string> = new Set([
   "apolice_emitida",
 ]);
 
-/** True se há dados de roteiro reaproveitáveis (categoria com roteiro + ≥1 campo preenchido). Pura. */
+/**
+ * True se há dados de roteiro reaproveitáveis (categoria com roteiro + ≥1 campo
+ * preenchido). O conjunto de campos depende do SISTEMA de cotação (Aggilizador
+ * coleta data_nascimento/sexo que o Segfy não tem) — sem `sistema` cai no default
+ * (Segfy). Pura.
+ */
 export function temDadosReaproveitaveis(
   dados: Record<string, unknown>,
   categoria: string | null | undefined,
+  sistema?: string | null,
 ): boolean {
-  const roteiro = getRoteiro(categoria as CategoriaConversa | null);
+  const roteiro = getRoteiro(categoria as CategoriaConversa | null, undefined, sistema ?? undefined);
   if (!roteiro) return false;
   return roteiro.campos.some((c) => {
     const v = dados[c.chave];
@@ -286,11 +293,12 @@ export function deveReabrirEmRevisao(
   dadosBot: Record<string, unknown>,
   dadosColetados: Record<string, unknown>,
   categoria: string | null | undefined,
+  sistema?: string | null,
 ): boolean {
   return (
     ESTADOS_REABRE_REVISAO.has(estado) &&
     (dadosBot as { revisao_pendente?: unknown }).revisao_pendente !== true &&
-    temDadosReaproveitaveis(dadosColetados, categoria)
+    temDadosReaproveitaveis(dadosColetados, categoria, sistema)
   );
 }
 
@@ -304,6 +312,7 @@ export function deveReabrirEmRevisao(
 async function buscarDadosAnteriores(
   clienteId: string,
   corretoraId: string,
+  sistema?: string | null,
 ): Promise<{ dadosColetados: Record<string, unknown>; categoria: CategoriaConversa } | null> {
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
@@ -319,7 +328,7 @@ async function buscarDadosAnteriores(
   if (error || !data) return null;
   const row = data as { dados_coletados: unknown; categoria: string | null };
   const dados = comoObjeto(row.dados_coletados);
-  if (!temDadosReaproveitaveis(dados, row.categoria)) return null;
+  if (!temDadosReaproveitaveis(dados, row.categoria, sistema)) return null;
   return { dadosColetados: dados, categoria: row.categoria as CategoriaConversa };
 }
 
@@ -330,6 +339,9 @@ async function obterOuCriarConversaAberta(
   tenant: CanalTenant,
 ): Promise<ConversaRow> {
   const sb = getSupabaseAdmin();
+  // Sistema de cotação da corretora dona do canal — decide quais campos do roteiro
+  // contam como reaproveitáveis (Aggilizador inclui data_nascimento/sexo).
+  const sistema = await lerSistemaDoCanal(canalId);
   const { data: existente, error: errSel } = await sb
     .from("conversas")
     .select("id, canal_id, cliente_id, estado, dados_coletados, dados_bot, categoria")
@@ -350,7 +362,7 @@ async function obterOuCriarConversaAberta(
     // conversa em modo REVISÃO (reaproveita os próprios dados desta conversa).
     // Só em estados terminais, com dados a revisar e se ainda não está em revisão.
     const dadosBot = comoObjeto(row.dados_bot);
-    if (deveReabrirEmRevisao(row.estado, dadosBot, comoObjeto(row.dados_coletados), row.categoria)) {
+    if (deveReabrirEmRevisao(row.estado, dadosBot, comoObjeto(row.dados_coletados), row.categoria, sistema)) {
       const novoDadosBot = { ...dadosBot, revisao_pendente: true, reuso_de_dados: true };
       await sb
         .from("conversas")
@@ -373,7 +385,7 @@ async function obterOuCriarConversaAberta(
   // Conversa NOVA — Parte A: se o cliente já tem dados de um atendimento anterior
   // encerrado, semeia a conversa em modo REVISÃO (apresentar tudo de uma vez e
   // perguntar se mudou algo); senão, começa do zero como antes.
-  const anterior = await buscarDadosAnteriores(clienteId, tenant.corretoraId);
+  const anterior = await buscarDadosAnteriores(clienteId, tenant.corretoraId, sistema);
   // Tenant herdado do canal: corretora (isolamento) + ramo padrão da linha (decide
   // o roteiro/provider). ramo NULL → o bot trata como auto (retrocompat).
   const tenantCols = { corretora_id: tenant.corretoraId, ramo: tenant.ramoPadrao };

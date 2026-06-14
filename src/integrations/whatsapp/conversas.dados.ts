@@ -8,6 +8,7 @@
  * rotas /api/wa/conversas/:id/*. service_role (getSupabaseAdmin).
  */
 import { getRoteiro } from "../../lib/roteiros";
+import { lerSistemaDoCanal } from "../../services/agente-config.service";
 import { cpfValido, formatarCpf } from "../../lib/cpf";
 import { normalizarTelefoneBr } from "../../lib/telefone";
 import { logger } from "../../utils/logger";
@@ -34,6 +35,8 @@ function comoArray(v: unknown): unknown[] {
 export interface ConversaParaEdicao {
   id: string;
   categoria: string | null;
+  /** Canal dono da conversa — usado p/ resolver o SISTEMA de cotação (roteiro por-sistema). */
+  canal_id: string | null;
   operador_id: string | null;
   dados_coletados: Record<string, unknown>;
   dados_bot: Record<string, unknown>;
@@ -45,7 +48,7 @@ export async function carregarConversaParaEdicao(
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
     .from("conversas")
-    .select("id, categoria, operador_id, dados_coletados, dados_bot")
+    .select("id, categoria, canal_id, operador_id, dados_coletados, dados_bot")
     .eq("id", conversaId)
     .maybeSingle();
   if (error) {
@@ -56,6 +59,7 @@ export async function carregarConversaParaEdicao(
   const row = data as {
     id: string;
     categoria: string | null;
+    canal_id: string | null;
     operador_id: string | null;
     dados_coletados: unknown;
     dados_bot?: unknown;
@@ -63,6 +67,7 @@ export async function carregarConversaParaEdicao(
   return {
     id: row.id,
     categoria: row.categoria ?? null,
+    canal_id: row.canal_id ?? null,
     operador_id: row.operador_id ?? null,
     dados_coletados: comoObjeto(row.dados_coletados),
     dados_bot: comoObjeto(row.dados_bot),
@@ -152,10 +157,19 @@ export async function definirEstadoConversa(input: {
   if (error) throw new Error(`definirEstadoConversa/update: ${error.message}`);
 }
 
-/** Conjunto de chaves válidas para o roteiro da categoria da conversa. */
-function chavesDoRoteiro(categoria: string | null): Set<string> {
+/**
+ * Conjunto de chaves válidas para o roteiro da categoria da conversa, RESPEITANDO
+ * o SISTEMA de cotação da corretora (Segfy/Aggilizador anexam campos diferentes —
+ * ex.: `data_nascimento`/`sexo` só existem no Aggilizador). Sem `sistema` cai no
+ * default (Segfy), que reproduz o roteiro mais rico legado.
+ */
+function chavesDoRoteiro(categoria: string | null, sistema?: string | null): Set<string> {
   // getRoteiro aceita o ENUM do banco (seguro_novo, nao_renovado, etc.).
-  const roteiro = getRoteiro(categoria as Parameters<typeof getRoteiro>[0]);
+  const roteiro = getRoteiro(
+    categoria as Parameters<typeof getRoteiro>[0],
+    undefined,
+    sistema ?? undefined,
+  );
   return new Set((roteiro?.campos ?? []).map((c) => c.chave));
 }
 
@@ -178,7 +192,8 @@ export async function editarDadosColetados(input: {
   const conversa = await carregarConversaParaEdicao(input.conversaId);
   if (!conversa) return { ok: false, erro: "categoria_sem_roteiro", ignorados: [] };
 
-  const validas = chavesDoRoteiro(conversa.categoria);
+  const sistema = await lerSistemaDoCanal(conversa.canal_id);
+  const validas = chavesDoRoteiro(conversa.categoria, sistema);
   if (validas.size === 0) {
     return { ok: false, erro: "categoria_sem_roteiro", ignorados: Object.keys(input.campos) };
   }
@@ -337,7 +352,8 @@ export async function enfileirarCampoForcado(input: {
   const conversa = await carregarConversaParaEdicao(input.conversaId);
   if (!conversa) return { ok: false, erro: "categoria_sem_roteiro" };
 
-  const validas = chavesDoRoteiro(conversa.categoria);
+  const sistema = await lerSistemaDoCanal(conversa.canal_id);
+  const validas = chavesDoRoteiro(conversa.categoria, sistema);
   if (validas.size === 0) return { ok: false, erro: "categoria_sem_roteiro" };
   if (!validas.has(input.chave)) return { ok: false, erro: "chave_invalida" };
 

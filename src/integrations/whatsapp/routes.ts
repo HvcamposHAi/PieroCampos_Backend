@@ -14,6 +14,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { exigirAdmin, isAdmin, carregarOperadorAtivo } from "../../middlewares/authSupabase";
 import { getRoteiro } from "../../lib/roteiros";
+import { lerSistemaDoCanal } from "../../services/agente-config.service";
 import { logger } from "../../utils/logger";
 import {
   buscarCanal,
@@ -541,6 +542,20 @@ router.post("/conversas/:id/bia-gerar", async (req: Request, res: Response) => {
 // Dados coletados da conversa — edição manual e "pedir ao bot" (operador/admin).
 // ----------------------------------------------------------------------------
 
+/** Mensagem legível (PT-BR) p/ os códigos de erro de validação de campos do roteiro. */
+function mensagemErroCampo(erro: string): string {
+  switch (erro) {
+    case "chave_invalida":
+      return "Este campo não faz parte do roteiro deste sistema de cotação.";
+    case "categoria_sem_roteiro":
+      return "Esta conversa ainda não tem uma categoria com roteiro definido.";
+    case "nenhuma_chave_valida":
+      return "Nenhum dos campos enviados é válido para o roteiro desta conversa.";
+    default:
+      return "Não foi possível concluir a operação.";
+  }
+}
+
 const editarDadosSchema = z.object({
   campos: z.record(z.string(), z.string()).refine((o) => Object.keys(o).length > 0, {
     message: "campos vazio",
@@ -568,7 +583,7 @@ router.patch("/conversas/:id/dados-coletados", async (req: Request, res: Respons
       agoraIso: new Date().toISOString(),
     });
     if (!out.ok) {
-      res.status(422).json({ erro: out.erro, ignorados: out.ignorados });
+      res.status(422).json({ erro: out.erro, mensagem: mensagemErroCampo(out.erro), ignorados: out.ignorados });
       return;
     }
     res.json({ ok: true, atualizados: out.atualizados, ignorados: out.ignorados });
@@ -672,7 +687,7 @@ router.post("/conversas/:id/perguntar-campo", async (req: Request, res: Response
       agoraIso: new Date().toISOString(),
     });
     if (!out.ok) {
-      res.status(422).json({ erro: out.erro });
+      res.status(422).json({ erro: out.erro, mensagem: mensagemErroCampo(out.erro) });
       return;
     }
 
@@ -685,9 +700,14 @@ router.post("/conversas/:id/perguntar-campo", async (req: Request, res: Response
       const conversa = await carregarConversaParaEnvio(conversaId);
       if (!conversa) throw new Error("conversa_nao_encontrada");
       const destino = await resolverDestino(conversa);
-      const campo = getRoteiro(conversa.categoria as Parameters<typeof getRoteiro>[0])?.campos.find(
-        (c) => c.chave === parsed.data.chave,
-      );
+      // Roteiro por-sistema: rótulo/dica do campo dependem do sistema da corretora
+      // (ex.: data_nascimento/sexo só existem no Aggilizador).
+      const sistema = await lerSistemaDoCanal(conversa.canal_id);
+      const campo = getRoteiro(
+        conversa.categoria as Parameters<typeof getRoteiro>[0],
+        undefined,
+        sistema,
+      )?.campos.find((c) => c.chave === parsed.data.chave);
       const alvo = campo?.rotulo ?? parsed.data.chave;
       const instrucao =
         `Pergunte ao cliente, de forma natural e curta, o seguinte dado que ainda falta: ` +

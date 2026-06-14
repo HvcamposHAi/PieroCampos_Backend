@@ -526,6 +526,8 @@ export async function confirmarEdispararCotacao(p: {
 async function enviarFormulario(p: {
   conversaId: string;
   categoria: CategoriaConversa;
+  /** Sistema de cotação (define os campos do questionário). FAIL-OPEN → segfy. */
+  sistema?: string | null;
   dadosBot: Record<string, unknown>;
   enviarDocumento?: EnviarDocumento;
 }): Promise<void> {
@@ -537,7 +539,7 @@ async function enviarFormulario(p: {
   }
   let buf: Buffer;
   try {
-    buf = await gerarQuestionarioXlsx(p.categoria);
+    buf = await gerarQuestionarioXlsx(p.categoria, p.sistema);
   } catch (e) {
     logger.error("[bot] falha ao gerar questionário xlsx", {
       conversaId: p.conversaId,
@@ -948,6 +950,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       await enviarFormulario({
         conversaId: conversa.id,
         categoria: conversa.categoria,
+        sistema,
         dadosBot: dadosBotAtualizado,
         enviarDocumento: input.enviarDocumento,
       });

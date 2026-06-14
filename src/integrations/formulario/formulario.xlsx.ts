@@ -35,10 +35,15 @@ const PRIMEIRA_LINHA_CAMPO = 2; // linha 1 é cabeçalho
 
 /**
  * Gera o questionário .xlsx para a categoria. Uma linha por campo do roteiro.
- * Lança se a categoria não tiver roteiro (chamador só usa renovacao/seguro_novo).
+ * O conjunto de campos depende do SISTEMA de cotação (Aggilizador inclui
+ * data_nascimento/sexo) — sem `sistema` cai no default (Segfy). Lança se a
+ * categoria não tiver roteiro (chamador só usa renovacao/seguro_novo).
  */
-export async function gerarQuestionarioXlsx(categoria: CategoriaConversa): Promise<Buffer> {
-  const roteiro = getRoteiro(categoria);
+export async function gerarQuestionarioXlsx(
+  categoria: CategoriaConversa,
+  sistema?: string | null,
+): Promise<Buffer> {
+  const roteiro = getRoteiro(categoria, undefined, sistema ?? undefined);
   if (!roteiro) {
     throw new Error(`gerarQuestionarioXlsx: categoria sem roteiro: ${categoria}`);
   }
