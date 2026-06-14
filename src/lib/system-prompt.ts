@@ -191,7 +191,7 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
         "NOVO VEÍCULO (mesma conversa): o cliente quer cotar OUTRO carro. Os DADOS PESSOAIS abaixo (cpf, endereço, nascimento, sexo, etc.) são reaproveitados — NÃO os pergunte um a um. Os dados do VEÍCULO foram zerados.",
       );
       partes.push(
-        "Sua tarefa neste turno: numa ÚNICA mensagem, confirme com o cliente que vai manter os dados pessoais dele, mostre-os de forma organizada perguntando se algo mudou, e PEÇA a PLACA do NOVO veículo (e o que mais faltar do carro). Se ele já informou a placa/dados do novo carro, chame `atualizar_dados` com essas chaves AGORA.",
+        "Sua tarefa neste turno: numa ÚNICA mensagem, confirme com o cliente que vai manter os dados pessoais dele, mostre-os de forma organizada perguntando se algo mudou, e PEÇA a PLACA do NOVO veículo. A placa já identifica o veículo automaticamente — NÃO pergunte marca, modelo, ano nem cor. Se ele já informou a placa, chame `atualizar_dados` com a chave placa AGORA. Depois da placa, siga pedindo os obrigatórios que ainda faltarem (listados em AINDA FALTAM).",
       );
     } else {
       partes.push(
@@ -259,7 +259,7 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
   if (input.campoForcado) {
     const c = input.campoForcado;
     partes.push(
-      `PEDIDO DO OPERADOR (PRIORIDADE MÁXIMA): pergunte AGORA, de forma natural, o campo "${c.rotulo}" (chave ${c.chave})${c.dica ? `. ${c.dica}` : ""}. Esta deve ser a sua próxima pergunta, mesmo que existam outros campos pendentes.`,
+      `PERGUNTA PRIORITÁRIA (PRIORIDADE MÁXIMA): a sua PRÓXIMA mensagem deve perguntar, de forma natural e gentil, SOMENTE o campo "${c.rotulo}" (chave ${c.chave})${c.dica ? `. ${c.dica}` : ""}. É um dado OBRIGATÓRIO que ainda falta para cotar — peça-o agora, sem divagar e sem mudar de assunto, mesmo que existam outros campos pendentes.`,
     );
     partes.push("");
   }
@@ -322,6 +322,9 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
       if (input.proximoCampo) {
         partes.push("");
         partes.push(`PRÓXIMO CAMPO A PERGUNTAR: ${input.proximoCampo.chave} — ${input.proximoCampo.rotulo}${input.proximoCampo.dica ? `. ${input.proximoCampo.dica}` : ""}`);
+        partes.push(
+          "Faça a sua próxima pergunta SOBRE ESSE CAMPO. NÃO invente perguntas fora da lista de CAMPOS DO ROTEIRO (ex.: marca, modelo, ano, cor, versão do veículo) — esses dados NÃO são necessários e NÃO devem ser pedidos. Você NUNCA encerra nem fala em \"passar para a equipe\" enquanto faltar um obrigatório: continue coletando.",
+        );
       }
     }
   }

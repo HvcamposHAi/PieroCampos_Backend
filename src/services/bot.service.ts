@@ -325,62 +325,93 @@ export function escolherCampoForcado(
   return null;
 }
 
-// ── Quebra-loop da coleta ("pergunta → registra → avança, JAMAIS loop") ────────
-// Garantia de CÓDIGO (não só prompt): um obrigatório que fica no TOPO dos pendentes
-// por mais de MAX_REPS_CAMPO turnos sem preencher é ADIADO (a Bia passa ao próximo
-// campo, nunca re-pergunta em loop). Se TODOS os pendentes forem adiados → escala
-// para um humano concluir (motivo coleta_travada). Estado em dados_bot (jsonb).
+// ── Auditor de coleta: leva o roteiro ATÉ O FIM, sem loop e sem frustrar ───────
+// Princípio: a Bia NUNCA deve parar com obrigatório pendente. Se a coleta não
+// progride (a Bia divagou ou o cliente fugiu do assunto), o auditor FORÇA a
+// próxima pergunta a ser exatamente o obrigatório que falta (em vez de re-perguntar
+// à toa ou desistir). Só depois de perguntar o MESMO campo DIRETAMENTE várias vezes
+// sem resposta é que escala para um humano — último recurso, jamais precoce.
+// Estado em dados_bot (jsonb): coleta_top/coleta_reps/coleta_forcar/coleta_forcar_tent.
 
-const MAX_REPS_CAMPO = 2;
+const REPS_PARA_FORCAR = 2; // turnos sem progresso até FORÇAR a pergunta do campo
+const FORCAR_ATE_ESCALAR = 4; // perguntas DIRETAS do mesmo campo até escalar (último recurso)
 
 interface EstadoLoopColeta {
   coletaTop: string | null;
   coletaReps: number;
-  adiados: string[];
+  forcar: string | null;
+  forcarTent: number;
 }
 
-/** Lê o estado do quebra-loop de dados_bot (defensivo). */
+function lerNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+function lerStr(v: unknown): string | null {
+  return typeof v === "string" && v ? v : null;
+}
+
+/** Lê o estado do auditor de coleta de dados_bot (defensivo). */
 function lerEstadoLoopColeta(dadosBot: Record<string, unknown>): EstadoLoopColeta {
-  const top = (dadosBot as { coleta_top?: unknown }).coleta_top;
-  const reps = (dadosBot as { coleta_reps?: unknown }).coleta_reps;
-  const adi = (dadosBot as { campos_adiados?: unknown }).campos_adiados;
+  const b = dadosBot as Record<string, unknown>;
   return {
-    coletaTop: typeof top === "string" ? top : null,
-    coletaReps: typeof reps === "number" && Number.isFinite(reps) ? reps : 0,
-    adiados: Array.isArray(adi) ? adi.filter((c): c is string => typeof c === "string") : [],
+    coletaTop: lerStr(b.coleta_top),
+    coletaReps: lerNum(b.coleta_reps),
+    forcar: lerStr(b.coleta_forcar),
+    forcarTent: lerNum(b.coleta_forcar_tent),
   };
 }
 
-/**
- * Próximo obrigatório a perguntar, PULANDO os campos adiados pelo quebra-loop.
- * Fallback p/ o 1º pendente se todos estiverem adiados (defensivo — o escalonamento
- * acontece antes). Pura (testável).
- */
+/** Primeiro obrigatório pendente (o próximo a perguntar). Pura. */
 export function proximoCampoColeta(
   categoria: CategoriaConversa | null,
   dados: Record<string, unknown>,
   sistema: string | undefined,
-  adiados: readonly string[],
 ): CampoRoteiro | null {
   const { pendentesObrigatorios } = calcularProgresso(categoria, dados, "auto", sistema);
-  const fora = new Set(adiados);
-  return pendentesObrigatorios.find((c) => !fora.has(c.chave)) ?? pendentesObrigatorios[0] ?? null;
+  return pendentesObrigatorios[0] ?? null;
+}
+
+/**
+ * Campo que o auditor está FORÇANDO a Bia a perguntar AGORA (se ainda pendente).
+ * Quando definido, vira a próxima pergunta obrigatória (renderizado como campoForcado).
+ * Pura (testável).
+ */
+export function campoForcadoQuebraLoop(
+  dadosBot: Record<string, unknown>,
+  dadosColetados: Record<string, unknown>,
+  categoria: CategoriaConversa | null,
+  sistema?: string,
+): CampoRoteiro | null {
+  const forcar = lerStr((dadosBot as { coleta_forcar?: unknown }).coleta_forcar);
+  if (!forcar) return null;
+  const v = dadosColetados[forcar];
+  if (v != null && v !== "") return null; // já preenchido → não força mais
+  const roteiro = getRoteiro(categoria, "auto", sistema);
+  return roteiro?.campos.find((c) => c.chave === forcar) ?? null;
+}
+
+export interface NovoEstadoLoop {
+  [k: string]: string | number | null;
+  coleta_top: string | null;
+  coleta_reps: number;
+  coleta_forcar: string | null;
+  coleta_forcar_tent: number;
 }
 
 export interface AvaliacaoLoopColeta {
-  top: string | null;
-  reps: number;
-  adiados: string[];
-  /** Todos os pendentes foram adiados → escalar (não há campo novo a perguntar). */
-  travado: boolean;
+  novoEstado: NovoEstadoLoop;
+  /** Forçar a próxima pergunta a ser este obrigatório (chave) — null = fluxo normal. */
+  forcarCampo: string | null;
+  /** Último recurso: campo perguntado DIRETAMENTE vezes demais sem resposta. */
+  escalar: boolean;
   completo: boolean;
 }
 
 /**
- * Avalia o progresso da coleta APÓS o merge do turno: incrementa o contador do
- * campo que está há mais turnos no topo dos pendentes; ao passar de MAX_REPS_CAMPO,
- * adia o campo (a Bia avança). Pura (testável). `travado` = não sobrou nenhum
- * obrigatório fora dos adiados, mas ainda há obrigatório pendente → handoff.
+ * Auditor (pós-merge): mantém o roteiro avançando até o fim. Se não houve progresso
+ * no obrigatório do topo por REPS_PARA_FORCAR turnos, passa a FORÇAR a pergunta dele
+ * (forcarCampo). Enquanto força e o cliente não preenche, conta tentativas DIRETAS;
+ * só em FORCAR_ATE_ESCALAR escala (último recurso). Pura (testável).
  */
 export function avaliarLoopColeta(p: {
   estado: EstadoLoopColeta;
@@ -394,19 +425,46 @@ export function avaliarLoopColeta(p: {
     "auto",
     p.sistema,
   );
-  const pendentesChaves = new Set(pendentesObrigatorios.map((c) => c.chave));
-  // Tira dos adiados o que já não está pendente (preenchido por outra via).
-  let adiados = p.estado.adiados.filter((a) => pendentesChaves.has(a));
-  let topCampo = pendentesObrigatorios.find((c) => !adiados.includes(c.chave)) ?? null;
-  let reps = topCampo && topCampo.chave === p.estado.coletaTop ? p.estado.coletaReps + 1 : 1;
-  // Mesmo campo no topo por > MAX turnos sem preencher → adia e avança.
-  if (topCampo && reps >= MAX_REPS_CAMPO) {
-    adiados = [...adiados, topCampo.chave];
-    reps = 1;
-    topCampo = pendentesObrigatorios.find((c) => !adiados.includes(c.chave)) ?? null;
+  const zero: NovoEstadoLoop = { coleta_top: null, coleta_reps: 0, coleta_forcar: null, coleta_forcar_tent: 0 };
+  if (completo || pendentesObrigatorios.length === 0) {
+    return { novoEstado: zero, forcarCampo: null, escalar: false, completo };
   }
-  const travado = pendentesObrigatorios.length > 0 && topCampo === null;
-  return { top: topCampo?.chave ?? null, reps, adiados, travado, completo };
+  const top = pendentesObrigatorios[0]!.chave;
+  const pend = new Set(pendentesObrigatorios.map((c) => c.chave));
+  const st = p.estado;
+
+  // Já estávamos FORÇANDO um campo e ele continua pendente → pergunta direta sem
+  // resposta: conta tentativa; ao atingir o teto, escala (último recurso).
+  if (st.forcar && pend.has(st.forcar)) {
+    const tent = st.forcarTent + 1;
+    if (tent >= FORCAR_ATE_ESCALAR) {
+      return { novoEstado: { ...zero, coleta_top: top }, forcarCampo: null, escalar: true, completo: false };
+    }
+    return {
+      novoEstado: { coleta_top: top, coleta_reps: st.coletaReps, coleta_forcar: st.forcar, coleta_forcar_tent: tent },
+      forcarCampo: st.forcar,
+      escalar: false,
+      completo: false,
+    };
+  }
+
+  // Não está forçando (ou o campo forçado foi preenchido) → mede progresso no topo.
+  const reps = top === st.coletaTop ? st.coletaReps + 1 : 1;
+  if (reps >= REPS_PARA_FORCAR) {
+    // Começa a FORÇAR a pergunta deste obrigatório (em vez de deixar a Bia divagar).
+    return {
+      novoEstado: { coleta_top: top, coleta_reps: reps, coleta_forcar: top, coleta_forcar_tent: 0 },
+      forcarCampo: top,
+      escalar: false,
+      completo: false,
+    };
+  }
+  return {
+    novoEstado: { coleta_top: top, coleta_reps: reps, coleta_forcar: null, coleta_forcar_tent: 0 },
+    forcarCampo: null,
+    escalar: false,
+    completo: false,
+  };
 }
 
 /** Sobrescreve dados_coletados (usado ao limpar campos de veículo — não é merge). */
@@ -817,27 +875,24 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   // FAIL-OPEN → segfy. Resolvido uma vez e reusado em progresso/prompt/finalização.
   const sistema = await lerSistemaDoCanal(conversa.canal_id);
   const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados, "auto", sistema);
-  // Próximo campo PULANDO os adiados pelo quebra-loop (a Bia não re-pergunta um
-  // campo que já travou; segue para o seguinte).
-  const adiadosAtuais = lerEstadoLoopColeta(conversa.dados_bot).adiados;
-  const proximoCampo = proximoCampoColeta(
-    conversa.categoria,
-    conversa.dados_coletados,
-    sistema,
-    adiadosAtuais,
-  );
+  const proximoCampo = proximoCampoColeta(conversa.categoria, conversa.dados_coletados, sistema);
   // Telefone do cliente = número do WhatsApp em contato (E.164). Só p/ JID real
   // (@s.whatsapp.net); JID oculto (@lid) não é número → null (a Bia pergunta).
   const telefoneContato = input.jidRemoto.endsWith("@s.whatsapp.net")
     ? normalizarTelefoneBr(input.jidRemoto.split("@")[0] ?? "")
     : null;
-  // Pedido do operador (fila campos_forcados em dados_bot): prioridade máxima.
-  const campoForcado = escolherCampoForcado(
+  // Pedido do operador (fila campos_forcados): prioridade máxima. Se não houver,
+  // o AUDITOR de coleta pode forçar a pergunta do obrigatório que está faltando
+  // (evita a Bia divagar e nunca completar o roteiro).
+  const campoOperadorForcado = escolherCampoForcado(
     conversa.dados_bot,
     conversa.dados_coletados,
     conversa.categoria,
     sistema,
   );
+  const campoForcado =
+    campoOperadorForcado ??
+    campoForcadoQuebraLoop(conversa.dados_bot, conversa.dados_coletados, conversa.categoria, sistema);
   // Coleta concluída: a Bia pede a decisão de cotar (e ganha a tool confirmar_cotacao).
   const ehConfirmacao = conversa.estado === "aguardando_confirmacao_cotacao";
   // Cliente recorrente: apresentar os dados de uma vez e perguntar se mudou algo.
@@ -1032,10 +1087,11 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       revisao_pendente: true,
       novo_veiculo: true,
       revisao_tentativas: 0,
-      // Zera o quebra-loop para a coleta do novo veículo.
+      // Zera o auditor de coleta para o novo veículo.
       coleta_top: null,
       coleta_reps: 0,
-      campos_adiados: [],
+      coleta_forcar: null,
+      coleta_forcar_tent: 0,
     });
     if (conversa.estado !== "bot_ativo") {
       await getSupabaseAdmin().from("conversas").update({ estado: "bot_ativo" }).eq("id", conversa.id);
@@ -1112,15 +1168,13 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     return;
   }
 
-  // 10) Quebra-loop ("pergunta → registra → avança, JAMAIS loop"): se um obrigatório
-  //     ficou travado (sem preencher por 2 turnos no topo), adia e avança; se TODOS
-  //     os pendentes travaram, escala para um humano em vez de re-perguntar em loop.
-  //     FAIL-SAFE: erro aqui não interrompe a finalização. Só na coleta normal
-  //     (revisão/confirmação/modalidade já retornaram acima).
+  // 10) Auditor de coleta: leva o roteiro ATÉ O FIM sem loop e sem frustrar. Se a
+  //     coleta não progride, FORÇA a próxima pergunta a ser o obrigatório que falta
+  //     (no próximo turno, via campoForcadoQuebraLoop). Só escala como ÚLTIMO RECURSO
+  //     após perguntar o MESMO campo DIRETAMENTE vezes demais. FAIL-SAFE. Não roda
+  //     quando o OPERADOR forçou outro campo (aí a Bia não estava no obrigatório do topo).
   const dadosMerge = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
-  // Não conta tentativa quando o operador forçou OUTRO campo (a Bia não estava
-  // perguntando o obrigatório do topo neste turno).
-  if (!campoForcado) {
+  if (!campoOperadorForcado) {
     try {
       const aval = avaliarLoopColeta({
         estado: lerEstadoLoopColeta(conversa.dados_bot),
@@ -1128,27 +1182,18 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
         categoria: conversa.categoria,
         sistema,
       });
-      if (aval.travado) {
+      if (aval.escalar) {
         await input.enviar(MENSAGEM_COLETA_TRAVADA);
         await executarHandoff({ conversaId: conversa.id, motivo: "coleta_travada" });
-        await mergeDadosBot(conversa.id, conversa.dados_bot, {
-          campos_adiados: aval.adiados,
-          coleta_reps: 0,
-        });
+        await mergeDadosBot(conversa.id, conversa.dados_bot, aval.novoEstado);
         await dispararAlerta(input, "coleta_travada", conversa.id);
         return;
       }
       if (!aval.completo) {
-        // Registra o estado do quebra-loop e o campo do topo (p/ a próxima rodada).
-        const prox = proximoCampoColeta(conversa.categoria, dadosMerge, sistema, aval.adiados);
-        await mergeDadosBot(conversa.id, conversa.dados_bot, {
-          coleta_top: prox?.chave ?? null,
-          coleta_reps: aval.reps,
-          campos_adiados: aval.adiados,
-        });
+        await mergeDadosBot(conversa.id, conversa.dados_bot, aval.novoEstado);
       }
     } catch (e) {
-      logger.warn("[bot] quebra-loop falhou; seguindo sem ele", {
+      logger.warn("[bot] auditor de coleta falhou; seguindo sem ele", {
         conversaId: conversa.id,
         erro: (e as Error).message,
       });

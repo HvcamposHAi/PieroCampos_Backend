@@ -117,24 +117,40 @@ async function rodar(texto: string) {
   return textos;
 }
 
-describe("quebra-loop em processarMensagem", () => {
-  it("obrigatório travado (2º turno) → escala para humano, não loopa", async () => {
+describe("auditor de coleta em processarMensagem", () => {
+  it("sem progresso (2º turno) → FORÇA a pergunta do obrigatório, NÃO escala (não frustra)", async () => {
     h.conversa = {
       id: "conv1", cliente_id: "cli1", canal_id: "canal1",
       estado: "bot_ativo", categoria: "seguro_novo",
       dados_coletados: { ...QUASE_COMPLETO_SEM_PROFISSAO },
-      // profissao já estava no topo (1ª tentativa) — agora vai à 2ª sem preencher.
       dados_bot: { coleta_top: "profissao", coleta_reps: 1 },
       operador_id: null,
     };
-    // Claude responde sem extrair nada (cliente não informou profissao).
     h.chamarBia.mockResolvedValueOnce({ ...RESP_BASE });
 
     const textos = await rodar("sei lá");
 
+    // NÃO escalou — segue coletando, forçando a pergunta do campo que falta.
+    expect(h.conversa.estado).toBe("bot_ativo");
+    expect(textos).not.toContain(MENSAGEM_COLETA_TRAVADA);
+    expect(h.conversa.dados_bot.coleta_forcar).toBe("profissao");
+  });
+
+  it("escala só como ÚLTIMO RECURSO (campo perguntado direto vezes demais)", async () => {
+    h.conversa = {
+      id: "conv1", cliente_id: "cli1", canal_id: "canal1",
+      estado: "bot_ativo", categoria: "seguro_novo",
+      dados_coletados: { ...QUASE_COMPLETO_SEM_PROFISSAO },
+      // já vínhamos FORÇANDO profissao e perguntando direto várias vezes.
+      dados_bot: { coleta_top: "profissao", coleta_reps: 2, coleta_forcar: "profissao", coleta_forcar_tent: 3 },
+      operador_id: null,
+    };
+    h.chamarBia.mockResolvedValueOnce({ ...RESP_BASE });
+
+    const textos = await rodar("não quero informar");
+
     expect(h.conversa.estado).toBe("humano_assumiu");
     expect(textos).toContain(MENSAGEM_COLETA_TRAVADA);
-    expect(h.conversa.dados_bot.campos_adiados).toContain("profissao");
   });
 });
 
