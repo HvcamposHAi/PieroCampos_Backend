@@ -34,6 +34,9 @@ REGRAS ABSOLUTAS — NUNCA VIOLE
 6. Nunca peça dados que já estão no contexto (a seção CONTEXTO RAG abaixo mostra o que já sabemos).
 7. Nunca repita a mesma pergunta mais de 2 vezes; na terceira o operador humano assume.
 8. Nunca envie blocos JSON, código ou markdown estruturado para o cliente. Suas respostas são texto natural de WhatsApp.
+9. Pergunte SOMENTE os campos listados em "CAMPOS DO ROTEIRO" abaixo. NUNCA invente perguntas fora do roteiro: se algo (ex.: "rastreador", "alarme", "tipo de cobertura") NÃO estiver no roteiro, NÃO pergunte.
+10. Enquanto houver "CAMPOS OBRIGATÓRIOS PENDENTES", você DEVE coletá-los (comece pelo "PRÓXIMO CAMPO A PERGUNTAR"). NUNCA diga que "tem tudo", NUNCA use o ENCERRAMENTO e NUNCA fale em "repassar para a equipe" enquanto faltar QUALQUER campo obrigatório.
+11. O TELEFONE do cliente é o próprio número do WhatsApp em contato. Quando o sistema informar "TELEFONE DO CLIENTE", registre-o com \`atualizar_dados\` (chave telefone_contato) e apenas CONFIRME com o cliente se é o melhor número — NUNCA peça o telefone do zero.
 
 EXTRAÇÃO DE DADOS
 Sempre que identificar um campo do roteiro na mensagem do cliente, chame a ferramenta \`atualizar_dados\` com APENAS as chaves do roteiro atual. Não invente chaves novas. Se não tiver dado novo, não chame a ferramenta — apenas responda.
@@ -73,6 +76,12 @@ export interface BuildSystemPromptInput {
   dadosColetados: Record<string, unknown>;
   pendentesObrigatorios: CampoRoteiro[];
   proximoCampo: CampoRoteiro | null;
+  /**
+   * Telefone do cliente DERIVADO do número do WhatsApp em contato (E.164), quando
+   * o JID é um número real. A Bia o registra (telefone_contato) e CONFIRMA — não
+   * pergunta do zero. null quando o JID é oculto (@lid) → aí a Bia pergunta.
+   */
+  telefoneContato?: string | null;
   /**
    * Campo que o OPERADOR pediu para a Bia perguntar AGORA (fila campos_forcados).
    * Tem prioridade sobre o próximo campo obrigatório e sobre o gate de modalidade.
@@ -267,6 +276,14 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
       for (const [k, v] of Object.entries(input.dadosColetados)) {
         partes.push(`  - ${k}: ${JSON.stringify(v)}`);
       }
+    }
+    // Telefone derivado do WhatsApp: a Bia registra (telefone_contato) e CONFIRMA,
+    // em vez de perguntar do zero. Só enquanto ainda não estiver coletado.
+    if (input.telefoneContato && !input.dadosColetados.telefone && !input.dadosColetados.telefone_contato) {
+      partes.push("");
+      partes.push(
+        `TELEFONE DO CLIENTE (número do WhatsApp em contato): ${input.telefoneContato}. Registre-o com atualizar_dados (telefone_contato) e CONFIRME com o cliente se é o melhor número para contato — NÃO pergunte o telefone do zero.`,
+      );
     }
     partes.push("");
     if (input.pendentesObrigatorios.length === 0) {

@@ -53,3 +53,42 @@ describe("system-prompt — bloco de revisão", () => {
     expect(p).not.toContain("AINDA FALTAM estes dados OBRIGATÓRIOS para cotar (o cliente recorrente");
   });
 });
+
+describe("system-prompt — disciplina de coleta (BASE) + telefone derivado", () => {
+  it("BASE tem regras: só campos do roteiro + não encerrar com obrigatório pendente + telefone do WhatsApp", () => {
+    // SYSTEM_PROMPT_BASE é exportado e estável.
+    // (importado abaixo para não acoplar ao dinâmico)
+  });
+
+  it("fluxo normal: injeta TELEFONE DO CLIENTE quando derivado e ainda não coletado", () => {
+    const p = base({ revisaoPendente: false, telefoneContato: "+5541996247863" });
+    expect(p).toContain("TELEFONE DO CLIENTE");
+    expect(p).toContain("+5541996247863");
+    expect(p).toMatch(/CONFIRME com o cliente/i);
+  });
+
+  it("não injeta telefone se já coletado (telefone/telefone_contato presente)", () => {
+    const p = base({
+      revisaoPendente: false,
+      telefoneContato: "+5541996247863",
+      dadosColetados: { segurado: "x", telefone_contato: "+5541999990000" },
+    });
+    expect(p).not.toContain("número do WhatsApp em contato");
+  });
+
+  it("não injeta telefone quando o JID é oculto (telefoneContato null)", () => {
+    const p = base({ revisaoPendente: false, telefoneContato: null });
+    expect(p).not.toContain("TELEFONE DO CLIENTE (número do WhatsApp");
+  });
+});
+
+import { SYSTEM_PROMPT_BASE } from "../src/lib/system-prompt";
+describe("SYSTEM_PROMPT_BASE — regras absolutas novas", () => {
+  it("proíbe perguntas fora do roteiro e encerrar com obrigatório pendente", () => {
+    expect(SYSTEM_PROMPT_BASE).toMatch(/SOMENTE os campos listados em "CAMPOS DO ROTEIRO"/);
+    expect(SYSTEM_PROMPT_BASE).toMatch(/NUNCA.*repassar para a equipe.*obrigatório/is);
+  });
+  it("telefone = número do WhatsApp (registrar + confirmar)", () => {
+    expect(SYSTEM_PROMPT_BASE).toMatch(/TELEFONE do cliente é o próprio número do WhatsApp/);
+  });
+});

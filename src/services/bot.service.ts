@@ -715,6 +715,11 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   const sistema = await lerSistemaDoCanal(conversa.canal_id);
   const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados, "auto", sistema);
   const proximoCampo = progresso.pendentesObrigatorios[0] ?? null;
+  // Telefone do cliente = número do WhatsApp em contato (E.164). Só p/ JID real
+  // (@s.whatsapp.net); JID oculto (@lid) não é número → null (a Bia pergunta).
+  const telefoneContato = input.jidRemoto.endsWith("@s.whatsapp.net")
+    ? normalizarTelefoneBr(input.jidRemoto.split("@")[0] ?? "")
+    : null;
   // Pedido do operador (fila campos_forcados em dados_bot): prioridade máxima.
   const campoForcado = escolherCampoForcado(
     conversa.dados_bot,
@@ -759,6 +764,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     dadosColetados: conversa.dados_coletados,
     pendentesObrigatorios: progresso.pendentesObrigatorios,
     proximoCampo,
+    telefoneContato,
     campoForcado,
     modo,
     contextoHolding: modo === "holding" ? contextoHoldingPorEstado(conversa.estado) : undefined,
