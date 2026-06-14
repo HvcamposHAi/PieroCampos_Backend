@@ -88,6 +88,7 @@ const RESP = {
   confirmarCotacao: null,
   consentimentoLgpd: null,
   revisaoMudou: null,
+  cotarOutroVeiculo: null,
   paradaPorMaxTokens: false,
   uso: { input_tokens: 1, output_tokens: 1 },
 };

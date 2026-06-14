@@ -332,6 +332,42 @@ async function buscarDadosAnteriores(
   return { dadosColetados: dados, categoria: row.categoria as CategoriaConversa };
 }
 
+/** Normaliza uma placa p/ comparação (maiúscula, sem espaços/hífens). */
+export function normalizarPlaca(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const p = v.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+  return p.length >= 6 ? p : null;
+}
+
+/**
+ * Placas já COTADAS nesta conversa (lendo o snapshot `dados_entrada.placa` de cada
+ * linha de `cotacoes`). Usado para detectar "placa repetida → confirmar refazer"
+ * no fluxo de múltiplas cotações por conversa. Best-effort: erro → Set vazio (nunca
+ * bloqueia o disparo). Cada cotação é um registro próprio (1:N por conversa).
+ */
+export async function listarPlacasCotadas(conversaId: string): Promise<Set<string>> {
+  const sb = getSupabaseAdmin();
+  const out = new Set<string>();
+  try {
+    const { data, error } = await sb
+      .from("cotacoes")
+      .select("dados_entrada")
+      .eq("conversa_id", conversaId);
+    if (error || !data) return out;
+    for (const row of data as Array<{ dados_entrada?: unknown }>) {
+      const dados = comoObjeto(row.dados_entrada);
+      const placa = normalizarPlaca(dados.placa);
+      if (placa) out.add(placa);
+    }
+  } catch (e) {
+    logger.warn("[wa.persistence] listarPlacasCotadas falhou", {
+      conversaId,
+      erro: (e as Error).message,
+    });
+  }
+  return out;
+}
+
 /** Acha uma conversa aberta (estado != 'encerrado') para (canal, cliente) ou cria. */
 async function obterOuCriarConversaAberta(
   canalId: string,

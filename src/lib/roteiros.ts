@@ -120,6 +120,48 @@ const CAMPOS_AUTO_POR_SISTEMA: Record<string, CampoRoteiro[]> = {
   aggilizador: [...CAMPOS_AUTO_COMUNS, ...CAMPOS_AUTO_AGGILIZADOR],
 };
 
+/**
+ * Campos OBRIGATÓRIOS que um sistema NÃO usa e que, por isso, são REMOVIDOS do
+ * roteiro daquele sistema (não são perguntados nem contam no progresso). Genérico:
+ * plugar um 3º sistema = adicionar sua entrada. O Aggilizador decodifica o veículo
+ * pela PLACA (`/calculo/buscaPlaca`) e não lê `dados_veiculo_fipe` nem `rg` no
+ * mapper → pedi-los travava a coleta (o LLM decompõe "Dados do veículo (FIPE)" em
+ * marca/modelo/ano, chaves fora do roteiro que `sanitizarCampos` descarta → o campo
+ * nunca preenchia → loop). Segfy: sem remoções → roteiro byte-a-byte igual.
+ * As chaves removidas seguem em `CHAVES_VALIDAS` (persistência preservada).
+ */
+const CAMPOS_REMOVIDOS_POR_SISTEMA: Record<string, ReadonlySet<string>> = {
+  aggilizador: new Set(["dados_veiculo_fipe", "rg"]),
+};
+
+/**
+ * Chaves do ramo AUTO que descrevem o VEÍCULO/uso (não a pessoa). Ao "cotar outro
+ * veículo" na mesma conversa, só estas são limpas — os dados PESSOAIS (cpf, nome,
+ * endereço, nascimento, sexo, estado civil, profissão, questionário do condutor)
+ * são reaproveitados. Fonte única usada por `limparCamposVeiculo`.
+ */
+export const CHAVES_VEICULO: ReadonlySet<string> = new Set([
+  "placa",
+  "dados_veiculo_fipe",
+  "utilizacao_veiculo",
+  "bonus",
+]);
+
+/**
+ * Retorna uma CÓPIA de `dados` sem as chaves de VEÍCULO (`CHAVES_VEICULO`) —
+ * mantém os dados pessoais para a próxima cotação na mesma conversa. Pura.
+ */
+export function limparCamposVeiculo(
+  dados: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(dados)) {
+    if (CHAVES_VEICULO.has(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /** Sistema default p/ resolução de campos (FAIL-OPEN: roteiro mais rico = Segfy). */
 export const SISTEMA_CAMPOS_PADRAO = "segfy";
 
@@ -146,7 +188,7 @@ const RENOVACAO: Roteiro = {
     { chave: "telefone", rotulo: "Telefone", obrigatorio: false, dica: "Inferido do WhatsApp" },
     { chave: "email", rotulo: "E-mail", obrigatorio: true },
     { chave: "utilizacao_veiculo", rotulo: "Utilização do veículo", obrigatorio: true, dica: "Particular, trabalho, aplicativo..." },
-    { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true },
+    { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true, dica: "Pergunte marca, modelo e ano e registre a resposta INTEIRA junto NESTA chave dados_veiculo_fipe (ex.: 'Peugeot 206 2007'). NÃO crie chaves marca/modelo/ano." },
     { chave: "bonus", rotulo: "Bônus", obrigatorio: false, dica: "0 a 10, está na apólice atual" },
     { chave: "estado_civil", rotulo: "Estado civil", obrigatorio: true },
     { chave: "cep", rotulo: "CEP", obrigatorio: true, dica: "CEP onde o carro pernoita. Consulte (tool consultar_cep) e CONFIRME o logradouro com o cliente." },
@@ -172,7 +214,7 @@ const SEGURO_NOVO: Roteiro = {
     { chave: "email", rotulo: "E-mail", obrigatorio: true },
     { chave: "telefone_contato", rotulo: "Telefone de contato", obrigatorio: false, dica: "Inferido do WhatsApp" },
     { chave: "rg", rotulo: "RG", obrigatorio: true },
-    { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true },
+    { chave: "dados_veiculo_fipe", rotulo: "Dados do veículo (FIPE)", obrigatorio: true, dica: "Pergunte marca, modelo e ano e registre a resposta INTEIRA junto NESTA chave dados_veiculo_fipe (ex.: 'Peugeot 206 2007'). NÃO crie chaves marca/modelo/ano." },
     { chave: "renovacao_outro_corretor", rotulo: "Vinha de outro corretor?", obrigatorio: false },
     { chave: "bonus", rotulo: "Bônus atual", obrigatorio: false },
     // Bloco de campos por SISTEMA é anexado em getRoteiro (Segfy=questionário; Aggilizador=nasc/sexo).
@@ -349,7 +391,14 @@ export function getRoteiro(
   // Anexa o bloco de campos do SISTEMA só no ramo auto e nas categorias que o
   // usam (renovacao/seguro_novo). Default Segfy reproduz o roteiro de hoje.
   if (ramo === "auto" && CATEGORIAS_AUTO_COM_SISTEMA.has(categoria)) {
-    return { ...base, campos: [...base.campos, ...camposAutoDoSistema(sistema)] };
+    const campos = [...base.campos, ...camposAutoDoSistema(sistema)];
+    // Remove os campos que o SISTEMA não usa (ex.: Aggilizador não usa
+    // dados_veiculo_fipe/rg). Segfy: set ausente → nenhuma remoção (paridade).
+    const remover = CAMPOS_REMOVIDOS_POR_SISTEMA[sistema ?? SISTEMA_CAMPOS_PADRAO];
+    return {
+      ...base,
+      campos: remover ? campos.filter((c) => !remover.has(c.chave)) : campos,
+    };
   }
   return base;
 }

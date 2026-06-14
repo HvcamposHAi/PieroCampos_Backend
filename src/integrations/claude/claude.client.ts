@@ -46,6 +46,12 @@ export interface ResultadoBia {
    * mudou, false = tudo certo, null = ainda não respondeu claramente.
    */
   revisaoMudou: boolean | null;
+  /**
+   * Cliente quer cotar OUTRO veículo na mesma conversa (tool cotar_outro_veiculo):
+   * true = sinalizou novo carro, null = não pediu. Dispara a coleta incremental
+   * (limpa só os campos de veículo, mantém os pessoais).
+   */
+  cotarOutroVeiculo: boolean | null;
   paradaPorMaxTokens: boolean;
   uso: { input_tokens: number; output_tokens: number };
 }
@@ -58,6 +64,11 @@ export interface ChamarBiaInput {
   permitirConfirmacao?: boolean;
   /** Inclui a tool confirmar_revisao (cliente recorrente revisando os dados). */
   permitirRevisao?: boolean;
+  /**
+   * Inclui a tool cotar_outro_veiculo (cliente pode pedir, na mesma conversa, a
+   * cotação de OUTRO carro). Habilitado após uma cotação / em revisão.
+   */
+  permitirNovoVeiculo?: boolean;
   /**
    * Bloco 2 (PERSONALIZAÇÃO por canal). Entra entre a BASE e a DINÂMICA e é
    * cacheado por canal. Ausente → comportamento idêntico ao anterior (2 blocos).
@@ -145,6 +156,22 @@ const TOOL_CONFIRMAR_REVISAO = {
       },
     },
     required: ["mudou"],
+  },
+};
+
+const TOOL_COTAR_OUTRO_VEICULO = {
+  name: "cotar_outro_veiculo",
+  description:
+    "Use quando o cliente quiser cotar OUTRO veículo na mesma conversa (ex.: 'quero cotar outro carro', 'tenho mais um veículo', informa uma placa diferente). Limpa os dados do carro anterior e mantém os dados pessoais. NÃO use para corrigir um dado do mesmo carro (isso é atualizar_dados).",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      confirmado: {
+        type: "boolean" as const,
+        description: "true = o cliente quer cotar um novo veículo agora.",
+      },
+    },
+    required: ["confirmado"],
   },
 };
 
@@ -243,6 +270,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     TOOL_CONSENTIMENTO_LGPD,
     ...(input.permitirConfirmacao ? [TOOL_CONFIRMAR_COTACAO] : []),
     ...(input.permitirRevisao ? [TOOL_CONFIRMAR_REVISAO] : []),
+    ...(input.permitirNovoVeiculo ? [TOOL_COTAR_OUTRO_VEICULO] : []),
   ];
 
   // Whitelist do tool atualizar_dados: chaves do roteiro + extras da linha (custom_*).
@@ -257,6 +285,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
   let confirmarCotacao: boolean | null = null;
   let consentimentoLgpd: boolean | null = null;
   let revisaoMudou: boolean | null = null;
+  let cotarOutroVeiculo: boolean | null = null;
   let inputTokensTotal = 0;
   let outputTokensTotal = 0;
   let cacheReadTotal = 0;
@@ -309,6 +338,9 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
       } else if (block.type === "tool_use" && block.name === "confirmar_revisao") {
         const args = block.input as { mudou?: unknown } | undefined;
         if (typeof args?.mudou === "boolean") revisaoMudou = args.mudou;
+      } else if (block.type === "tool_use" && block.name === "cotar_outro_veiculo") {
+        const args = block.input as { confirmado?: unknown } | undefined;
+        if (typeof args?.confirmado === "boolean") cotarOutroVeiculo = args.confirmado;
       }
     }
 
@@ -379,6 +411,7 @@ export async function chamarBia(input: ChamarBiaInput): Promise<ResultadoBia> {
     confirmarCotacao,
     consentimentoLgpd,
     revisaoMudou,
+    cotarOutroVeiculo,
     paradaPorMaxTokens,
     uso: { input_tokens: inputTokensTotal, output_tokens: outputTokensTotal },
   };

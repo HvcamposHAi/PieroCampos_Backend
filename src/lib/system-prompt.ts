@@ -122,6 +122,18 @@ export interface BuildSystemPromptInput {
   camposCustom?: PerguntaCustom[];
   /** Sistema de cotação da corretora — define os campos auto do roteiro. Default = segfy. */
   sistema?: string;
+  /**
+   * Cliente quer cotar OUTRO veículo na mesma conversa: os dados de VEÍCULO foram
+   * limpos (só os pessoais ficaram). A Bia confirma os pessoais e pede a NOVA placa.
+   * Variante do gate de revisão (revisaoPendente também é true neste caso).
+   */
+  novoVeiculo?: boolean;
+  /**
+   * Placa (já cotada nesta conversa) que o cliente quer cotar de novo. Quando
+   * definida, na fase de confirmação a Bia deve perguntar se ele quer REFAZER a
+   * cotação desse mesmo carro antes de chamar confirmar_cotacao(true).
+   */
+  placaRepetida?: string | null;
 }
 
 const CONTEXTO_HOLDING_PADRAO = "MODO DE ATENDIMENTO: a equipe já está cuidando deste atendimento.";
@@ -174,12 +186,21 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
       "auto",
       input.sistema,
     );
-    partes.push(
-      "CLIENTE RECORRENTE (REVISÃO DE DADOS): já temos os dados abaixo de um atendimento anterior. NÃO recomece o roteiro nem pergunte campo a campo.",
-    );
-    partes.push(
-      "Sua tarefa neste turno: numa ÚNICA mensagem, cumprimente o cliente pelo nome (se souber), liste de forma organizada os dados que já temos e pergunte, de forma natural, se algo mudou ou se está tudo certo. Se o cliente JÁ informou alguma mudança CONCRETA nesta conversa (ex.: placa nova, e-mail novo, veículo diferente), chame `atualizar_dados` com ESSAS chaves AGORA (e `confirmar_revisao` com mudou=true). Se for só a apresentação inicial e ele ainda não disse o que mudou, não chame `atualizar_dados` ainda.",
-    );
+    if (input.novoVeiculo) {
+      partes.push(
+        "NOVO VEÍCULO (mesma conversa): o cliente quer cotar OUTRO carro. Os DADOS PESSOAIS abaixo (cpf, endereço, nascimento, sexo, etc.) são reaproveitados — NÃO os pergunte um a um. Os dados do VEÍCULO foram zerados.",
+      );
+      partes.push(
+        "Sua tarefa neste turno: numa ÚNICA mensagem, confirme com o cliente que vai manter os dados pessoais dele, mostre-os de forma organizada perguntando se algo mudou, e PEÇA a PLACA do NOVO veículo (e o que mais faltar do carro). Se ele já informou a placa/dados do novo carro, chame `atualizar_dados` com essas chaves AGORA.",
+      );
+    } else {
+      partes.push(
+        "CLIENTE RECORRENTE (REVISÃO DE DADOS): já temos os dados abaixo de um atendimento anterior. NÃO recomece o roteiro nem pergunte campo a campo.",
+      );
+      partes.push(
+        "Sua tarefa neste turno: numa ÚNICA mensagem, cumprimente o cliente pelo nome (se souber), liste de forma organizada os dados que já temos e pergunte, de forma natural, se algo mudou ou se está tudo certo. Se o cliente JÁ informou alguma mudança CONCRETA nesta conversa (ex.: placa nova, e-mail novo, veículo diferente), chame `atualizar_dados` com ESSAS chaves AGORA (e `confirmar_revisao` com mudou=true). Se for só a apresentação inicial e ele ainda não disse o que mudou, não chame `atualizar_dados` ainda.",
+      );
+    }
     partes.push("");
     partes.push("DADOS QUE JÁ TEMOS DESTE CLIENTE:");
     if (resumo.length === 0) {
@@ -216,6 +237,11 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
     partes.push(
       "COLETA CONCLUÍDA. Antes de gerar a cotação, PEÇA A DECISÃO do cliente: pergunte de forma natural se ele quer que você gere a cotação agora (ex.: \"Posso já buscar as melhores opções para você?\"). Quando ele responder, chame a ferramenta confirmar_cotacao com confirmado=true (se ele topar) ou false (se pedir para esperar). NÃO chame atualizar_dados aqui e NÃO prometa preço — só confirme a intenção.",
     );
+    if (input.placaRepetida) {
+      partes.push(
+        `⚠️ ATENÇÃO: a placa ${input.placaRepetida} JÁ foi cotada nesta conversa. Antes de confirmar, pergunte ao cliente se ele quer REFAZER a cotação desse MESMO carro. Só chame confirmar_cotacao(true) depois que ele confirmar que quer refazer.`,
+      );
+    }
     partes.push("");
     partes.push("CONTEXTO DO CLIENTE (RAG):");
     partes.push(input.contextoRAG || "(cliente sem histórico cadastrado)");

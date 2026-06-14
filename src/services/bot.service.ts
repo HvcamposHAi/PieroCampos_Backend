@@ -23,9 +23,13 @@ import { getEnv } from "../config/env";
 import { chamarBia, type MensagemTurno } from "../integrations/claude/claude.client";
 import { gerarQuestionarioXlsx, parseQuestionarioXlsx } from "../integrations/formulario";
 import { getSupabaseAdmin } from "../integrations/whatsapp/supabase";
-import { lerBotAtivoCanal } from "../integrations/whatsapp/persistence";
-import type { CategoriaConversa } from "../lib/roteiros";
-import { calcularProgresso, getRoteiro } from "../lib/roteiros";
+import {
+  lerBotAtivoCanal,
+  listarPlacasCotadas,
+  normalizarPlaca,
+} from "../integrations/whatsapp/persistence";
+import type { CategoriaConversa, CampoRoteiro } from "../lib/roteiros";
+import { calcularProgresso, getRoteiro, limparCamposVeiculo } from "../lib/roteiros";
 import {
   buildBlocoPersonalizacao,
   buildSystemPromptDinamico,
@@ -39,6 +43,7 @@ import {
   detectarGatilhoHandoff,
   executarHandoff,
   MENSAGEM_HANDOFF,
+  MENSAGEM_COLETA_TRAVADA,
   type MotivoHandoff,
 } from "./handoff.service";
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
@@ -318,6 +323,102 @@ export function escolherCampoForcado(
     if (campo) return campo;
   }
   return null;
+}
+
+// ── Quebra-loop da coleta ("pergunta → registra → avança, JAMAIS loop") ────────
+// Garantia de CÓDIGO (não só prompt): um obrigatório que fica no TOPO dos pendentes
+// por mais de MAX_REPS_CAMPO turnos sem preencher é ADIADO (a Bia passa ao próximo
+// campo, nunca re-pergunta em loop). Se TODOS os pendentes forem adiados → escala
+// para um humano concluir (motivo coleta_travada). Estado em dados_bot (jsonb).
+
+const MAX_REPS_CAMPO = 2;
+
+interface EstadoLoopColeta {
+  coletaTop: string | null;
+  coletaReps: number;
+  adiados: string[];
+}
+
+/** Lê o estado do quebra-loop de dados_bot (defensivo). */
+function lerEstadoLoopColeta(dadosBot: Record<string, unknown>): EstadoLoopColeta {
+  const top = (dadosBot as { coleta_top?: unknown }).coleta_top;
+  const reps = (dadosBot as { coleta_reps?: unknown }).coleta_reps;
+  const adi = (dadosBot as { campos_adiados?: unknown }).campos_adiados;
+  return {
+    coletaTop: typeof top === "string" ? top : null,
+    coletaReps: typeof reps === "number" && Number.isFinite(reps) ? reps : 0,
+    adiados: Array.isArray(adi) ? adi.filter((c): c is string => typeof c === "string") : [],
+  };
+}
+
+/**
+ * Próximo obrigatório a perguntar, PULANDO os campos adiados pelo quebra-loop.
+ * Fallback p/ o 1º pendente se todos estiverem adiados (defensivo — o escalonamento
+ * acontece antes). Pura (testável).
+ */
+export function proximoCampoColeta(
+  categoria: CategoriaConversa | null,
+  dados: Record<string, unknown>,
+  sistema: string | undefined,
+  adiados: readonly string[],
+): CampoRoteiro | null {
+  const { pendentesObrigatorios } = calcularProgresso(categoria, dados, "auto", sistema);
+  const fora = new Set(adiados);
+  return pendentesObrigatorios.find((c) => !fora.has(c.chave)) ?? pendentesObrigatorios[0] ?? null;
+}
+
+export interface AvaliacaoLoopColeta {
+  top: string | null;
+  reps: number;
+  adiados: string[];
+  /** Todos os pendentes foram adiados → escalar (não há campo novo a perguntar). */
+  travado: boolean;
+  completo: boolean;
+}
+
+/**
+ * Avalia o progresso da coleta APÓS o merge do turno: incrementa o contador do
+ * campo que está há mais turnos no topo dos pendentes; ao passar de MAX_REPS_CAMPO,
+ * adia o campo (a Bia avança). Pura (testável). `travado` = não sobrou nenhum
+ * obrigatório fora dos adiados, mas ainda há obrigatório pendente → handoff.
+ */
+export function avaliarLoopColeta(p: {
+  estado: EstadoLoopColeta;
+  dadosPos: Record<string, unknown>;
+  categoria: CategoriaConversa | null;
+  sistema?: string;
+}): AvaliacaoLoopColeta {
+  const { pendentesObrigatorios, completo } = calcularProgresso(
+    p.categoria,
+    p.dadosPos,
+    "auto",
+    p.sistema,
+  );
+  const pendentesChaves = new Set(pendentesObrigatorios.map((c) => c.chave));
+  // Tira dos adiados o que já não está pendente (preenchido por outra via).
+  let adiados = p.estado.adiados.filter((a) => pendentesChaves.has(a));
+  let topCampo = pendentesObrigatorios.find((c) => !adiados.includes(c.chave)) ?? null;
+  let reps = topCampo && topCampo.chave === p.estado.coletaTop ? p.estado.coletaReps + 1 : 1;
+  // Mesmo campo no topo por > MAX turnos sem preencher → adia e avança.
+  if (topCampo && reps >= MAX_REPS_CAMPO) {
+    adiados = [...adiados, topCampo.chave];
+    reps = 1;
+    topCampo = pendentesObrigatorios.find((c) => !adiados.includes(c.chave)) ?? null;
+  }
+  const travado = pendentesObrigatorios.length > 0 && topCampo === null;
+  return { top: topCampo?.chave ?? null, reps, adiados, travado, completo };
+}
+
+/** Sobrescreve dados_coletados (usado ao limpar campos de veículo — não é merge). */
+async function salvarDadosColetados(
+  conversaId: string,
+  dados: Record<string, unknown>,
+): Promise<void> {
+  const sb = getSupabaseAdmin();
+  const { error } = await sb.from("conversas").update({ dados_coletados: dados }).eq("id", conversaId);
+  if (error) {
+    logger.warn("[bot] falha ao sobrescrever dados_coletados", { conversaId, erro: error.message });
+  }
 }
 
 /** Remove da fila campos_forcados as chaves já preenchidas. No-op se nada mudou. */
@@ -716,7 +817,15 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   // FAIL-OPEN → segfy. Resolvido uma vez e reusado em progresso/prompt/finalização.
   const sistema = await lerSistemaDoCanal(conversa.canal_id);
   const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados, "auto", sistema);
-  const proximoCampo = progresso.pendentesObrigatorios[0] ?? null;
+  // Próximo campo PULANDO os adiados pelo quebra-loop (a Bia não re-pergunta um
+  // campo que já travou; segue para o seguinte).
+  const adiadosAtuais = lerEstadoLoopColeta(conversa.dados_bot).adiados;
+  const proximoCampo = proximoCampoColeta(
+    conversa.categoria,
+    conversa.dados_coletados,
+    sistema,
+    adiadosAtuais,
+  );
   // Telefone do cliente = número do WhatsApp em contato (E.164). Só p/ JID real
   // (@s.whatsapp.net); JID oculto (@lid) não é número → null (a Bia pergunta).
   const telefoneContato = input.jidRemoto.endsWith("@s.whatsapp.net")
@@ -733,6 +842,20 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   const ehConfirmacao = conversa.estado === "aguardando_confirmacao_cotacao";
   // Cliente recorrente: apresentar os dados de uma vez e perguntar se mudou algo.
   const revisaoPendente = modo === "ativo" && !ehConfirmacao && emRevisao(conversa.dados_bot);
+  // Novo veículo na mesma conversa: revisão "mostra os pessoais e pede a nova placa".
+  const novoVeiculo = revisaoPendente && (conversa.dados_bot as { novo_veiculo?: unknown }).novo_veiculo === true;
+  // Placa já cotada nesta conversa (na fase de confirmação) → a Bia pergunta se
+  // quer REFAZER antes de gerar novo registro. Best-effort (1 query só na confirmação).
+  let placaRepetida: string | null = null;
+  if (ehConfirmacao) {
+    try {
+      const placas = await listarPlacasCotadas(conversa.id);
+      const placaAtual = normalizarPlaca(conversa.dados_coletados.placa);
+      if (placaAtual && placas.has(placaAtual)) placaRepetida = placaAtual;
+    } catch {
+      /* best-effort */
+    }
+  }
   const oferecerModalidade =
     !ehConfirmacao &&
     !revisaoPendente &&
@@ -773,6 +896,8 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     oferecerModalidade,
     pedirConfirmacaoCotacao: ehConfirmacao,
     revisaoPendente,
+    novoVeiculo,
+    placaRepetida,
     camposExcluidos,
     camposCustom,
     sistema,
@@ -808,6 +933,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       historico,
       permitirConfirmacao: ehConfirmacao,
       permitirRevisao: revisaoPendente,
+      permitirNovoVeiculo: ehConfirmacao || revisaoPendente,
       systemPersonalizacao: configAgente ? buildBlocoPersonalizacao(configAgente) : undefined,
       systemAprendizado: aprendizadoTexto || undefined,
       temperature: configAgente?.temperature,
@@ -893,6 +1019,33 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   // 8) Enviar a resposta da Bia ao cliente (se houver texto).
   await enviarRespostaBia(resposta.texto, input.enviar, conversa.id);
 
+  // 8.0) Cliente quer cotar OUTRO veículo na mesma conversa: limpa SÓ os campos de
+  //      veículo (mantém os pessoais), entra em revisão "novo veículo" e pede a nova
+  //      placa. Cada cotação vira um registro próprio (1:N por conversa). Reusa o
+  //      bloco de revisão ("mostra os dados e pergunta se mudou"). Fecha o turno.
+  if (resposta.cotarOutroVeiculo === true) {
+    // Limpa os campos de veículo ANTIGOS e então aplica o que o cliente já tenha
+    // informado do NOVO carro nesta mesma mensagem (não perde a placa nova).
+    const semVeiculoAntigo = limparCamposVeiculo(conversa.dados_coletados);
+    await salvarDadosColetados(conversa.id, { ...semVeiculoAntigo, ...resposta.camposExtraidos });
+    await mergeDadosBot(conversa.id, conversa.dados_bot, {
+      revisao_pendente: true,
+      novo_veiculo: true,
+      revisao_tentativas: 0,
+      // Zera o quebra-loop para a coleta do novo veículo.
+      coleta_top: null,
+      coleta_reps: 0,
+      campos_adiados: [],
+    });
+    if (conversa.estado !== "bot_ativo") {
+      await getSupabaseAdmin().from("conversas").update({ estado: "bot_ativo" }).eq("id", conversa.id);
+    }
+    logger.info("[bot] novo veículo na mesma conversa (revisão de novo carro)", {
+      conversaId: conversa.id,
+    });
+    return;
+  }
+
   // 8.05) Revisão do cliente recorrente: ele acabou de ver todos os dados de uma
   //       vez. NÃO deixa o fluxo cair em finalizarSeRoteiroCompleto enquanto a
   //       revisão não for respondida (evita pular para a cotação sem confirmar).
@@ -903,6 +1056,7 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       await mergeDadosBot(conversa.id, conversa.dados_bot, {
         revisao_pendente: false,
         revisao_tentativas: 0,
+        novo_veiculo: false,
       });
       const dadosPos = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
       await finalizarSeRoteiroCompleto({
@@ -958,9 +1112,51 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     return;
   }
 
-  // 10) Roteiro recém-concluído → vai p/ a fase de CONFIRMAÇÃO do cliente
-  //     (não dispara cotação automaticamente). Helper compartilhado c/ formulário.
+  // 10) Quebra-loop ("pergunta → registra → avança, JAMAIS loop"): se um obrigatório
+  //     ficou travado (sem preencher por 2 turnos no topo), adia e avança; se TODOS
+  //     os pendentes travaram, escala para um humano em vez de re-perguntar em loop.
+  //     FAIL-SAFE: erro aqui não interrompe a finalização. Só na coleta normal
+  //     (revisão/confirmação/modalidade já retornaram acima).
   const dadosMerge = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
+  // Não conta tentativa quando o operador forçou OUTRO campo (a Bia não estava
+  // perguntando o obrigatório do topo neste turno).
+  if (!campoForcado) {
+    try {
+      const aval = avaliarLoopColeta({
+        estado: lerEstadoLoopColeta(conversa.dados_bot),
+        dadosPos: dadosMerge,
+        categoria: conversa.categoria,
+        sistema,
+      });
+      if (aval.travado) {
+        await input.enviar(MENSAGEM_COLETA_TRAVADA);
+        await executarHandoff({ conversaId: conversa.id, motivo: "coleta_travada" });
+        await mergeDadosBot(conversa.id, conversa.dados_bot, {
+          campos_adiados: aval.adiados,
+          coleta_reps: 0,
+        });
+        await dispararAlerta(input, "coleta_travada", conversa.id);
+        return;
+      }
+      if (!aval.completo) {
+        // Registra o estado do quebra-loop e o campo do topo (p/ a próxima rodada).
+        const prox = proximoCampoColeta(conversa.categoria, dadosMerge, sistema, aval.adiados);
+        await mergeDadosBot(conversa.id, conversa.dados_bot, {
+          coleta_top: prox?.chave ?? null,
+          coleta_reps: aval.reps,
+          campos_adiados: aval.adiados,
+        });
+      }
+    } catch (e) {
+      logger.warn("[bot] quebra-loop falhou; seguindo sem ele", {
+        conversaId: conversa.id,
+        erro: (e as Error).message,
+      });
+    }
+  }
+
+  // 10.1) Roteiro recém-concluído → vai p/ a fase de CONFIRMAÇÃO do cliente
+  //       (não dispara cotação automaticamente). Helper compartilhado c/ formulário.
   await finalizarSeRoteiroCompleto({
     conversaId: conversa.id,
     categoria: conversa.categoria,

@@ -62,7 +62,7 @@ function normalizar(s: string): string {
 }
 
 /** Famílias de motivo do handoff, para o alerta legível ao operador. */
-export type MotivoHandoff = "pedido_humano" | "insatisfacao" | "urgencia" | "vip";
+export type MotivoHandoff = "pedido_humano" | "insatisfacao" | "urgencia" | "vip" | "coleta_travada";
 
 const GATILHOS_INSATISFACAO: ReadonlyArray<string> = [
   "absurdo",
@@ -102,6 +102,7 @@ const LABEL_MOTIVO: Record<MotivoHandoff, string> = {
   insatisfacao: "Possível insatisfação / rispidez do cliente",
   urgencia: "Urgência (sinistro/acidente/roubo)",
   vip: "Cliente VIP",
+  coleta_travada: "Coleta travada (campo não preenchido após várias tentativas)",
 };
 
 export interface MontarMensagemAlertaInput {
@@ -173,3 +174,11 @@ export async function executarHandoff(input: ExecutarHandoffInput): Promise<void
  */
 export const MENSAGEM_HANDOFF =
   "Sem problema! Já estou chamando um corretor da nossa equipe para te atender. Em instantes alguém entra em contato. 👋";
+
+/**
+ * Mensagem ao cliente quando a coleta TRAVA (um campo obrigatório não foi
+ * preenchido após várias tentativas). Em vez de re-perguntar em loop, a Bia
+ * transfere para um humano concluir. Texto fixo (não vai a Claude).
+ */
+export const MENSAGEM_COLETA_TRAVADA =
+  "Pra não te deixar repetindo, vou chamar um corretor da nossa equipe para concluir sua cotação com calma. Em instantes alguém fala com você por aqui. 🙏";

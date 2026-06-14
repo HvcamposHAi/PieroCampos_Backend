@@ -44,6 +44,13 @@ describe("getRoteiro por sistema (auto)", () => {
     expect(ch).not.toContain("garagem");
     expect(ch).not.toContain("km_mes");
     expect(ch).not.toContain("condutor_jovem");
+    // Aggilizador decodifica o veículo pela PLACA e não usa dados_veiculo_fipe/rg:
+    // removidos do roteiro (não pedidos) — o Segfy os mantém.
+    expect(ch).not.toContain("dados_veiculo_fipe");
+    expect(ch).not.toContain("rg");
+    const segNovo = getRoteiro("seguro_novo", "auto", "segfy")!.campos.map((c) => c.chave);
+    expect(segNovo).toContain("dados_veiculo_fipe");
+    expect(segNovo).toContain("rg");
     // obrigatoriedade
     const obrig = (k: string) => r.campos.find((c) => c.chave === k)?.obrigatorio;
     expect(obrig("data_nascimento")).toBe(true);
@@ -72,7 +79,11 @@ describe("getRoteiro por sistema (auto)", () => {
       expect.arrayContaining(["data_nascimento", "sexo"]),
     );
     expect(seg.pendentesObrigatorios.map((c) => c.chave)).toContain("profissao");
-    expect(agg.total).not.toBe(seg.total); // totais diferentes por sistema
+    // Aggilizador não conta dados_veiculo_fipe (removido); Segfy conta.
+    expect(agg.pendentesObrigatorios.map((c) => c.chave)).not.toContain("dados_veiculo_fipe");
+    const dadosSemFipe = { ...dados, dados_veiculo_fipe: "" };
+    const segSemFipe = calcularProgresso("renovacao", dadosSemFipe, "auto", "segfy");
+    expect(segSemFipe.pendentesObrigatorios.map((c) => c.chave)).toContain("dados_veiculo_fipe");
   });
 
   it("getCatalogoCampos reflete o sistema", () => {
