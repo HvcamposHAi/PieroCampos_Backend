@@ -54,7 +54,7 @@ describe("mapearParaCotacaoAggilizador", () => {
 
   it("estado civil ausente/desconhecido → default 3 (outros); data dd/mm/aaaa aceita", () => {
     const r = mapearParaCotacaoAggilizador(
-      { cpf: "090.656.619-30", placa: "SFI7F72", cep: "81270320", data_nascimento: "03/11/1980" },
+      { cpf: "090.656.619-30", placa: "SFI7F72", cep: "81270320", data_nascimento: "03/11/1980", sexo: "masculino" },
       CLIENTE,
     );
     expect(r.entrada?.estadoCivilCodigo).toBe(3);
@@ -62,5 +62,25 @@ describe("mapearParaCotacaoAggilizador", () => {
     // email/nome herdam do cadastro do cliente quando não coletados.
     expect(r.entrada?.email).toBe("k@x.com");
     expect(r.entrada?.nome).toBe("Karla");
+  });
+
+  it("Aggilizador EXIGE data de nascimento + sexo → faltando específico (msg clara)", () => {
+    // cpf/placa/cep OK, mas SEM nasc/sexo (o Aggilizador não os busca em API).
+    const r = mapearParaCotacaoAggilizador(
+      { cpf: "090.656.619-30", placa: "SFI7F72", cep: "81270320" },
+      CLIENTE,
+    );
+    expect(r.entrada).toBeNull();
+    expect(r.faltando).toContain("data de nascimento");
+    expect(r.faltando).toContain("sexo");
+  });
+
+  it("só sexo faltando → faltando = ['sexo'] (cpf/placa/cep/nasc OK)", () => {
+    const r = mapearParaCotacaoAggilizador(
+      { cpf: "090.656.619-30", placa: "SFI7F72", cep: "81270320", data_nascimento: "1980-11-03" },
+      CLIENTE,
+    );
+    expect(r.entrada).toBeNull();
+    expect(r.faltando).toEqual(["sexo"]);
   });
 });

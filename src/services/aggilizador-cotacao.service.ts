@@ -75,8 +75,12 @@ export async function dispararCotacaoAggilizador(
 
   const { entrada, faltando } = mapearParaCotacaoAggilizador(params.dados, cliente);
   if (!entrada) {
-    const etapaFalha = faltando.some((f) => f.startsWith("cpf")) ? "segurado" : "veiculo";
-    return falhar(etapaFalha, `Faltam dados para cotar: ${faltando.join(", ")}. Complemente em 'Dados coletados'.`);
+    // Dados do SEGURADO (cpf/nascimento/sexo) → etapa "segurado"; placa/cep → "veiculo".
+    const ehSegurado = faltando.some((f) => /cpf|nascimento|sexo|segurado/i.test(f));
+    return falhar(
+      ehSegurado ? "segurado" : "veiculo",
+      `Cotação não disparada — faltam: ${faltando.join(", ")}. Complete em 'Dados coletados' (ou peça à Bia) e cote de novo.`,
+    );
   }
 
   // Login do Aggilizador da corretora (mesma linha do Segfy no banco; o `password`

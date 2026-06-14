@@ -77,7 +77,19 @@ export function mapearParaCotacaoAggilizador(
   cliente: { cpf: string | null; nome?: string | null; email?: string | null; telefone?: string | null },
 ): EntradaMapeadaAggilizador {
   const { cpf, placa, cep, faltando } = extrairObrigatorios(dados, cliente);
-  if (faltando.length > 0 || !cpf || !placa || !cep) return { entrada: null, faltando };
+
+  // O Aggilizador NÃO tem a API que preenche nome/nascimento/sexo do Segfy —
+  // esses campos precisam ser coletados. Validamos aqui (espelha o roteiro do
+  // Aggilizador) para a cotação dar uma mensagem ESPECÍFICA do que falta, em vez
+  // de falhar fundo na etapa do segurado. Nome cai no cliente; nasc/sexo não.
+  const dataNascimento = normalizarData(dados.data_nascimento);
+  const sexo = normalizarSexo(dados.sexo);
+  const faltandoAgg = [...faltando];
+  if (!dataNascimento) faltandoAgg.push("data de nascimento");
+  if (!sexo) faltandoAgg.push("sexo");
+  if (faltandoAgg.length > 0 || !cpf || !placa || !cep) {
+    return { entrada: null, faltando: faltandoAgg };
+  }
 
   const estadoCivilKey = asString(dados.estado_civil)?.toLowerCase();
   const entrada: EntradaAggilizador = {
@@ -87,8 +99,8 @@ export function mapearParaCotacaoAggilizador(
     nome: asString(dados.nome) ?? cliente.nome ?? undefined,
     email: asString(dados.email) ?? cliente.email ?? undefined,
     telefone: (asString(dados.telefone) ?? cliente.telefone ?? "").replace(/\D/g, "") || undefined,
-    dataNascimento: normalizarData(dados.data_nascimento),
-    sexo: normalizarSexo(dados.sexo),
+    dataNascimento,
+    sexo,
     estadoCivilCodigo: (estadoCivilKey && MAP_ESTADO_CIVIL_AGG[estadoCivilKey]) || ESTADO_CIVIL_DEFAULT,
     zeroKm: ehSim(dados.zero_km) === true,
   };
