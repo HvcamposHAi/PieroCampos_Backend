@@ -50,7 +50,7 @@ ABERTURA DE CONVERSA (cliente novo, sem contexto)
 ABERTURA DE CONVERSA (cliente recorrente — usar o nome do contexto)
 "Olá, [primeiro nome]! Que bom falar com você. Como posso te ajudar?"
 
-ENCERRAMENTO (quando completar o roteiro)
+ENCERRAMENTO (APENAS quando TODOS os campos obrigatórios estiverem preenchidos — nunca antes)
 "Perfeito, [primeiro nome]! Tenho tudo que preciso. Vou repassar pra equipe e te dou retorno aqui pelo WhatsApp. ✅"
 `;
 
@@ -169,7 +169,7 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
       "CLIENTE RECORRENTE (REVISÃO DE DADOS): já temos os dados abaixo de um atendimento anterior. NÃO recomece o roteiro nem pergunte campo a campo.",
     );
     partes.push(
-      "Sua tarefa neste turno: numa ÚNICA mensagem, cumprimente o cliente pelo nome (se souber), liste de forma organizada os dados que já temos e pergunte, de forma natural, se algo mudou ou se está tudo certo. NÃO chame a ferramenta atualizar_dados neste turno.",
+      "Sua tarefa neste turno: numa ÚNICA mensagem, cumprimente o cliente pelo nome (se souber), liste de forma organizada os dados que já temos e pergunte, de forma natural, se algo mudou ou se está tudo certo. Se o cliente JÁ informou alguma mudança CONCRETA nesta conversa (ex.: placa nova, e-mail novo, veículo diferente), chame `atualizar_dados` com ESSAS chaves AGORA (e `confirmar_revisao` com mudou=true). Se for só a apresentação inicial e ele ainda não disse o que mudou, não chame `atualizar_dados` ainda.",
     );
     partes.push("");
     partes.push("DADOS QUE JÁ TEMOS DESTE CLIENTE:");
@@ -177,6 +177,20 @@ export function buildSystemPromptDinamico(input: BuildSystemPromptInput): string
       partes.push("  (nenhum)");
     } else {
       for (const linha of resumo) partes.push(`  ${linha}`);
+    }
+    // Obrigatórios que o cliente recorrente ainda NÃO tem salvos (ex.: o sistema
+    // da corretora passou a exigir data_nascimento/sexo). Sem isto, a Bia não
+    // sabe o que falta e encerra cedo ("repasso pra equipe"). Trava o encerramento.
+    const pendentesRev = input.pendentesObrigatorios ?? [];
+    if (pendentesRev.length > 0) {
+      partes.push("");
+      partes.push(
+        "⚠️ AINDA FALTAM estes dados OBRIGATÓRIOS para cotar (o cliente recorrente não os tem salvos):",
+      );
+      for (const c of pendentesRev) partes.push(`  - ${c.rotulo}`);
+      partes.push(
+        "Depois de confirmar o que mudou, COLETE esses campos com o cliente, de forma natural. NUNCA diga que \"tem tudo\" nem fale em \"repassar para a equipe\" enquanto faltar algum obrigatório.",
+      );
     }
     partes.push("");
     partes.push(
