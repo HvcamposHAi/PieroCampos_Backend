@@ -847,12 +847,14 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
 
   // 3) RAG + monta prompt.
   let contextoTexto = "";
+  let clienteTelefoneCadastro: string | null = null;
   try {
     const ctx = await buscarContextoRAG({
       clienteId: conversa.cliente_id,
       conversaAtualId: conversa.id,
     });
     contextoTexto = montarContextoRAG(ctx);
+    clienteTelefoneCadastro = ctx.cliente?.telefone ?? null;
 
     // VIP: handoff imediato sem chamar Claude (só no fluxo ativo; em holding o
     // humano já assumiu).
@@ -876,11 +878,13 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
   const sistema = await lerSistemaDoCanal(conversa.canal_id);
   const progresso = calcularProgresso(conversa.categoria, conversa.dados_coletados, "auto", sistema);
   const proximoCampo = proximoCampoColeta(conversa.categoria, conversa.dados_coletados, sistema);
-  // Telefone do cliente = número do WhatsApp em contato (E.164). Só p/ JID real
-  // (@s.whatsapp.net); JID oculto (@lid) não é número → null (a Bia pergunta).
-  const telefoneContato = input.jidRemoto.endsWith("@s.whatsapp.net")
-    ? normalizarTelefoneBr(input.jidRemoto.split("@")[0] ?? "")
-    : null;
+  // Telefone do cliente = número do WhatsApp em contato (E.164). Fonte: o JID real
+  // (@s.whatsapp.net) e, como fallback (JID oculto @lid / conversa simulada), o
+  // telefone do CADASTRO. A Bia registra e CONFIRMA — não pergunta do zero.
+  const telefoneContato =
+    (input.jidRemoto.endsWith("@s.whatsapp.net")
+      ? normalizarTelefoneBr(input.jidRemoto.split("@")[0] ?? "")
+      : null) ?? (clienteTelefoneCadastro ? normalizarTelefoneBr(clienteTelefoneCadastro) : null);
   // Pedido do operador (fila campos_forcados): prioridade máxima. Se não houver,
   // o AUDITOR de coleta pode forçar a pergunta do obrigatório que está faltando
   // (evita a Bia divagar e nunca completar o roteiro).
@@ -1064,6 +1068,30 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
     }
   }
 
+  // 7.2) Telefone de contato AUTOMÁTICO (número do WhatsApp em contato ou, em
+  //      fallback, o do cadastro). A Bia é instruída a registrá-lo e CONFIRMAR
+  //      (regra 11 + injeção no prompt). Damos a ela 1 turno para confirmar; se
+  //      ainda assim não registrar, capturamos o número (o cliente está falando
+  //      justamente dele) para não deixar o campo vazio. Best-effort, não bloqueia.
+  if (telefoneContato && conversa.categoria) {
+    const roteiroTel = getRoteiro(conversa.categoria, "auto", sistema);
+    const chaveTel = roteiroTel?.campos.find(
+      (c) => c.chave === "telefone_contato" || c.chave === "telefone",
+    )?.chave;
+    const baseTel = { ...conversa.dados_coletados, ...resposta.camposExtraidos };
+    if (chaveTel && !baseTel.telefone && !baseTel.telefone_contato) {
+      const jaSugerido = (conversa.dados_bot as { telefone_sugerido?: unknown }).telefone_sugerido === true;
+      if (jaSugerido) {
+        await mergeDadosColetados(conversa.id, baseTel, { [chaveTel]: telefoneContato });
+        conversa.dados_coletados = { ...conversa.dados_coletados, [chaveTel]: telefoneContato };
+      } else {
+        // Reatribui o dados_bot local para os merges seguintes (auditor) não
+        // sobrescreverem este flag — mergeDadosBot substitui a coluna inteira.
+        conversa.dados_bot = await mergeDadosBot(conversa.id, conversa.dados_bot, { telefone_sugerido: true });
+      }
+    }
+  }
+
   // 7.1) Dequeue da fila de campos forçados: remove os que já foram preenchidos
   //      (pelo operador ou agora pelo cliente). Best-effort, não bloqueia a resposta.
   await sincronizarFilaForcada(conversa.id, conversa.dados_bot, {
@@ -1185,12 +1213,12 @@ export async function processarMensagem(input: ProcessarMensagemInput): Promise<
       if (aval.escalar) {
         await input.enviar(MENSAGEM_COLETA_TRAVADA);
         await executarHandoff({ conversaId: conversa.id, motivo: "coleta_travada" });
-        await mergeDadosBot(conversa.id, conversa.dados_bot, aval.novoEstado);
+        conversa.dados_bot = await mergeDadosBot(conversa.id, conversa.dados_bot, aval.novoEstado);
         await dispararAlerta(input, "coleta_travada", conversa.id);
         return;
       }
       if (!aval.completo) {
-        await mergeDadosBot(conversa.id, conversa.dados_bot, aval.novoEstado);
+        conversa.dados_bot = await mergeDadosBot(conversa.id, conversa.dados_bot, aval.novoEstado);
       }
     } catch (e) {
       logger.warn("[bot] auditor de coleta falhou; seguindo sem ele", {

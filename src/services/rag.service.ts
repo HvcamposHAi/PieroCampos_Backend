@@ -17,6 +17,7 @@ export interface ClienteRAG {
   id: string;
   nome: string | null;
   email: string | null;
+  telefone: string | null;
   estado_civil: string | null;
   endereco: unknown;
   consentimento_lgpd: boolean;
@@ -55,7 +56,7 @@ export async function buscarContextoRAG(input: {
   const [cliRes, apoRes, convRes] = await Promise.all([
     sb
       .from("clientes")
-      .select("id, nome, email, estado_civil, endereco, consentimento_lgpd, atendimento_vip")
+      .select("id, nome, email, telefone, estado_civil, endereco, consentimento_lgpd, atendimento_vip")
       .eq("id", input.clienteId)
       .maybeSingle(),
     sb

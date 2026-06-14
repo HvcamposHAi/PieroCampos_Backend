@@ -103,12 +103,12 @@ beforeEach(() => {
   h.chamarBia.mockReset();
 });
 
-async function rodar(texto: string) {
+async function rodar(texto: string, jidRemoto = "5541@s.whatsapp.net") {
   const textos: string[] = [];
   await processarMensagem({
     canalId: "canal1",
     conversaId: "conv1",
-    jidRemoto: "5541@s.whatsapp.net",
+    jidRemoto,
     textoCliente: texto,
     enviar: async (t) => {
       textos.push(t);
@@ -151,6 +151,29 @@ describe("auditor de coleta em processarMensagem", () => {
 
     expect(h.conversa.estado).toBe("humano_assumiu");
     expect(textos).toContain(MENSAGEM_COLETA_TRAVADA);
+  });
+});
+
+describe("telefone de contato automático", () => {
+  it("dá 1 chance à Bia e, se ela não registrar, captura o número do WhatsApp", async () => {
+    h.conversa = {
+      id: "conv1", cliente_id: "cli1", canal_id: "canal1",
+      estado: "bot_ativo", categoria: "seguro_novo",
+      dados_coletados: { segurado: "João" },
+      dados_bot: {},
+      operador_id: null,
+    };
+    h.chamarBia.mockResolvedValue({ ...RESP_BASE }); // a Bia nunca registra o telefone
+
+    // 1º turno: apenas sinaliza (telefone_sugerido) — dá à Bia a chance de confirmar.
+    await rodar("oi", "5541999998888@s.whatsapp.net");
+    expect(h.conversa.dados_bot.telefone_sugerido).toBe(true);
+    expect(h.conversa.dados_coletados.telefone_contato).toBeUndefined();
+
+    // 2º turno: a Bia segue sem registrar → captura o número (não deixa vazio).
+    await rodar("oi de novo", "5541999998888@s.whatsapp.net");
+    expect(typeof h.conversa.dados_coletados.telefone_contato).toBe("string");
+    expect(h.conversa.dados_coletados.telefone_contato).toContain("99999");
   });
 });
 
