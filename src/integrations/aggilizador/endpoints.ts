@@ -49,9 +49,14 @@ export const AGGILIZADOR_MULTICALCULO_API = {
   cep: (cep: string): string => `/calculo/cep?cep=${encodeURIComponent(cep)}`,
   /** GET ?placa= → { fipe, anoMod, anoFab, tipoVeic, placa, chassi, codFabr, modelo }. */
   buscaPlaca: (placa: string): string => `/calculo/buscaPlaca?placa=${encodeURIComponent(placa)}`,
-  /** GET ?ano=&fipe=&zero=false → [{ id, modelo, tipo, fipeValores[] }]. */
-  fipeModelo: (ano: string, fipe: string): string =>
-    `/calculo/fipeModelo?ano=${encodeURIComponent(ano)}&fipe=${encodeURIComponent(fipe)}&zero=false`,
+  /**
+   * GET ?tipo=&modelo=<descrição>&ano=<anoModelo> → [{ id, modelo, tipo,
+   * fipeFabricanteId, fipeValores:[{valor, mesVersaoTabela, anoVersaoTabela}] }].
+   * ✅ params confirmados no HAR (13/06): chaveia por DESCRIÇÃO+ANO (não pela fipe);
+   * o `valReferenciado` = `valor` da ÚLTIMA entrada de fipeValores (tabela atual).
+   */
+  fipeModelo: (descricao: string, ano: string): string =>
+    `/calculo/fipeModelo?tipo=&modelo=${encodeURIComponent(descricao)}&ano=${encodeURIComponent(ano)}`,
   /** GET ?cpfCnpj=&ramo=31 → [] se não houver cotação recente do segurado. */
   seguradoCotadoRecentemente: (cpf: string, ramo: number = RAMO_AUTO_SUSEP): string =>
     `/calculo/seguradoCotadoRecentemente?cpfCnpj=${encodeURIComponent(cpf)}&ramo=${ramo}`,

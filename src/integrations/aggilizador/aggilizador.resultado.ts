@@ -56,6 +56,7 @@ const PlanoSchema = z
 export const PollingItemSchema = z
   .object({
     seguradoraTxt: z.string().optional(),
+    nomeSeguradora: z.string().optional(), // ✅ nome no item de SUCESSO (HAR)
     seguradora: z.number().optional(),
     retorno: z.boolean().optional(),
     retornoErro: z.boolean().optional(),
@@ -73,7 +74,12 @@ export function todasRetornaram(itens: unknown[]): boolean {
   return itens.every((raw) => {
     const r = PollingItemSchema.safeParse(raw);
     if (!r.success) return false;
-    return r.data.retorno === true || r.data.retornoErro === true;
+    const premio = r.data.premio;
+    return (
+      r.data.retorno === true ||
+      r.data.retornoErro === true ||
+      (typeof premio === "number" && premio > 0)
+    );
   });
 }
 
@@ -137,15 +143,17 @@ export function mapearResultadoAggilizador(raw: unknown): ResultadoCotacaoItem {
   const d = PollingItemSchema.parse(raw);
   const premio = typeof d.premio === "number" && Number.isFinite(d.premio) ? d.premio : 0;
   const erro = d.retornoErro === true;
-  const respondeu = d.retorno === true;
-  const cotado = respondeu && !erro && premio > 0;
+  // Item de SUCESSO traz premio>0 (com ou sem `retorno` explícito); `respondeu`
+  // cobre também a recusa (retorno:true, premio 0). erro tem prioridade.
+  const cotado = !erro && premio > 0;
+  const respondeu = d.retorno === true || premio > 0 || erro;
 
   // Plano destaque: `principal:true` (o que o Aggilizador exibe), senão o 1º.
   const plano = d.resultados?.find((r) => r.principal) ?? d.resultados?.[0];
   const { parcelas, valor_parcela } = melhorParcelamento(plano, premio);
 
   return {
-    seguradora: d.seguradoraTxt ?? "Seguradora",
+    seguradora: d.seguradoraTxt ?? d.nomeSeguradora ?? "Seguradora",
     premio_total: premio,
     parcelas,
     valor_parcela,

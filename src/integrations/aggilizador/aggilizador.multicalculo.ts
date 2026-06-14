@@ -40,6 +40,7 @@ import type {
   CepResponse,
   CoberturasPayload,
   CondutorPayload,
+  FipeModeloItem,
   ResultadoCotacaoItem,
   SeguradoPayload,
   SeguradoraConfigItem,
@@ -114,24 +115,32 @@ export function selecionarCalculosAuto(
   const operaAuto = (s: SeguradoraConfigItem): boolean => autoAtivas.size === 0 || autoAtivas.has(s.seguradora);
 
   const elegiveis = lista.filter((s) => ativa(s) && credOk(s) && operaAuto(s) && !ocultas.has(s.seguradora));
-  const calculos: CalculoSeguradora[] = elegiveis.map((s) => ({
-    ...COBERTURAS_PADRAO,
-    ativo: true,
-    nome: s.nomeSeguradora,
-    nomeSeguradora: s.nomeSeguradora,
-    login: s.login,
-    senha: s.senha,
-    seguradora: s.seguradora,
-    idIntegracao: s.idIntegracao ?? `_seguradora_${s.seguradora}_corretora_${corretoraId}_`,
-    percComissao: s.percComissao ?? 0,
-    percDesconto: s.percDesconto ?? 0,
-    configsGlobais: true,
-    credenciaisValidas: true,
-    valorDeNovo,
-    parcelasBaixar: false,
-    aplicacaoId: 3,
-    cargaIniciada: false,
-  }));
+  const calculos: CalculoSeguradora[] = elegiveis.map((s) => {
+    const id = s.idIntegracao ?? `_seguradora_${s.seguradora}_corretora_${corretoraId}_`;
+    return {
+      // Campos ESPECÍFICOS da seguradora (portoSusep, libertyFiliais, bradesco
+      // Sucursal, mapfreCodVc, …) — o motor exige cada um; vêm do configsSeg do HAR.
+      ...(s.configsSeg ?? {}),
+      ...COBERTURAS_PADRAO,
+      ativo: true,
+      nome: s.nomeSeguradora,
+      nomeSeguradora: s.nomeSeguradora,
+      login: s.login,
+      senha: s.senha,
+      seguradora: s.seguradora,
+      idIntegracao: id,
+      idIntegracaoCfg: id,
+      idIntegracaoCfgSeg: id,
+      percComissao: s.percComissao ?? 0,
+      percDesconto: s.percDesconto ?? 0,
+      configsGlobais: true,
+      credenciaisValidas: true,
+      valorDeNovo,
+      parcelasBaixar: false,
+      aplicacaoId: 3,
+      cargaIniciada: false,
+    };
+  });
 
   let motivoZero: string | null = null;
   if (calculos.length === 0) {
@@ -185,7 +194,7 @@ export function montarPayloadCalculo(
   const carro: CarroPayload = {
     descricao: veiculo.modelo ?? "",
     fabricante: veiculo.codFabr ?? null,
-    combustivel: null,
+    combustivel: veiculo.combustivel ?? null,
     anoFabricacao: Number(veiculo.anoFab) || 0,
     anoModelo: Number(veiculo.anoMod) || 0,
     fipe: veiculo.fipe,
@@ -197,7 +206,7 @@ export function montarPayloadCalculo(
     zeroKm: entrada.zeroKm,
     tipo: veiculo.tipoVeic || "v",
     residentes: [],
-    valReferenciado: 0,
+    valReferenciado: veiculo.valReferenciado,
     garagemResidencia: "0",
     garagemTrabalho: "0",
     garagemEstudo: "0",
@@ -328,6 +337,16 @@ export async function cotarAutoAggilizador(
     async () => {
       const v = await getMc<BuscaPlacaResponse | null>(AGGILIZADOR_MULTICALCULO_API.buscaPlaca(entrada.placa));
       if (!v || !v.fipe) throw new Error("Placa não decodificada (FIPE não encontrada).");
+      // Valor FIPE atual (fipeModelo por descrição+ano) → `valReferenciado`. Sem
+      // ele as seguradoras recusam (carro R$0 não cota). Best-effort: 0 se falhar.
+      let valReferenciado = 0;
+      if (v.modelo) {
+        const fm = await getMc<FipeModeloItem[]>(
+          AGGILIZADOR_MULTICALCULO_API.fipeModelo(v.modelo, v.anoMod),
+        ).catch(() => [] as FipeModeloItem[]);
+        const valores = (Array.isArray(fm) ? fm[0]?.fipeValores : undefined) ?? [];
+        valReferenciado = valores.length ? Number(valores[valores.length - 1]?.valor) || 0 : 0;
+      }
       const payload: AutomovelPayload = {
         fipe: v.fipe,
         anoMod: v.anoMod,
@@ -338,6 +357,8 @@ export async function cotarAutoAggilizador(
         modelo: v.modelo,
         codFabr: v.codFabr,
         valorDeNovo: entrada.zeroKm ? 1 : 0,
+        valReferenciado,
+        combustivel: null,
       };
       return payload;
     },

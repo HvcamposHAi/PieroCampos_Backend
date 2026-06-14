@@ -81,10 +81,16 @@ export interface SeguradoraConfigItem {
   idIntegracao?: string;
   id?: string; // uuid da config (não confundir com `seguradora`)
   /** Bloco aninhado: a fonte real de `credenciaisValidas`/`ativo` em muitos itens. */
+  /**
+   * Blob de config específico da seguradora (login/usuário/senha + campos próprios:
+   * portoSusep, libertyFiliais, bradescoSucursal, mapfreCodVc, etc.). É espalhado
+   * INTEGRALMENTE em cada `calculos[]` (o motor exige esses campos por seguradora).
+   */
   configsSeg?: {
     credenciaisValidas?: boolean | null;
     ativo?: boolean;
     usuario?: string | null;
+    [k: string]: unknown;
   };
 }
 
@@ -190,7 +196,7 @@ export interface CarroPayload {
   condutores: CondutorPayload[];
 }
 
-/** Veículo do payload de cálculo. */
+/** Veículo do payload de cálculo (intermediário: buscaPlaca + fipeModelo). */
 export interface AutomovelPayload {
   fipe: string;
   anoMod: string;
@@ -201,6 +207,19 @@ export interface AutomovelPayload {
   modelo?: string;
   codFabr?: number;
   valorDeNovo: number;
+  /** Valor FIPE atual (última entrada de fipeValores). 0 se não resolvido. */
+  valReferenciado: number;
+  /** Código de combustível (quando conhecido; null tolerado no disparo). */
+  combustivel?: number | null;
+}
+
+/** Item de /calculo/fipeModelo (chaveia por descrição+ano). */
+export interface FipeModeloItem {
+  id?: string;
+  modelo?: string;
+  tipo?: string;
+  fipeFabricanteId?: number;
+  fipeValores?: Array<{ valor: number; mesVersaoTabela?: number; anoVersaoTabela?: number }>;
 }
 
 /** Coberturas (valores observados na sessão; defaults em `aggilizador.coberturas.ts`). */
@@ -239,7 +258,7 @@ export type CalculoSeguradora = CoberturasPayload & {
   parcelasBaixar: boolean;
   aplicacaoId: number;
   cargaIniciada: boolean | null;
-};
+} & Record<string, unknown>; // + campos específicos da seguradora (configsSeg espalhado)
 
 /** Resultado vazio por canal (a UI do Aggilizador envia o esqueleto). */
 type ResultadosVazios = { errors: unknown[]; successes: unknown[] };
