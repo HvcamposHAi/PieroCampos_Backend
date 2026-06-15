@@ -3,7 +3,11 @@
  * Forma confirmada no HAR de cotação concluída (resultados[].coberturas/parcelamentos).
  */
 import { describe, it, expect } from "vitest";
-import { mapearResultadoAggilizador, todasRetornaram } from "../src/integrations/aggilizador/aggilizador.resultado";
+import {
+  mapearResultadoAggilizador,
+  todasRetornaram,
+  categoriaDoPacote,
+} from "../src/integrations/aggilizador/aggilizador.resultado";
 
 // Item realista (Allianz "Master") do HAR.
 const ALLIANZ = {
@@ -85,6 +89,34 @@ describe("mapearResultadoAggilizador", () => {
     expect(r.status).toBe("cotado");
     expect(r.parcelas).toBe(12);
     expect(r.valor_parcela).toBeCloseTo(22.54, 2);
+  });
+});
+
+describe("categoria do pacote (packageType)", () => {
+  it("categoriaDoPacote: 0/ausente=principal, 1=assinatura, 2=alternativo", () => {
+    expect(categoriaDoPacote(0)).toBe("principal");
+    expect(categoriaDoPacote(undefined)).toBe("principal");
+    expect(categoriaDoPacote(null)).toBe("principal");
+    expect(categoriaDoPacote(1)).toBe("assinatura");
+    expect(categoriaDoPacote(2)).toBe("alternativo");
+    expect(categoriaDoPacote(99)).toBe("principal"); // desconhecido → principal (fail-safe)
+  });
+
+  it("mapearResultadoAggilizador define categoria a partir do packageType (Suhai=2 → alternativo)", () => {
+    const suhai = mapearResultadoAggilizador({
+      nomeSeguradora: "Suhai",
+      retorno: true,
+      retornoErro: false,
+      premio: 800.71,
+      packageType: 2,
+      resultados: [{ principal: true, premio: 800.71 }],
+    });
+    expect(suhai.categoria).toBe("alternativo");
+    expect(suhai.status).toBe("cotado");
+  });
+
+  it("item sem packageType → categoria principal (default; Segfy/antigos)", () => {
+    expect(mapearResultadoAggilizador(ALLIANZ).categoria).toBe("principal");
   });
 });
 

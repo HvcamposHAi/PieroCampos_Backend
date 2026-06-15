@@ -557,13 +557,29 @@ export async function cotarAutoAggilizador(
   const respondidas = [...itens.values()].filter((r) => r.status !== "processando").length;
   emit({ etapa: "coleta", status: "ok", mensagem: `${respondidas} de ${itens.size} seguradoras responderam` });
 
-  // Cotadas primeiro, por menor prêmio.
+  // Ordena: principais COTADAS primeiro (por menor prêmio), depois alternativos/
+  // assinatura cotados, e por fim recusados. A categoria mantém o comparativo
+  // principal alinhado à aba "Pacotes" do Aggilizador (Suhai/assinatura não viram
+  // "melhor preço"). NÃO descartamos nada — tudo é persistido e exibido (rotulado).
+  const ehPrincipal = (r: ResultadoCotacaoItem): boolean => (r.categoria ?? "principal") === "principal";
+  const rank = (r: ResultadoCotacaoItem): number =>
+    r.status === "cotado" ? (ehPrincipal(r) ? 0 : 1) : 2;
   const resultados = [...itens.values()]
     .filter((r) => r.status !== "processando")
     .sort((a, b) => {
-      if (a.status === "cotado" && b.status !== "cotado") return -1;
-      if (b.status === "cotado" && a.status !== "cotado") return 1;
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
       return a.premio_total - b.premio_total;
     });
+  // Auditável (sem PII): contagem por categoria das cotadas.
+  const cotadas = resultados.filter((r) => r.status === "cotado");
+  logger.info("[aggilizador] resultados por categoria", {
+    idIntegracao,
+    principal: cotadas.filter(ehPrincipal).length,
+    alternativo: cotadas.filter((r) => r.categoria === "alternativo").length,
+    assinatura: cotadas.filter((r) => r.categoria === "assinatura").length,
+    recusadas: resultados.length - cotadas.length,
+  });
   return { idIntegracao, versao, resultados };
 }

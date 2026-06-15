@@ -136,7 +136,12 @@ export async function dispararCotacaoAggilizador(
       },
     });
 
-    const maisBarata = resultados.find((r) => r.status === "cotado") ?? null;
+    // "Mais barata" = melhor PRINCIPAL cotada (alternativo/assinatura não disputam);
+    // fallback p/ qualquer cotada se não houver principal.
+    const maisBarata =
+      resultados.find((r) => r.status === "cotado" && (r.categoria ?? "principal") === "principal") ??
+      resultados.find((r) => r.status === "cotado") ??
+      null;
     const nome = asString(params.dados.nome) ?? cliente.nome ?? "tudo certo";
     return { texto: formatarComparativoParaWhatsApp(resultados, nome), cotacaoId, maisBarata };
   } catch (e) {

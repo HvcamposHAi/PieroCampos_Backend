@@ -117,6 +117,10 @@ export const ResultadoCotacaoItemSchema = z.object({
   status: z.string().default("cotado"),
   // Motivo da recusa/indisponibilidade (texto limpo, sem HTML) p/ exibir ao operador.
   motivo: z.string().optional(),
+  // Categoria do pacote (Aggilizador): 'principal' = comparativo padrão;
+  // 'assinatura'/'alternativo' = abas separadas (fora da disputa de "melhor preço").
+  // OPCIONAL: o Segfy não seta → tudo conta como 'principal' (sem impacto).
+  categoria: z.enum(["principal", "assinatura", "alternativo"]).optional(),
 });
 export type ResultadoCotacaoItem = z.infer<typeof ResultadoCotacaoItemSchema>;
 

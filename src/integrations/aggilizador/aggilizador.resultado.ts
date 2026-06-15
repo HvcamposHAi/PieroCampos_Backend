@@ -65,8 +65,17 @@ export const PollingItemSchema = z
     tempoResposta: z.number().nullable().optional(),
     mensagem: z.string().nullable().optional(),
     resultados: z.array(PlanoSchema).nullable().optional(),
+    // Categoria da aba do Aggilizador: 0=principal, 1=por assinatura, 2=alternativo.
+    packageType: z.number().nullable().optional(),
   })
   .passthrough();
+
+/** packageType (item de polling) → categoria do comparativo. 0/ausente=principal. */
+export function categoriaDoPacote(packageType: number | null | undefined): "principal" | "assinatura" | "alternativo" {
+  if (packageType === 1) return "assinatura";
+  if (packageType === 2) return "alternativo";
+  return "principal";
+}
 
 /** true se TODAS as seguradoras já retornaram (oferta, recusa ou erro). */
 export function todasRetornaram(itens: unknown[]): boolean {
@@ -160,5 +169,6 @@ export function mapearResultadoAggilizador(raw: unknown): ResultadoCotacaoItem {
     coberturas_resumo: cotado ? resumoCoberturas(plano) : "",
     status: cotado ? "cotado" : erro ? "recusado" : respondeu ? "recusado" : "processando",
     motivo: cotado ? undefined : limparMensagem(d.mensagem) ?? (respondeu && !erro ? "Sem oferta para o perfil" : undefined),
+    categoria: categoriaDoPacote(d.packageType),
   };
 }
