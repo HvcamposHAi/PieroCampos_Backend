@@ -23,6 +23,8 @@ const sistemaSchema = z.object({
   url: z.string().trim().url("URL inválida").max(300).nullish(),
   email: z.string().trim().email("e-mail inválido").max(254),
   senha: z.string().min(1, "senha obrigatória").max(200),
+  /** Comissão padrão (%) "coringa" da corretora (0–100). Opcional. */
+  comissao_padrao: z.number().min(0).max(100).nullish(),
 });
 
 const produtosSchema = z.object({
@@ -56,6 +58,7 @@ router.put("/sistema", exigirAdmin, exigirCorretoraSelecionada, async (req: Requ
       url: parsed.data.url ?? null,
       email: parsed.data.email,
       senha: parsed.data.senha,
+      comissaoPadrao: parsed.data.comissao_padrao ?? null,
       porEmail: req.user?.email ?? null,
     });
     res.json({ ok: true, ...(await obterSetup(req.corretoraId!)) });

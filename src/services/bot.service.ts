@@ -49,6 +49,7 @@ import {
 import { buscarContextoRAG, montarContextoRAG } from "./rag.service";
 import { obterPlaybookAtivoTexto, lerAprendizadoAtivo } from "./aprendizado.service";
 import { mapearParaCotacao } from "./segfy-cotacao.service";
+import { lerSistemaCotacao } from "./segfy-credenciais.service";
 import { dispararCotacao } from "./cotacao.service";
 import { SegfyReauthNecessariaError } from "../integrations/segfy/errors";
 import { cpfValido, formatarCpf } from "../lib/cpf";
@@ -598,6 +599,33 @@ async function derivarCotacaoFaltando(
 }
 
 /**
+ * Classifica a falha como "veículo não encontrado" lendo a última etapa `veiculo`
+ * com erro da cotação (placa não decodificada / FIPE não encontrada). Distingue de
+ * "faltam dados" (cuja mensagem não contém "decodificad"/"encontrad"). A etapa de
+ * erro é persistida de forma síncrona antes do retorno (ver aggilizador service).
+ */
+async function falhaPorVeiculoNaoEncontrado(
+  sb: ReturnType<typeof getSupabaseAdmin>,
+  cotacaoId: string,
+): Promise<boolean> {
+  try {
+    const { data } = await sb
+      .from("cotacao_eventos")
+      .select("mensagem")
+      .eq("cotacao_id", cotacaoId)
+      .eq("etapa", "veiculo")
+      .eq("status", "erro")
+      .order("criado_em", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const msg = (data as { mensagem?: string | null } | null)?.mensagem ?? "";
+    return /decodificad|n[aã]o\s+encontrad/i.test(msg);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Dispara a cotação no Segfy (decisão do cliente OU do operador): muda p/
  * `aguardando_cotacao`, executa o pipeline (registrando etapas) e, havendo
  * resultado, envia o comparativo (menor preço em destaque) e move p/
@@ -631,19 +659,53 @@ export async function confirmarEdispararCotacao(p: {
   // criar a cotação (sem card "parou em Autenticação"). Tratamos como "não cotou"
   // → escala p/ humano (o operador já foi avisado p/ reautenticar).
   let cotacao;
+  let cotacaoIdFalha: string | null = null;
   try {
-    cotacao = await dispararCotacao({
-      conversaId: p.conversaId,
-      clienteId: p.clienteId,
-      dados: p.dados,
-      ramo: ramoConversa,
-      corretoraId: corretoraConversa,
-    });
+    cotacao = await dispararCotacao(
+      {
+        conversaId: p.conversaId,
+        clienteId: p.clienteId,
+        dados: p.dados,
+        ramo: ramoConversa,
+        corretoraId: corretoraConversa,
+      },
+      undefined,
+      (id) => {
+        cotacaoIdFalha = id; // capturado p/ classificar a falha (ex.: veículo não achado)
+      },
+    );
   } catch (e) {
     if (e instanceof SegfyReauthNecessariaError) cotacao = null;
     else throw e;
   }
   if (!cotacao) {
+    // Veículo não encontrado (placa não decodificada): NÃO escala — avisa o
+    // cliente e mantém a Bia ativa p/ ele corrigir a placa ou cotar outro carro.
+    // Cada placa é uma cotação independente, então os demais veículos seguem.
+    // ⚠️ SÓ para o Aggilizador: o Segfy também emite "placa não decodificada" e o
+    // comportamento dele (handoff) NÃO muda (sem impacto na produção atual).
+    const sistemaConversa = await lerSistemaCotacao(corretoraConversa).catch(() => "segfy");
+    if (
+      sistemaConversa === "aggilizador" &&
+      cotacaoIdFalha &&
+      (await falhaPorVeiculoNaoEncontrado(sb, cotacaoIdFalha))
+    ) {
+      const placa = normalizarPlaca(p.dados.placa) ?? "informada";
+      await p.enviar(
+        `Não consegui localizar o veículo da placa *${placa}* na nossa base 😕. ` +
+          `Você confere a placa pra mim? Se preferir, me manda a marca, o modelo e o ano que eu sigo daqui.`,
+      );
+      await mergeDadosBot(p.conversaId, dadosBot, {
+        cotacao_em_falha: true,
+        cotacao_veiculo_nao_encontrado: placa,
+      });
+      // Mantém a conversa com a Bia (não escala) para o cliente corrigir — desfaz
+      // o "aguardando_cotacao" setado acima, a menos que um humano já tenha assumido.
+      if (estadoInicial !== "humano_assumiu") {
+        await sb.from("conversas").update({ estado: "bot_ativo" }).eq("id", p.conversaId);
+      }
+      return { cotou: false };
+    }
     // Cotação falhou (Segfy off / dados faltando / erro): escala para um humano
     // (a trigger do banco notifica os operadores). A conversa fica em holding —
     // a Bia continua respondendo. Só escala se já não estava com humano.

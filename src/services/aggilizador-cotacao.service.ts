@@ -20,7 +20,7 @@ import { formatarComparativoParaWhatsApp } from "../integrations/segfy/segfy.for
 import type { ResultadoCotacaoItem } from "../integrations/segfy/segfy.types";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
-import { obterCredenciaisSegfy } from "./segfy-credenciais.service";
+import { obterCredenciaisSegfy, lerComissaoPadrao } from "./segfy-credenciais.service";
 import { asString } from "../integrations/quote/mapper/legacy";
 import { logger } from "../utils/logger";
 
@@ -90,19 +90,31 @@ export async function dispararCotacaoAggilizador(
     return falhar("token", "Credenciais do Aggilizador não configuradas (Admin > Configuração da corretora).");
   }
 
+  // Comissão "coringa" da corretora (default no Setup); a da cotação (manual) tem
+  // precedência e é resolvida dentro de cotarAutoAggilizador via entrada.
+  const comissaoPadrao = await lerComissaoPadrao(params.corretoraId);
+
+  // Etapas de ERRO são aguardadas antes de retornar null — assim quem chama
+  // (bot.service) consegue LER a etapa de falha (ex.: veículo não encontrado) sem
+  // corrida. Etapas de progresso seguem fire-and-forget (não bloqueiam o fluxo).
+  const etapasErro: Promise<unknown>[] = [];
+
   try {
     const { idIntegracao, resultados } = await cotarAutoAggilizador(
       entrada,
       { email: credenciais.email, senha: credenciais.password },
       (e) => {
-        void persist.registrarEtapa({
+        const pr = persist.registrarEtapa({
           cotacaoId,
           conversaId: params.conversaId,
           etapa: e.etapa,
           status: e.status,
           mensagem: e.mensagem,
         });
+        if (e.status === "erro") etapasErro.push(Promise.resolve(pr).catch(() => undefined));
+        else void pr;
       },
+      comissaoPadrao,
     );
 
     await persist.atualizarCotacao(cotacaoId, {
@@ -131,6 +143,9 @@ export async function dispararCotacaoAggilizador(
     // A etapa real que falhou já foi registrada pelo onEtapa do cotarAuto. Só
     // marcamos a cotação como erro (não criamos uma 2ª linha vermelha em "salvar").
     await persist.atualizarCotacao(cotacaoId, { status: "erro" });
+    // Garante que a etapa de erro esteja PERSISTIDA antes de retornar (quem chama
+    // lê a etapa para classificar a falha, ex.: veículo não encontrado).
+    await Promise.allSettled(etapasErro);
     logger.error("[aggilizador] cotação falhou (não-fatal)", {
       conversaId: params.conversaId,
       erro: e instanceof Error ? e.message : String(e),

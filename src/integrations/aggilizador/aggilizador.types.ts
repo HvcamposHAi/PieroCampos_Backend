@@ -167,10 +167,11 @@ export interface CondutorPayload {
 }
 
 /**
- * Veículo do payload de `calcularV2` (`cotacao.automoveis[]`). ✅ Forma confirmada
- * por probe (13/06): o array `automoveis` + `condutores` é OBRIGATÓRIO — enviar
- * `automovel` singular causa 502 (Lambda quebra). `valReferenciado`/`combustivel`/
- * `kmAnual` toleram null/0 (o motor resolve pela FIPE); refinar é futuro.
+ * Veículo do payload de `calcularV2` (`cotacao.automoveis[]`). ✅ Forma 1:1 com o
+ * HAR de cotação CONCLUÍDA (14/06): além da identificação (descricao/fipe/ano), o
+ * motor EXIGE o "questionário" preenchido — `combustivel`, `kmAnual`,
+ * `garagemResidencia`, `pctAjuste` (percentual FIPE) — e tolera o resto com os
+ * defaults do HAR. O array `automoveis`+`condutores` é OBRIGATÓRIO (singular → 502).
  */
 export interface CarroPayload {
   descricao: string;
@@ -179,6 +180,8 @@ export interface CarroPayload {
   anoFabricacao: number;
   anoModelo: number;
   fipe: string;
+  /** FIPE formatado com hífen (ex.: "025156-9"). */
+  fipeTxt: string;
   chassi?: string;
   placa: string;
   cepPernoite: string;
@@ -188,11 +191,28 @@ export interface CarroPayload {
   tipo: string; // "v" leve
   residentes: unknown[];
   valReferenciado: number;
+  /** Percentual da tabela FIPE a segurar (100 = 100%). HAR: campo `pctAjuste`. */
+  pctAjuste: number;
   garagemResidencia: string;
   garagemTrabalho: string;
   garagemEstudo: string;
   associado: boolean;
   periodoUso: string;
+  // Campos do HAR (defaults neutros; o motor recusa se faltarem alguns).
+  blindado: boolean;
+  alienado: boolean;
+  kitGas: boolean;
+  rastreador: string; // "0"
+  antiFurto: string; // "0"
+  gasInstalValor: number; // 0
+  jovemCondutor: boolean;
+  jovemSexo: string | null;
+  jovemIdade: number | null;
+  tipoIsencao: number; // 0
+  idaVoltaTrabalho: number | null;
+  idaVoltaEstudo: number | null;
+  tpLocalPernoite: number | null;
+  dataHoraSaidaLoja: string | null;
   condutores: CondutorPayload[];
 }
 

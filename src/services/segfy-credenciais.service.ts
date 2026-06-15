@@ -29,6 +29,8 @@ export interface StatusCredenciais {
   sistema: string | null;
   /** URL do sistema (informativa p/ Segfy; entrada da auto-descoberta p/ outros). */
   url: string | null;
+  /** Comissão padrão (%) "coringa" da corretora (default das cotações). */
+  comissao_padrao: number | null;
   atualizado_em: string | null;
   atualizado_por: string | null;
   ultimo_teste_em: string | null;
@@ -98,6 +100,8 @@ export async function salvarCredenciaisSegfy(input: {
   sistema?: string | null;
   /** URL do sistema (informativa p/ Segfy; entrada p/ auto-descoberta). */
   url?: string | null;
+  /** Comissão padrão (%) da corretora (0–100). */
+  comissaoPadrao?: number | null;
   porEmail?: string | null;
 }): Promise<void> {
   const corretoraId = input.corretoraId ?? CORRETORA_SEED_ID;
@@ -115,6 +119,7 @@ export async function salvarCredenciaisSegfy(input: {
   };
   if (input.sistema !== undefined) payload.sistema = input.sistema ?? "segfy";
   if (input.url !== undefined) payload.url = input.url;
+  if (input.comissaoPadrao !== undefined) payload.comissao_padrao = input.comissaoPadrao;
   const { error } = await sb.from("segfy_credenciais").upsert(payload as never, {
     onConflict: "corretora_id",
   });
@@ -132,12 +137,16 @@ export async function statusCredenciaisSegfy(
     const { data } = await sb
       .from("segfy_credenciais")
       .select(
-        "email, sistema, url, atualizado_em, atualizado_por, ultimo_teste_em, ultimo_teste_ok, ultimo_teste_msg" as never,
+        "email, sistema, url, comissao_padrao, atualizado_em, atualizado_por, ultimo_teste_em, ultimo_teste_ok, ultimo_teste_msg" as never,
       )
       .eq("corretora_id" as never, corretoraId as never)
       .maybeSingle();
     const linha = data as
-      | (Omit<LinhaCredenciais, "senha_cifrada"> & { sistema?: string | null; url?: string | null })
+      | (Omit<LinhaCredenciais, "senha_cifrada"> & {
+          sistema?: string | null;
+          url?: string | null;
+          comissao_padrao?: number | null;
+        })
       | null;
     if (linha?.email) {
       return {
@@ -146,6 +155,7 @@ export async function statusCredenciaisSegfy(
         email: linha.email,
         sistema: linha.sistema ?? "segfy",
         url: linha.url ?? null,
+        comissao_padrao: linha.comissao_padrao ?? null,
         atualizado_em: linha.atualizado_em,
         atualizado_por: linha.atualizado_por,
         ultimo_teste_em: linha.ultimo_teste_em,
@@ -165,6 +175,7 @@ export async function statusCredenciaisSegfy(
       email: env.SEGFY_LOGIN,
       sistema: "segfy",
       url: env.SEGFY_APP_URL ?? null,
+      comissao_padrao: null,
       atualizado_em: null,
       atualizado_por: null,
       ultimo_teste_em: null,
@@ -178,6 +189,7 @@ export async function statusCredenciaisSegfy(
     email: null,
     sistema: "segfy",
     url: null,
+    comissao_padrao: null,
     atualizado_em: null,
     atualizado_por: null,
     ultimo_teste_em: null,
@@ -230,6 +242,30 @@ export async function lerSistemaCotacao(
       erro: (e as Error).message,
     });
     return "segfy";
+  }
+}
+
+/**
+ * Comissão padrão (%) "coringa" da corretora (default das cotações). FAIL-SAFE →
+ * `null`: se a coluna ainda não existe (DDL não aplicada) ou a leitura falha,
+ * devolve null e a cotação cai na comissão da seguradora. Não cacheia (chamado 1×
+ * por cotação, custo desprezível).
+ */
+export async function lerComissaoPadrao(
+  corretoraId: string = CORRETORA_SEED_ID,
+): Promise<number | null> {
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("segfy_credenciais")
+      .select("comissao_padrao" as never)
+      .eq("corretora_id" as never, corretoraId as never)
+      .maybeSingle();
+    if (error) return null; // coluna ausente / erro → fallback seguro
+    const v = (data as { comissao_padrao?: number | null } | null)?.comissao_padrao;
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
   }
 }
 

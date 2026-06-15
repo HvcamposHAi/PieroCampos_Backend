@@ -91,4 +91,30 @@ describe("selecionarCalculosAuto", () => {
     const { calculos } = selecionarCalculosAuto(configs, [], statusAuto([1]), CORRETORA, 1);
     expect(calculos[0]!.valorDeNovo).toBe(1);
   });
+
+  describe("comissão (override coringa)", () => {
+    it("sem override → usa a percComissao da seguradora (config do Aggilizador)", () => {
+      const configs = [item({ seguradora: 1, percComissao: 3 })];
+      const { calculos } = selecionarCalculosAuto(configs, [], statusAuto([1]), CORRETORA, 0);
+      expect(calculos[0]!.percComissao).toBe(3);
+    });
+
+    it("override sobrepõe a comissão de TODAS as seguradoras", () => {
+      const configs = [item({ seguradora: 1, percComissao: 3 }), item({ seguradora: 2 })];
+      const { calculos } = selecionarCalculosAuto(configs, [], statusAuto([1, 2]), CORRETORA, 0, 7);
+      expect(calculos.map((c) => c.percComissao)).toEqual([7, 7]);
+    });
+
+    it("override 0 é respeitado (não cai no fallback da seguradora)", () => {
+      const configs = [item({ seguradora: 1, percComissao: 3 })];
+      const { calculos } = selecionarCalculosAuto(configs, [], statusAuto([1]), CORRETORA, 0, 0);
+      expect(calculos[0]!.percComissao).toBe(0);
+    });
+
+    it("override null/undefined → fallback p/ seguradora, senão 0", () => {
+      const configs = [item({ seguradora: 1, percComissao: 3 }), item({ seguradora: 2 })];
+      const { calculos } = selecionarCalculosAuto(configs, [], statusAuto([1, 2]), CORRETORA, 0, null);
+      expect(calculos.map((c) => c.percComissao)).toEqual([3, 0]);
+    });
+  });
 });

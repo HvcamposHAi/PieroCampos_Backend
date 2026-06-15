@@ -73,6 +73,29 @@ export const COBERTURAS_PADRAO: CoberturasPayload = {
   assist24hs: 1,
 };
 
+/**
+ * Valores NEUTROS do "questionário" do veículo que o motor do Aggilizador EXIGE
+ * mas a Bia NÃO coleta (decisão de produto: o Aggilizador não roda questionário).
+ * Antes iam como `null`/`"0"` → toda seguradora recusava. Agora saem destes
+ * defaults e podem ser SOBREPOSTOS pelo operador na cotação manual (overrides em
+ * `EntradaAggilizador`).
+ *
+ * ✅ Valores CONFIRMADOS no HAR de cotação CONCLUÍDA (14/06): `combustivel:11`
+ * (flex; NÃO vem da FIPE — é seleção do usuário), `pctAjuste:100` (percentual FIPE),
+ * `garagemResidencia:"1"` + `garagemTrabalho/Estudo:"0"`, `kmAnual` anual (HAR: 6000).
+ * 🚨 VALIDAR-LIVE só os DEMAIS códigos de combustível (apenas flex=11 veio no HAR).
+ */
+export const DEFAULTS_AGGILIZADOR = {
+  /** Código de combustível — 11 = flex (confirmado no HAR; é o mais comum). */
+  combustivel: 11,
+  /** Quilometragem ANUAL padrão (HAR confirmou unidade anual). */
+  kmAnual: 12_000,
+  /** Garagem na RESIDÊNCIA: "1" = possui (HAR). Trabalho/estudo vão "0". */
+  garagem: "1",
+  /** Percentual da tabela FIPE a segurar: 100 = 100% (HAR: campo `pctAjuste`). */
+  pctAjuste: 100,
+} as const;
+
 export interface EtapaEventoAggilizador {
   etapa: "token" | "segurado" | "veiculo" | "calculo" | "coleta";
   status: "andamento" | "ok" | "erro";
@@ -98,6 +121,8 @@ export function selecionarCalculosAuto(
   statusSeg: SeguradoraStatusItem[] | unknown,
   corretoraId: string,
   valorDeNovo: number,
+  /** Comissão (%) efetiva: cotação > default da corretora. Sobrepõe a da seguradora. */
+  comissaoOverride?: number | null,
 ): { calculos: CalculoSeguradora[]; motivoZero: string | null } {
   const lista = Array.isArray(configs) ? (configs as SeguradoraConfigItem[]) : [];
   const ocultas = new Set(Array.isArray(escondidas) ? (escondidas as number[]) : []);
@@ -131,7 +156,7 @@ export function selecionarCalculosAuto(
       idIntegracao: id,
       idIntegracaoCfg: id,
       idIntegracaoCfgSeg: id,
-      percComissao: s.percComissao ?? 0,
+      percComissao: comissaoOverride ?? s.percComissao ?? 0,
       percDesconto: s.percDesconto ?? 0,
       configsGlobais: true,
       credenciaisValidas: true,
@@ -156,12 +181,64 @@ export function selecionarCalculosAuto(
   return { calculos, motivoZero };
 }
 
+/**
+ * Valida e normaliza ano de fabricação/modelo (vindos do `buscaPlaca`). O motor do
+ * Aggilizador EXIGE anos válidos e diferença fab↔modelo ≤ 1 ano — `0`/vazio ou uma
+ * diferença maior fazem TODA seguradora recusar ("Ano de fabricação inválido" +
+ * "A diferença de anos entre Fabricação e Modelo deve ser de até um ano"). PURA
+ * (recebe o ano-base p/ ser testável). Lança erro claro quando indecifrável.
+ */
+export function normalizarAnosVeiculo(
+  anoFabRaw: unknown,
+  anoModRaw: unknown,
+  anoBase: number,
+): { anoFab: string; anoMod: string } {
+  const fab = Number.parseInt(String(anoFabRaw ?? ""), 10);
+  const mod = Number.parseInt(String(anoModRaw ?? ""), 10);
+  const valido = (n: number): boolean => Number.isInteger(n) && n >= 1950 && n <= anoBase + 1;
+  const modOk = valido(mod);
+  const fabOk = valido(fab);
+  // Pelo menos um ano precisa ser decifrável; melhor abortar com mensagem clara
+  // do que enviar `0` e colher 6 críticas por seguradora.
+  if (!modOk && !fabOk) {
+    throw new Error("Ano do veículo não decodificado (placa sem ano de fabricação/modelo válido).");
+  }
+  const anoModFinal = modOk ? mod : fab; // se só veio um, usa-o nos dois
+  let anoFabFinal = fabOk ? fab : anoModFinal;
+  // Garante a regra do motor: |fab − mod| ≤ 1.
+  if (anoFabFinal > anoModFinal) anoFabFinal = anoModFinal;
+  if (anoFabFinal < anoModFinal - 1) anoFabFinal = anoModFinal - 1;
+  return { anoFab: String(anoFabFinal), anoMod: String(anoModFinal) };
+}
+
 /** Vigência anual padrão (hoje → +1 ano), em ISO. */
 function vigenciaAnual(): { ini: string; fim: string } {
   const ini = new Date();
   const fim = new Date(ini);
   fim.setFullYear(fim.getFullYear() + 1);
   return { ini: ini.toISOString(), fim: fim.toISOString() };
+}
+
+/** FIPE cru → formato com hífen do HAR (ex.: "0251569" → "025156-9"). PURA. */
+export function formatarFipeTxt(fipe: string): string {
+  const d = String(fipe ?? "").replace(/\D/g, "");
+  return d.length > 1 ? `${d.slice(0, -1)}-${d.slice(-1)}` : d;
+}
+
+/**
+ * Estima primeira habilitação a partir da data de nascimento (assume habilitado
+ * aos 18). O HAR de sucesso traz esses campos preenchidos; não os coletamos, então
+ * estimamos. PURA (recebe ano-base). 🚨 VALIDAR-LIVE (impacto no prêmio do jovem).
+ */
+export function estimarHabilitacao(
+  dataNasc: string,
+  anoBase: number,
+): { dataPrimHabil: string | null; tempoHabilitacao: number | null } {
+  const ano = Number.parseInt(String(dataNasc ?? "").slice(0, 4), 10);
+  if (!Number.isInteger(ano) || ano < 1900) return { dataPrimHabil: null, tempoHabilitacao: null };
+  const anoHab = ano + 18;
+  if (anoHab > anoBase) return { dataPrimHabil: null, tempoHabilitacao: 0 };
+  return { dataPrimHabil: `${anoHab}-01-01T03:00:00.000Z`, tempoHabilitacao: Math.max(0, anoBase - anoHab) };
 }
 
 /**
@@ -179,39 +256,62 @@ export function montarPayloadCalculo(
   veiculo: AutomovelPayload,
   entrada: EntradaAggilizador,
 ): CalcularV2Payload {
+  const anoBase = new Date().getFullYear();
+  const { dataPrimHabil, tempoHabilitacao } = estimarHabilitacao(segurado.dataNasc, anoBase);
   const condutor: CondutorPayload = {
     relacComSegurado: 1, // o próprio segurado
     tpResidencia: 1,
-    dataPrimHabil: null,
+    dataPrimHabil,
     principal: true,
     cpfCnpj: segurado.cpfCnpj,
     nome: segurado.nome,
     dataNasc: segurado.dataNasc,
     sexo: segurado.sexo,
     estadoCivil: segurado.estadoCivil,
-    tempoHabilitacao: null,
+    tempoHabilitacao,
   };
+  // Campos do questionário exigidos pelo motor: combustível decodificado quando
+  // possível, senão override do operador, senão DEFAULTS (flex). Garagem na
+  // RESIDÊNCIA usa override/default; trabalho/estudo vão "0" (confirmado no HAR).
+  const garagemResidencia = entrada.garagemResidencia ?? DEFAULTS_AGGILIZADOR.garagem;
   const carro: CarroPayload = {
     descricao: veiculo.modelo ?? "",
     fabricante: veiculo.codFabr ?? null,
-    combustivel: veiculo.combustivel ?? null,
+    combustivel: veiculo.combustivel ?? entrada.combustivel ?? DEFAULTS_AGGILIZADOR.combustivel,
     anoFabricacao: Number(veiculo.anoFab) || 0,
     anoModelo: Number(veiculo.anoMod) || 0,
     fipe: veiculo.fipe,
+    fipeTxt: formatarFipeTxt(veiculo.fipe),
     chassi: veiculo.chassi,
     placa: entrada.placa,
     cepPernoite: entrada.cep,
-    kmAnual: null,
+    kmAnual: entrada.kmMensal != null ? entrada.kmMensal * 12 : DEFAULTS_AGGILIZADOR.kmAnual,
     tpUso: 1, // particular
     zeroKm: entrada.zeroKm,
     tipo: veiculo.tipoVeic || "v",
     residentes: [],
     valReferenciado: veiculo.valReferenciado,
-    garagemResidencia: "0",
+    pctAjuste: entrada.pctAjuste ?? DEFAULTS_AGGILIZADOR.pctAjuste,
+    garagemResidencia,
     garagemTrabalho: "0",
     garagemEstudo: "0",
     associado: false,
     periodoUso: "0",
+    // Defaults neutros do HAR (o motor recusa se faltarem).
+    blindado: false,
+    alienado: false,
+    kitGas: false,
+    rastreador: "0",
+    antiFurto: "0",
+    gasInstalValor: 0,
+    jovemCondutor: false,
+    jovemSexo: null,
+    jovemIdade: null,
+    tipoIsencao: 0,
+    idaVoltaTrabalho: null,
+    idaVoltaEstudo: null,
+    tpLocalPernoite: null,
+    dataHoraSaidaLoja: null,
     condutores: [condutor],
   };
   const { ini, fim } = vigenciaAnual();
@@ -262,6 +362,8 @@ export async function cotarAutoAggilizador(
   entrada: EntradaAggilizador,
   credenciais: CredenciaisAggilizador,
   onEtapa?: (e: EtapaEventoAggilizador) => void,
+  /** Comissão (%) efetiva da corretora/cotação; sobrepõe a da seguradora. */
+  comissaoPadrao?: number | null,
 ): Promise<ResultadoCotacaoAggilizador> {
   const emit = (e: EtapaEventoAggilizador): void => {
     try {
@@ -337,6 +439,8 @@ export async function cotarAutoAggilizador(
     async () => {
       const v = await getMc<BuscaPlacaResponse | null>(AGGILIZADOR_MULTICALCULO_API.buscaPlaca(entrada.placa));
       if (!v || !v.fipe) throw new Error("Placa não decodificada (FIPE não encontrada).");
+      // Anos válidos + diferença ≤ 1 ano (senão o motor recusa por seguradora).
+      const { anoFab, anoMod } = normalizarAnosVeiculo(v.anoFab, v.anoMod, new Date().getFullYear());
       // Valor FIPE atual (fipeModelo por descrição+ano) → `valReferenciado`. Sem
       // ele as seguradoras recusam (carro R$0 não cota). Best-effort: 0 se falhar.
       let valReferenciado = 0;
@@ -349,8 +453,8 @@ export async function cotarAutoAggilizador(
       }
       const payload: AutomovelPayload = {
         fipe: v.fipe,
-        anoMod: v.anoMod,
-        anoFab: v.anoFab,
+        anoMod,
+        anoFab,
         placa: entrada.placa,
         tipoVeic: v.tipoVeic || "v",
         chassi: v.chassi,
@@ -385,6 +489,8 @@ export async function cotarAutoAggilizador(
         statusSeg,
         sessao.corretoraId,
         automovel.valorDeNovo,
+        // Precedência: comissão da COTAÇÃO (manual) → default da CORRETORA.
+        entrada.comissaoPercentual ?? comissaoPadrao,
       );
       if (motivoZero) throw new Error(motivoZero);
       const payload: CalcularV2Payload = montarPayloadCalculo(segurado, calculos, automovel, entrada);
@@ -395,10 +501,20 @@ export async function cotarAutoAggilizador(
         40_000,
       );
       if (!resp.data?.idIntegracao) throw new Error("calcularV2 não retornou idIntegracao.");
+      const veic = payload.cotacao.automoveis[0];
       logger.info("[aggilizador] cotação disparada", {
         idIntegracao: resp.data.idIntegracao,
         versao: resp.data.versao,
         seguradoras: calculos.length,
+        // Auditável (sem PII): valores neutros efetivamente enviados ao motor.
+        veiculo: veic && {
+          anoFabricacao: veic.anoFabricacao,
+          anoModelo: veic.anoModelo,
+          combustivel: veic.combustivel,
+          kmAnual: veic.kmAnual,
+          garagemResidencia: veic.garagemResidencia,
+          pctAjuste: veic.pctAjuste,
+        },
       });
       return { idIntegracao: resp.data.idIntegracao, versao: resp.data.versao ?? 1 };
     },

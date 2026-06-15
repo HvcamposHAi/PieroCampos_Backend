@@ -4,7 +4,23 @@
  * extrairObrigatorios), garantindo paridade do `faltando[]` entre sistemas.
  */
 import { describe, it, expect } from "vitest";
-import { mapearParaCotacaoAggilizador } from "../src/integrations/aggilizador/aggilizador.mapper";
+import { mapearParaCotacaoAggilizador, removerDdiBr } from "../src/integrations/aggilizador/aggilizador.mapper";
+
+describe("removerDdiBr", () => {
+  it("remove o 55 de E.164 (com e sem +)", () => {
+    expect(removerDdiBr("+5541996247863")).toBe("41996247863");
+    expect(removerDdiBr("5541996247863")).toBe("41996247863");
+    expect(removerDdiBr("55 (41) 99624-7863")).toBe("41996247863");
+  });
+  it("preserva número já sem DDI (DDD+nº)", () => {
+    expect(removerDdiBr("41996247863")).toBe("41996247863"); // 11 díg
+    expect(removerDdiBr("4133334444")).toBe("4133334444"); // 10 díg (fixo)
+  });
+  it("vazio/indefinido → undefined", () => {
+    expect(removerDdiBr("")).toBeUndefined();
+    expect(removerDdiBr(null)).toBeUndefined();
+  });
+});
 
 const CLIENTE = { cpf: null, nome: "Karla", email: "k@x.com", telefone: "+5541999990000" };
 
@@ -82,5 +98,79 @@ describe("mapearParaCotacaoAggilizador", () => {
     );
     expect(r.entrada).toBeNull();
     expect(r.faltando).toEqual(["sexo"]);
+  });
+
+  // ── Overrides OPCIONAIS do questionário (cotação manual) ──────────────────────
+  const BASE_OK = {
+    cpf: "090.656.619-30",
+    placa: "SFI7F72",
+    cep: "81270320",
+    data_nascimento: "1980-11-03",
+    sexo: "F",
+  } as const;
+
+  it("sem overrides → campos do questionário ficam undefined (usa defaults no payload)", () => {
+    const r = mapearParaCotacaoAggilizador({ ...BASE_OK }, CLIENTE);
+    expect(r.entrada).not.toBeNull();
+    expect(r.entrada?.combustivel).toBeUndefined();
+    expect(r.entrada?.kmMensal).toBeUndefined();
+    expect(r.entrada?.garagemResidencia).toBeUndefined();
+    expect(r.entrada?.pctAjuste).toBeUndefined();
+    expect(r.entrada?.comissaoPercentual).toBeUndefined();
+  });
+
+  it("overrides do operador são lidos e normalizados (flex=11; comissão lida)", () => {
+    const r = mapearParaCotacaoAggilizador(
+      {
+        ...BASE_OK,
+        combustivel: "flex",
+        km_mes: "1500",
+        garagem: "sim",
+        percentual_fipe: "100",
+        comissao_percentual: "3",
+      },
+      CLIENTE,
+    );
+    expect(r.entrada?.combustivel).toBe(11); // flex (HAR)
+    expect(r.entrada?.kmMensal).toBe(1500);
+    expect(r.entrada?.garagemResidencia).toBe("1"); // sim
+    expect(r.entrada?.pctAjuste).toBe(100);
+    expect(r.entrada?.comissaoPercentual).toBe(3);
+  });
+
+  it("override inválido (fora do domínio) → undefined (cai no default, não quebra)", () => {
+    const r = mapearParaCotacaoAggilizador(
+      { ...BASE_OK, combustivel: "foguete", km_mes: "-5", garagem: "talvez", percentual_fipe: "999", comissao_percentual: "200" },
+      CLIENTE,
+    );
+    expect(r.entrada?.combustivel).toBeUndefined();
+    expect(r.entrada?.kmMensal).toBeUndefined();
+    expect(r.entrada?.garagemResidencia).toBeUndefined();
+    expect(r.entrada?.pctAjuste).toBeUndefined();
+    expect(r.entrada?.comissaoPercentual).toBeUndefined();
+  });
+
+  it("combustível numérico e garagem 'não' também são aceitos", () => {
+    const r = mapearParaCotacaoAggilizador(
+      { ...BASE_OK, combustivel: 1, garagem: "não", quilometragem_mensal: 2000 },
+      CLIENTE,
+    );
+    expect(r.entrada?.combustivel).toBe(1);
+    expect(r.entrada?.garagemResidencia).toBe("2"); // não
+    expect(r.entrada?.kmMensal).toBe(2000);
+  });
+
+  it("telefone vai SEM DDI (Aggilizador usa DDD+número)", () => {
+    const r = mapearParaCotacaoAggilizador(
+      { ...BASE_OK, telefone: "+5541996247863" },
+      CLIENTE,
+    );
+    expect(r.entrada?.telefone).toBe("41996247863"); // removeu o 55
+  });
+
+  it("telefone herdado do cliente (E.164) também perde o DDI", () => {
+    // CLIENTE.telefone = "+5541999990000"
+    const r = mapearParaCotacaoAggilizador({ ...BASE_OK }, CLIENTE);
+    expect(r.entrada?.telefone).toBe("41999990000");
   });
 });

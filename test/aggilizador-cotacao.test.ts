@@ -12,6 +12,7 @@ vi.mock("../src/integrations/aggilizador/aggilizador.multicalculo", () => ({
 }));
 vi.mock("../src/services/segfy-credenciais.service", () => ({
   obterCredenciaisSegfy: vi.fn(async () => ({ email: "karla@sul.com.br", password: "pw", fonte: "db" })),
+  lerComissaoPadrao: vi.fn(async () => null),
 }));
 
 import { dispararCotacaoAggilizador } from "../src/services/aggilizador-cotacao.service";

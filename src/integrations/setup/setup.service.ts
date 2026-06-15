@@ -36,7 +36,14 @@ export async function obterSetup(corretoraId: string): Promise<SetupCorretora> {
 
 export async function salvarSistema(
   corretoraId: string,
-  input: { sistema: string; url: string | null; email: string; senha: string; porEmail?: string | null },
+  input: {
+    sistema: string;
+    url: string | null;
+    email: string;
+    senha: string;
+    comissaoPadrao?: number | null;
+    porEmail?: string | null;
+  },
 ): Promise<void> {
   await salvarCredenciaisSegfy({
     corretoraId,
@@ -44,6 +51,7 @@ export async function salvarSistema(
     url: input.url,
     email: input.email,
     senha: input.senha,
+    comissaoPadrao: input.comissaoPadrao,
     porEmail: input.porEmail,
   });
 }
