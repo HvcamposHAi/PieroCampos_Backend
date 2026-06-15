@@ -22,6 +22,7 @@ import { aprendizadoRouter, aprendizadoPublicoRouter } from "./integrations/apre
 import { mapeamentoRouter } from "./integrations/quote/mapper/mapper.routes";
 import { gestorRouter } from "./integrations/gestor/gestor.routes";
 import { auditoriaRouter, auditoriaPublicoRouter } from "./integrations/auditoria/auditoria.routes";
+import { descobertaRouter, descobertaAgenteRouter } from "./integrations/descoberta/descoberta.routes";
 import { auditarMutacoes } from "./middlewares/auditoria";
 import { sessionManager } from "./integrations/whatsapp/sessionManager";
 import { logger } from "./utils/logger";
@@ -94,6 +95,9 @@ export function criarApp(): express.Express {
   // Pública (token compartilhado): agente local de APÓLICE pega/reporta jobs (testar/emitir).
   // Montada ANTES de /api/apolice (authSupabase) p/ não exigir JWT do daemon.
   app.use("/api/apolice/agente", apoliceAgenteRouter);
+  // Pública (token compartilhado): agente local de DESCOBERTA pega job e devolve o HAR resumido.
+  // Montada ANTES de /api/descoberta (authSupabase) p/ não exigir JWT do daemon.
+  app.use("/api/descoberta/agente", descobertaAgenteRouter);
 
   app.use("/api/wa", authSupabase, auditarMutacoes("whatsapp"), waRouter);
   app.use("/api/cotacao", authSupabase, auditarMutacoes("cotacao"), cotacaoRouter);
@@ -106,6 +110,7 @@ export function criarApp(): express.Express {
   app.use("/api/aprendizado", authSupabase, auditarMutacoes("aprendizado"), aprendizadoRouter);
   app.use("/api/mapeamento", authSupabase, auditarMutacoes("mapeamento"), mapeamentoRouter);
   app.use("/api/gestor", authSupabase, auditarMutacoes("gestor"), gestorRouter);
+  app.use("/api/descoberta", authSupabase, auditarMutacoes("descoberta"), descobertaRouter);
   app.use("/api/auditoria", authSupabase, auditoriaRouter);
 
   app.use((_req, res) => {

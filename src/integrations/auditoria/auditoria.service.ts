@@ -22,7 +22,8 @@ export type CategoriaAuditoria =
   | "plataforma"
   | "apolice"
   | "mapeamento"
-  | "gestor";
+  | "gestor"
+  | "descoberta";
 
 export interface EventoAuditoriaInput {
   operadorId?: string | null;
