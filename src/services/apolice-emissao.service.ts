@@ -12,8 +12,11 @@
  */
 import { SupabasePersistence } from "../integrations/persistence/supabase-persistence";
 import type { PersistencePort } from "../integrations/segfy/persistence.port";
-import type { ApoliceProvider, CredenciaisPortal } from "../integrations/apolice/apolice-provider.port";
+import type { ApoliceProvider, CredenciaisPortal, SeguradoraConfigRef } from "../integrations/apolice/apolice-provider.port";
 import { getApoliceProvider } from "../integrations/apolice/registry";
+import type { AdapterSpec } from "../integrations/descoberta/descoberta.types";
+import { lerAdapterApoliceValidado } from "../integrations/descoberta/descoberta.service";
+import { criarAdapterApoliceProvider } from "../integrations/apolice/apolice.adapter";
 import { subirApolicePdf } from "../integrations/apolice/apolice-storage";
 import { obterCredenciaisPortal } from "./seguradora-credenciais.service";
 import { rowParaRef } from "./seguradoras-config.service";
@@ -53,6 +56,33 @@ export interface EmitirApoliceDeps {
   provider?: ApoliceProvider;
   /** Resolve credenciais (teste injeta). Default: cofre `seguradora_credenciais`. */
   resolverCredenciais?: (args: { seguradoraConfigId: string; corretoraId: string }) => Promise<CredenciaisPortal | null>;
+  /** ADI: carrega o adapter VALIDADO de emissão (teste injeta). Default gated/FAIL-CLOSED. */
+  lerAdapterValidado?: (corretoraId: string, seguradoraConfigId: string, ramo: string) => Promise<AdapterSpec | null>;
+  /** ADI: cria o provider a partir do adapter (teste injeta). */
+  criarProviderAdapter?: (spec: AdapterSpec) => ApoliceProvider;
+}
+
+/**
+ * Resolve o provider de emissão: ADI primeiro (adapter VALIDADO por
+ * `seguradora_config_id`, gated/FAIL-CLOSED), senão o driver legado por
+ * `grupo_integracao`. `deps.provider` (teste) tem prioridade absoluta.
+ */
+export async function resolverProviderEmissao(
+  ref: SeguradoraConfigRef,
+  ramo: string,
+  corretoraId: string,
+  deps: EmitirApoliceDeps,
+): Promise<ApoliceProvider> {
+  if (deps.provider) return deps.provider;
+  const ler = deps.lerAdapterValidado ?? lerAdapterApoliceValidado;
+  let spec: AdapterSpec | null = null;
+  try {
+    spec = await ler(corretoraId, ref.id, ramo);
+  } catch {
+    spec = null;
+  }
+  if (spec) return (deps.criarProviderAdapter ?? criarAdapterApoliceProvider)(spec);
+  return getApoliceProvider(ref);
 }
 
 export type ResultadoEmissao = { apoliceId: string } | { erro: string };
@@ -98,7 +128,7 @@ export async function emitirApolice(
     credenciais = cred;
   }
 
-  const provider = deps.provider ?? getApoliceProvider(ref);
+  const provider = await resolverProviderEmissao(ref, ramo, args.corretoraId, deps);
 
   // C_otp: lê o código por e-mail (Gmail) filtrando pelo domínio do portal. Só é
   // chamado pelo scraper QUANDO o desafio aparece. Sem domínio resolvível ou sem

@@ -198,6 +198,14 @@ const schema = z
     // o agente na máquina do operador autentica com `x-cron-token` para pegar/reportar
     // jobs de descoberta. Vazio → rotas do agente respondem 404 (desabilitadas).
     DESCOBERTA_AGENT_TOKEN: z.string().optional().default(""),
+    // Gate do HANDOFF: usar o adapter VALIDADO (objetivo='apolice') na emissão de
+    // apólice, no lugar do driver legado. default false = FAIL-CLOSED: `emitirApolice`
+    // NUNCA consulta adapter_spec e usa o provider por grupo_integracao (idêntico ao
+    // de hoje). Efetivo = esta env E existir adapter `status='validado'`+`ativo` p/ a
+    // seguradora_config_id. Ligar só após validar a RPA no ambiente de teste.
+    DESCOBERTA_APOLICE_ENABLED: boolDeString.default(false),
+    // nº máximo de iterações do loop construtor (executar-até-concluir) por build.
+    DESCOBERTA_MAX_ITERACOES: numComPadrao(6),
     // Multi-tenant (SaaS). Corretora "seed" (Piero de Campos) — uuid LITERAL fixo
     // usado no backfill, nos defaults de persistência e nos testes. Deve casar com
     // a linha semeada na migração `corretoras`. Não trocar sem re-backfillar.

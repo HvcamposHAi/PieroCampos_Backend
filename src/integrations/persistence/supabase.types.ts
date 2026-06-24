@@ -204,8 +204,12 @@ export interface Database {
           corretora_id: string;
           contrato_id: string;
           sistema: string;
+          seguradora_config_id: string | null;
           ramo: string;
           operacao: string;
+          objetivo: string;
+          caso_teste: Json | null;
+          criterio_sucesso: Json | null;
           spec: Json;
           versao: number;
           ativo: boolean;

@@ -148,14 +148,98 @@ export interface PassoExtract {
 
 export type PassoAdapter = PassoAuth | PassoHttp | PassoPoll | PassoExtract;
 
+// ── v2: passos DOM/RPA (executados pelo rpa-runner no daemon, Playwright) ────
+// Whitelist; SEM eval. `seletor` pode ser estático OU um "papel" que o LLM
+// resolve em runtime (reusa portal-selector.llm). Usados quando o portal não
+// tem API limpa (emissão de apólice, formulários).
+
+export interface PassoNavegar {
+  tipo: "navegar";
+  url: Template;
+}
+export interface PassoPreencher {
+  tipo: "preencher";
+  /** seletor estático OU papel (ex.: "campo_cpf") resolvido por LLM. */
+  seletor: string;
+  /** true = `seletor` é um papel a resolver via portal-selector.llm. */
+  papel?: boolean;
+  valor: Template;
+  descricao?: string;
+}
+export interface PassoClicar {
+  tipo: "clicar";
+  seletor: string;
+  papel?: boolean;
+  descricao?: string;
+  /** aguarda um download iniciar após o clique (ex.: botão "emitir"→PDF). */
+  esperarDownload?: boolean;
+}
+export interface PassoEsperar {
+  tipo: "esperar";
+  ms?: number;
+  seletor?: string;
+  /** espera a URL SAIR de um padrão (ex.: deixar /login). */
+  sairDeUrl?: string;
+  timeoutMs?: number;
+}
+export interface PassoExtrairCampo {
+  tipo: "extrair_campo";
+  nome: string; // ex.: 'numeroApolice', 'premioTotal'
+  /** seletor CSS OU regex de rótulo (ex.: "/ap[oó]lice|n[uú]mero/i"). */
+  seletorOuRegex: string;
+  comoMoeda?: boolean;
+}
+export interface PassoExtrairPdf {
+  tipo: "extrair_pdf";
+  /** se o PDF veio de um download disparado por um clique anterior. */
+  doDownload?: boolean;
+}
+
+export type PassoRpa =
+  | PassoNavegar
+  | PassoPreencher
+  | PassoClicar
+  | PassoEsperar
+  | PassoExtrairCampo
+  | PassoExtrairPdf;
+
+/** Objetivo do agente construtor (vira critério de parada). */
+export type Objetivo = "validar_estrutura" | "consulta" | "cotacao" | "apolice";
+
+/** Critério de sucesso (máquina-checável) por objetivo. */
+export interface CriterioSucesso {
+  objetivo: Objetivo;
+  /** campos que precisam existir no resultado (ex.: ['numeroApolice','pdf']). */
+  exige?: string[];
+  /** para cotação: nº mínimo de itens 'cotado'. */
+  minCotados?: number;
+}
+
+/** Caso de teste designado pelo operador (dados/proposta de validação). */
+export interface CasoTeste {
+  /** dados do cliente p/ cotação/cadastro (CPF/placa/CEP de teste). */
+  dados?: Record<string, unknown>;
+  /** nº/identificador da proposta de teste (objetivo apólice). */
+  propostaTeste?: string;
+  /** o operador CIENTE de que objetivo='apolice' emite 1 apólice real. */
+  confirmaEmissaoReal?: boolean;
+}
+
 export interface AdapterSpec {
   sistema: string;
   ramo: string;
   operacao: Operacao;
+  /** v2: objetivo perseguido (default = operacao). */
+  objetivo?: Objetivo;
+  /** v2: identidade canônica da seguradora (FK seguradoras_config.id). */
+  seguradoraConfigId?: string | null;
   versao: number;
   /** mapeamento dados-do-cliente → variáveis de entrada (reusa mapper dinâmico). */
   entradaObrigatoria: string[]; // ex.: ['cpf','placa','cep']
+  /** passos HTTP (cotação via API). */
   passos: PassoAdapter[];
+  /** v2: passos DOM/RPA (emissão de apólice / formulário). */
+  passosRpa?: PassoRpa[];
   /** política de resiliência. */
   resiliencia?: {
     maxRetries?: number; // default 3

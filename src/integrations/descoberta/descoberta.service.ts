@@ -106,3 +106,47 @@ export async function lerAdapterAtivoProvider(
 export function _resetDescobertaCache(): void {
   _cache.clear();
 }
+
+/**
+ * Carrega o AdapterSpec VALIDADO de EMISSÃO (objetivo='apolice') para uma
+ * seguradora (por `seguradora_config_id`). Gated por `DESCOBERTA_APOLICE_ENABLED`
+ * + `status='validado'`/`ativo`. FAIL-CLOSED: env off / sem linha / erro → null
+ * (a emissão segue no driver legado). Não cacheia (emissão é rara e quer o estado
+ * mais novo). Chave por ID = coerência entre módulos (não por nome string).
+ */
+export async function lerAdapterApoliceValidado(
+  corretoraId: string,
+  seguradoraConfigId: string,
+  ramo: string,
+): Promise<AdapterSpec | null> {
+  let ligado = false;
+  try {
+    ligado = getEnv().DESCOBERTA_APOLICE_ENABLED;
+  } catch {
+    return null;
+  }
+  if (!ligado) return null;
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("adapter_spec")
+      .select("spec")
+      .eq("corretora_id", corretoraId)
+      .eq("seguradora_config_id", seguradoraConfigId)
+      .eq("ramo", ramo)
+      .eq("objetivo", "apolice")
+      .eq("ativo", true)
+      .eq("status", "validado")
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    const spec = (data as { spec?: AdapterSpec } | null)?.spec ?? null;
+    if (spec && Array.isArray(spec.passosRpa) && spec.passosRpa.length > 0) return spec;
+    return null;
+  } catch (e) {
+    logger.warn("[descoberta] lerAdapterApoliceValidado falhou (FAIL-CLOSED → driver legado)", {
+      erro: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
