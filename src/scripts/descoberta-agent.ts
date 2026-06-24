@@ -14,9 +14,17 @@
  *       Supabase (SERVICE_ROLE) e ANTHROPIC_API_KEY (aumento de premissas).
  */
 import "dotenv/config";
+import readline from "node:readline";
 import axios from "axios";
 import { chromium, type Page } from "playwright";
 import { capturarPagina } from "../integrations/descoberta/captura/cdp-har.capture";
+import { criarPaginaPlaywright } from "../integrations/descoberta/runtime/playwright-page";
+import { executarRpa } from "../integrations/descoberta/runtime/rpa-runner";
+import { gerarSpecInicial } from "../integrations/descoberta/construtor/spec-template";
+import { validarEstrutura } from "../integrations/descoberta/validacao/estrutura.validator";
+import { avaliarCriterio, criterioPadrao, type ResultadoObjetivo } from "../integrations/descoberta/criterio/avaliar";
+import { resolverSeletor } from "../integrations/apolice/llm/portal-mapper.service";
+import type { Objetivo, PassoRpa } from "../integrations/descoberta/descoberta.types";
 
 const BACKEND = (process.env.DESCOBERTA_AGENT_BACKEND_URL ?? "").replace(/\/+$/, "");
 const TOKEN = process.env.DESCOBERTA_AGENT_TOKEN ?? "";
@@ -86,18 +94,125 @@ async function processar(job: Job): Promise<void> {
   }
 }
 
+// ── v2: jobs de CONSTRUÇÃO (objetivo-primeiro: login assistido + passos autônomos) ──
+
+interface JobConstrucao {
+  id: string;
+  corretora_id: string;
+  sistema: string;
+  ramo: string | null;
+  resumo: { seguradoraConfigId?: string; objetivo?: Objetivo; url?: string; casoTeste?: { dados?: Record<string, unknown>; propostaTeste?: string } } | null;
+}
+
+function aguardarEnter(msg: string): Promise<void> {
+  return new Promise((res) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(msg, () => {
+      rl.close();
+      res();
+    });
+  });
+}
+
+async function pegarConstrucao(): Promise<JobConstrucao | null> {
+  const r = await axios.get(`${BACKEND}/api/descoberta/agente/construcao/trabalho`, { headers: headers(), timeout: 90_000 });
+  return (r.data?.job as JobConstrucao | null) ?? null;
+}
+
+async function reportarConstrucao(payload: Record<string, unknown>): Promise<void> {
+  await axios
+    .post(`${BACKEND}/api/descoberta/agente/construcao/reportar`, payload, { headers: headers(), timeout: 120_000 })
+    .catch((e) => console.log("reportar construção falhou:", (e as Error).message));
+}
+
+/** Passos AUTÔNOMOS = remove os passos de LOGIN (o operador faz login no modo híbrido). */
+function passosAutonomos(passos: PassoRpa[]): PassoRpa[] {
+  return passos.filter((p) => {
+    if (p.tipo === "navegar") return false;
+    if (p.tipo === "preencher" && p.papel && /login_/.test(p.seletor)) return false;
+    if (p.tipo === "clicar" && p.papel && /login_/.test(p.seletor)) return false;
+    if (p.tipo === "esperar" && (p as { sairDeUrl?: string }).sairDeUrl === "/login") return false;
+    return true;
+  });
+}
+
+async function processarConstrucao(job: JobConstrucao): Promise<void> {
+  const objetivo = (job.resumo?.objetivo ?? "apolice") as Objetivo;
+  const url = job.resumo?.url;
+  const seguradoraConfigId = job.resumo?.seguradoraConfigId;
+  if (!url || !seguradoraConfigId) {
+    await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId: seguradoraConfigId ?? "", sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "erro", erro: "job_incompleto" });
+    return;
+  }
+  const specInicial = gerarSpecInicial({ sistema: job.sistema, seguradoraConfigId, ramo: job.ramo ?? "auto", objetivo, urlPortal: url });
+  const built = await criarPaginaPlaywright(false); // VISÍVEL (operador no laço)
+  try {
+    console.log(`\n[construção] Abrindo ${url} (objetivo: ${objetivo})`);
+    await built.page.navegar(url);
+
+    // PORTÃO: validação de estrutura (markup pós-navegação)
+    const markup = (await built.pageNativa.content().catch(() => "")).slice(0, 200_000);
+    const vEstr = validarEstrutura(objetivo, { markup, loginOk: false });
+    if (vEstr.veredito === "nao_suporta") {
+      console.log(`[construção] estrutura NÃO suporta: faltou ${vEstr.lacunas.join(", ")}`);
+      await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "nao_suporta", erro: `lacunas: ${vEstr.lacunas.join(", ")}` });
+      return;
+    }
+    if (objetivo === "validar_estrutura") {
+      await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "validado", spec: specInicial, url });
+      return;
+    }
+
+    // LOGIN ASSISTIDO (híbrido): operador resolve login/2FA/captcha
+    await aguardarEnter("[construção] >>> Faça LOGIN (e 2FA/captcha) no navegador. Quando estiver logado, pressione ENTER aqui… ");
+
+    // PASSOS AUTÔNOMOS (sem login): o agente busca → emite → extrai
+    const autonomos = passosAutonomos(specInicial.passosRpa ?? []);
+    const contexto: Record<string, unknown> = { proposta: job.resumo?.casoTeste?.propostaTeste ?? "", ...(job.resumo?.casoTeste?.dados ?? {}) };
+    if (objetivo === "apolice") {
+      console.log("[construção] >>> ATENÇÃO: este objetivo EMITE 1 apólice real de validação.");
+    }
+    const r = await executarRpa(autonomos, contexto, built.page, {
+      resolverSeletor: async (papel) =>
+        resolverSeletor({ seguradora: job.sistema, acao: papel, descricaoAcao: `Elemento para "${papel}" (${objetivo}).`, corretoraId: job.corretora_id, page: built.pageNativa }),
+      log: (m) => console.log("  ·", m),
+    });
+    const pdf = built.page.ultimoPdf ? await built.page.ultimoPdf() : null;
+    const resultado: ResultadoObjetivo = { numeroApolice: r.numeroApolice, pdfBytes: pdf?.length ?? 0, campos: r.campos };
+    const avaliacao = avaliarCriterio(criterioPadrao(objetivo), resultado);
+    console.log(`[construção] critério: ${avaliacao.atingido ? "ATINGIDO" : "não atingido"} — ${avaliacao.motivo}`);
+
+    if (avaliacao.atingido) {
+      await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "validado", spec: specInicial, casoTeste: job.resumo?.casoTeste, criterioSucesso: criterioPadrao(objetivo), url });
+      console.log("[construção] VALIDADO — adapter gravado no Admin › Integrações.");
+    } else {
+      // apólice NÃO re-tenta o emitir (irreversível) → escala p/ humano
+      await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "requer_humano", erro: avaliacao.motivo });
+    }
+  } catch (e) {
+    await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "erro", erro: (e as Error).message });
+  } finally {
+    await built.fechar();
+  }
+}
+
 async function loop(): Promise<void> {
   if (!BACKEND || !TOKEN) {
     console.error("[descoberta-agent] defina DESCOBERTA_AGENT_BACKEND_URL e DESCOBERTA_AGENT_TOKEN no .env");
     process.exit(1);
   }
-  console.log("[descoberta-agent] no ar; aguardando jobs de descoberta…");
+  console.log("[descoberta-agent] no ar; aguardando jobs de descoberta/construção…");
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
+      const construcao = await pegarConstrucao();
+      if (construcao) {
+        console.log(`[descoberta-agent] CONSTRUÇÃO ${construcao.id} (${construcao.sistema})`);
+        await processarConstrucao(construcao);
+      }
       const job = await pegarTrabalho();
       if (job) {
-        console.log(`[descoberta-agent] job ${job.id} (${job.sistema}/${job.ramo ?? "?"})`);
+        console.log(`[descoberta-agent] descoberta ${job.id} (${job.sistema}/${job.ramo ?? "?"})`);
         await processar(job);
       }
     } catch (e) {

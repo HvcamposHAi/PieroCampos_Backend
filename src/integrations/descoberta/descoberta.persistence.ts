@@ -259,6 +259,156 @@ export async function proximoJobDescoberta(deps?: PersistDeps): Promise<JobDesco
   return (data as JobDescoberta | null) ?? null;
 }
 
+// ── Produtor v2: job de construção + gravar adapter VALIDADO por seguradora ──
+
+export interface JobConstrucao {
+  id: string;
+  corretora_id: string;
+  sistema: string;
+  ramo: string | null;
+  status: string;
+  resumo: { seguradoraConfigId?: string; objetivo?: Operacao | string; url?: string; casoTeste?: unknown } | null;
+}
+
+export async function criarJobConstrucao(
+  corretoraId: string,
+  input: { seguradoraConfigId: string; sistema: string; ramo: string; objetivo: string; url?: string | null; casoTeste?: unknown },
+  deps?: PersistDeps,
+): Promise<{ jobId: string }> {
+  const sb = cliente(deps);
+  const { data, error } = await sb
+    .from("descoberta_execucao")
+    .insert({
+      corretora_id: corretoraId,
+      sistema: input.sistema,
+      ramo: input.ramo,
+      tipo: "construcao",
+      status: "andamento",
+      etapa: "fila",
+      resumo: { seguradoraConfigId: input.seguradoraConfigId, objetivo: input.objetivo, url: input.url ?? null, casoTeste: input.casoTeste ?? null },
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return { jobId: (data as { id: string }).id };
+}
+
+/** Próximo job de CONSTRUÇÃO pendente (daemon). Token é a defesa. */
+export async function proximoJobConstrucao(deps?: PersistDeps): Promise<JobConstrucao | null> {
+  const sb = cliente(deps);
+  const { data, error } = await sb
+    .from("descoberta_execucao")
+    .select("id, corretora_id, sistema, ramo, status, resumo")
+    .eq("tipo", "construcao")
+    .eq("status", "andamento")
+    .eq("etapa", "fila")
+    .order("criado_em", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as JobConstrucao | null) ?? null;
+}
+
+async function proximaVersaoSeguradora(sb: Sb, corretoraId: string, seguradoraConfigId: string, ramo: string, objetivo: string): Promise<number> {
+  const { data } = await sb
+    .from("adapter_spec")
+    .select("versao")
+    .eq("corretora_id", corretoraId)
+    .eq("seguradora_config_id", seguradoraConfigId)
+    .eq("ramo", ramo)
+    .eq("objetivo", objetivo)
+    .order("versao", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return ((data as { versao?: number } | null)?.versao ?? 0) + 1;
+}
+
+/**
+ * Grava um adapter VALIDADO (objetivo atingido no ambiente de teste): cria um
+ * contrato (aprovado) + o adapter `status='validado'`, ATIVA-o e desativa os
+ * concorrentes (mesma seguradora/ramo/objetivo). Chaveado por `seguradora_config_id`
+ * (coerência entre módulos). Invalida o cache do runtime.
+ */
+export async function salvarAdapterValidado(
+  corretoraId: string,
+  input: {
+    seguradoraConfigId: string;
+    sistema: string;
+    ramo: string;
+    objetivo: string;
+    spec: AdapterSpec;
+    casoTeste?: unknown;
+    criterioSucesso?: unknown;
+    url?: string | null;
+  },
+  deps?: PersistDeps,
+): Promise<{ contratoId: string; adapterId: string; versao: number }> {
+  const sb = cliente(deps);
+  const versao = await proximaVersaoSeguradora(sb, corretoraId, input.seguradoraConfigId, input.ramo, input.objetivo);
+
+  // 1) contrato (aprovado) ligado à seguradora + objetivo
+  const { data: ct, error: e1 } = await sb
+    .from("pagina_contrato")
+    .insert({
+      corretora_id: corretoraId,
+      seguradora_config_id: input.seguradoraConfigId,
+      sistema: input.sistema,
+      ramo: input.ramo,
+      operacao: input.objetivo,
+      objetivo: input.objetivo,
+      url_base: input.url ?? null,
+      versao,
+      status: "aprovado",
+      aprovado_em: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+  if (e1) throw e1;
+  const contratoId = (ct as { id: string }).id;
+
+  // 2) desativa concorrentes (mesma chave) antes de ativar o novo
+  const { error: e2 } = await sb
+    .from("adapter_spec")
+    .update({ ativo: false, atualizado_em: new Date().toISOString() })
+    .eq("corretora_id", corretoraId)
+    .eq("seguradora_config_id", input.seguradoraConfigId)
+    .eq("ramo", input.ramo)
+    .eq("objetivo", input.objetivo);
+  if (e2) throw e2;
+
+  // 3) insere o adapter validado + ativo
+  const { data: ad, error: e3 } = await sb
+    .from("adapter_spec")
+    .insert({
+      corretora_id: corretoraId,
+      contrato_id: contratoId,
+      seguradora_config_id: input.seguradoraConfigId,
+      sistema: input.sistema,
+      ramo: input.ramo,
+      operacao: input.objetivo,
+      objetivo: input.objetivo,
+      spec: input.spec,
+      caso_teste: input.casoTeste ?? null,
+      criterio_sucesso: input.criterioSucesso ?? null,
+      versao,
+      ativo: true,
+      status: "validado",
+    })
+    .select("id")
+    .single();
+  if (e3) throw e3;
+  _resetDescobertaCache();
+  return { contratoId, adapterId: (ad as { id: string }).id, versao };
+}
+
+/** Adapters de uma seguradora (board por id). */
+export async function listarAdaptersDaSeguradora(corretoraId: string, seguradoraConfigId: string, deps?: PersistDeps): Promise<AdapterRow[]> {
+  const sb = cliente(deps);
+  const { data, error } = await sb.from("adapter_spec").select("*").eq("corretora_id", corretoraId).eq("seguradora_config_id", seguradoraConfigId);
+  if (error) throw error;
+  return (data as AdapterRow[]) ?? [];
+}
+
 export async function finalizarJob(
   jobId: string,
   patch: { status: string; etapa?: string; contratoId?: string | null; harRef?: string | null; custoTokens?: number | null; erro?: string | null; resumo?: unknown },

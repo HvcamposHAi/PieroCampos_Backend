@@ -8,11 +8,11 @@
  * NÃO toca storage/persistência: igual aos providers, devolve bytes do PDF e a
  * `apolice-emissao.service` cuida do upload/gravação.
  */
-import { chromium, type Download, type Page } from "playwright";
 import { getEnv } from "../../config/env";
 import { logger } from "../../utils/logger";
 import type { AdapterSpec } from "../descoberta/descoberta.types";
 import { executarRpa, type PaginaRpa, type RpaRunnerDeps } from "../descoberta/runtime/rpa-runner";
+import { criarPaginaPlaywright, type PaginaBuild } from "../descoberta/runtime/playwright-page";
 import type { ApoliceProvider, EmitirApoliceContext, EmitirApoliceResult } from "./apolice-provider.port";
 import { resolverSeletor } from "./llm/portal-mapper.service";
 
@@ -79,96 +79,6 @@ export async function emitirApoliceViaAdapter(
   };
 }
 
-// ── Wrapper Playwright → PaginaRpa (roda no daemon; gated APOLICE_RPA_ENABLED) ──
-
-const RE_VALOR = /([A-Z]{1,4}[-\s]?\d[\w./-]{3,}|R\$\s?[\d.,]+|\d[\d.,]+)/i;
-
-async function lerStream(download: Download): Promise<Buffer | null> {
-  try {
-    const stream = await download.createReadStream();
-    if (!stream) return null;
-    const chunks: Buffer[] = [];
-    for await (const c of stream) chunks.push(Buffer.from(c));
-    return Buffer.concat(chunks);
-  } catch {
-    return null;
-  }
-}
-
-export interface PaginaBuild {
-  page: PaginaRpa;
-  fechar: () => Promise<void>;
-  /** Page nativa do Playwright (p/ o portal-selector resolver papéis). */
-  pageNativa?: Page;
-}
-
-/** Cria uma `PaginaRpa` sobre o Playwright. `fechar` encerra browser/context. */
-async function criarPaginaPlaywright(): Promise<PaginaBuild> {
-  const env = getEnv();
-  const browser = await chromium.launch({ headless: env.APOLICE_HEADLESS });
-  const ctx = await browser.newContext({
-    acceptDownloads: true,
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  });
-  const p: Page = await ctx.newPage();
-  let pdf: Buffer | null = null;
-
-  const page: PaginaRpa = {
-    async navegar(url) {
-      await p.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    },
-    async preencher(sel, valor) {
-      await p.fill(sel, valor, { timeout: 15_000 });
-    },
-    async clicar(sel, opts) {
-      if (opts?.esperarDownload) {
-        const [download] = await Promise.all([
-          p.waitForEvent("download", { timeout: 30_000 }),
-          p.click(sel, { timeout: 15_000 }),
-        ]);
-        pdf = await lerStream(download);
-        return { downloadBytes: pdf?.length ?? 0 };
-      }
-      await p.click(sel, { timeout: 15_000 });
-    },
-    async esperarMs(ms) {
-      await p.waitForTimeout(ms);
-    },
-    async esperarSeletor(sel, timeoutMs) {
-      await p.waitForSelector(sel, { timeout: timeoutMs ?? 30_000 });
-    },
-    async esperarSairDeUrl(padrao, timeoutMs) {
-      await p.waitForURL((u) => !u.toString().includes(padrao), { timeout: timeoutMs ?? 30_000 });
-    },
-    async extrair(seletorOuRegex) {
-      // regex de rótulo "/.../i" → procura no innerText; senão é seletor CSS
-      if (/^\/.*\/[a-z]*$/i.test(seletorOuRegex)) {
-        const corpo = (await p.textContent("body").catch(() => "")) ?? "";
-        const m = seletorOuRegex.match(/^\/(.*)\/([a-z]*)$/i);
-        if (!m) return null;
-        const re = new RegExp(m[1]!, m[2]);
-        const linhas = corpo.split(/\n+/);
-        const linha = linhas.find((l) => re.test(l));
-        const v = linha?.match(RE_VALOR);
-        return v?.[1] ?? linha?.trim() ?? null;
-      }
-      return (await p.textContent(seletorOuRegex).catch(() => null))?.trim() ?? null;
-    },
-    async ultimoPdf() {
-      return pdf;
-    },
-  };
-
-  return {
-    page,
-    pageNativa: p,
-    fechar: async () => {
-      await ctx.close().catch(() => undefined);
-      await browser.close().catch(() => undefined);
-    },
-  };
-}
-
 /**
  * Provider de emissão por ADAPTER do ADI. Entra no fluxo convencional
  * (`emitirApolice`) no lugar do driver legado quando há adapter VALIDADO.
@@ -177,7 +87,7 @@ async function criarPaginaPlaywright(): Promise<PaginaBuild> {
  */
 export function criarAdapterApoliceProvider(
   spec: AdapterSpec,
-  criarPagina: () => Promise<PaginaBuild> = criarPaginaPlaywright,
+  criarPagina: () => Promise<PaginaBuild> = () => criarPaginaPlaywright(getEnv().APOLICE_HEADLESS),
 ): ApoliceProvider {
   return {
     nome: `apolice-adapter:${spec.seguradoraConfigId ?? spec.sistema}`,

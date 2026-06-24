@@ -21,14 +21,18 @@ import { ingerirDescoberta } from "./descoberta.ingest";
 import {
   aprovarContrato,
   ativarAdapter,
+  criarJobConstrucao,
   criarJobDescoberta,
   definirExecAtivo,
   finalizarJob,
   lerExecAtivo,
   listarAdapters,
+  listarAdaptersDaSeguradora,
   listarContratos,
   obterContrato,
+  proximoJobConstrucao,
   proximoJobDescoberta,
+  salvarAdapterValidado,
 } from "./descoberta.persistence";
 
 // ── Schemas ────────────────────────────────────────────────────────────────
@@ -165,6 +169,69 @@ router.post("/adapter/:id/ativar", exigirAdmin, exigirCorretoraSelecionada, asyn
   }
 });
 
+// ── v2: Construir RPA por objetivo (produtor) ───────────────────────────────
+
+const construirSchema = z.object({
+  seguradoraConfigId: z.string().uuid(),
+  sistema: z.string().min(1),
+  ramo: z.string().min(1).default("auto"),
+  objetivo: z.enum(["validar_estrutura", "consulta", "cotacao", "apolice"]),
+  url: z.string().url().optional(),
+  casoTeste: z
+    .object({
+      dados: z.record(z.unknown()).optional(),
+      propostaTeste: z.string().optional(),
+      confirmaEmissaoReal: z.boolean().optional(),
+    })
+    .optional(),
+});
+
+router.post("/construir", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  if (!getEnv().DESCOBERTA_ENABLED) {
+    res.status(409).json({ erro: "descoberta_desabilitada", mensagem: "Ligue DESCOBERTA_ENABLED e rode o agente local." });
+    return;
+  }
+  const parsed = construirSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const d = parsed.data;
+  // segurança: objetivo apólice emite de verdade no teste → exige confirmação
+  if (d.objetivo === "apolice" && !d.casoTeste?.confirmaEmissaoReal) {
+    res.status(409).json({ erro: "confirmacao_necessaria", mensagem: "Objetivo 'apólice' emite 1 apólice real de validação. Confirme com confirmaEmissaoReal." });
+    return;
+  }
+  try {
+    const { jobId } = await criarJobConstrucao(req.corretoraId!, {
+      seguradoraConfigId: d.seguradoraConfigId,
+      sistema: d.sistema,
+      ramo: d.ramo,
+      objetivo: d.objetivo,
+      url: d.url,
+      casoTeste: d.casoTeste,
+    });
+    res.json({ ok: true, jobId });
+  } catch (e) {
+    logger.error("[descoberta.routes] construir falhou", { erro: (e as Error).message });
+    res.status(500).json({ erro: "construir_failed", mensagem: (e as Error).message });
+  }
+});
+
+router.get("/seguradora/:id/adapters", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  const id = z.string().uuid().safeParse(req.params.id);
+  if (!id.success) {
+    res.status(422).json({ erro: "id_invalido" });
+    return;
+  }
+  try {
+    const adapters = await listarAdaptersDaSeguradora(req.corretoraId!, id.data);
+    res.json({ ok: true, adapters });
+  } catch (e) {
+    res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
+  }
+});
+
 const patchConfigSchema = z.object({ exec_ativo: z.boolean() });
 router.patch("/config", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const parsed = patchConfigSchema.safeParse(req.body);
@@ -252,6 +319,65 @@ agente.post("/reportar", async (req: Request, res: Response) => {
     res.json({ ok: true, status: "ok", contratoId: r.contratoId, adapterId: r.adapterId });
   } catch (e) {
     await finalizarJob(d.jobId, { status: "erro", etapa: "ingestao", erro: (e as Error).message });
+    res.status(500).json({ ok: false, erro: "reportar_falhou", mensagem: (e as Error).message });
+  }
+});
+
+// ── v2: construção (daemon roda o loop e reporta o adapter VALIDADO) ──────────
+
+agente.get("/construcao/trabalho", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  try {
+    const job = await proximoJobConstrucao();
+    res.json({ ok: true, job });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "trabalho_falhou", mensagem: (e as Error).message });
+  }
+});
+
+const reportarConstrucaoSchema = z.object({
+  jobId: z.string().uuid(),
+  corretoraId: z.string().uuid(),
+  seguradoraConfigId: z.string().uuid(),
+  sistema: z.string().min(1),
+  ramo: z.string().min(1).default("auto"),
+  objetivo: z.enum(["validar_estrutura", "consulta", "cotacao", "apolice"]),
+  status: z.enum(["validado", "requer_humano", "erro", "nao_suporta"]),
+  spec: z.record(z.unknown()).nullable().optional(),
+  casoTeste: z.unknown().optional(),
+  criterioSucesso: z.unknown().optional(),
+  url: z.string().nullable().optional(),
+  erro: z.string().max(800).nullable().optional(),
+});
+
+agente.post("/construcao/reportar", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  const parsed = reportarConstrucaoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido", detalhe: parsed.error.flatten() });
+    return;
+  }
+  const d = parsed.data;
+  try {
+    if (d.status === "validado" && d.spec) {
+      const { adapterId } = await salvarAdapterValidado(d.corretoraId, {
+        seguradoraConfigId: d.seguradoraConfigId,
+        sistema: d.sistema,
+        ramo: d.ramo,
+        objetivo: d.objetivo,
+        spec: d.spec as never,
+        casoTeste: d.casoTeste,
+        criterioSucesso: d.criterioSucesso,
+        url: d.url ?? null,
+      });
+      await finalizarJob(d.jobId, { status: "ok", etapa: "validado", resumo: { adapterId } });
+      res.json({ ok: true, status: "validado", adapterId });
+      return;
+    }
+    await finalizarJob(d.jobId, { status: d.status === "erro" ? "erro" : "andamento", etapa: d.status, erro: d.erro ?? null });
+    res.json({ ok: true, status: d.status });
+  } catch (e) {
+    await finalizarJob(d.jobId, { status: "erro", etapa: "persistir", erro: (e as Error).message });
     res.status(500).json({ ok: false, erro: "reportar_falhou", mensagem: (e as Error).message });
   }
 });
