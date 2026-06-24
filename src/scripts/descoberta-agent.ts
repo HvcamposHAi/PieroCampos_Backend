@@ -125,6 +125,13 @@ async function reportarConstrucao(payload: Record<string, unknown>): Promise<voi
     .catch((e) => console.log("reportar construção falhou:", (e as Error).message));
 }
 
+/** marcador de evolução em tempo real (grid de monitoramento no Admin). */
+async function progresso(jobId: string, etapa: string): Promise<void> {
+  await axios
+    .post(`${BACKEND}/api/descoberta/agente/construcao/progresso`, { jobId, etapa }, { headers: headers(), timeout: 30_000 })
+    .catch(() => undefined);
+}
+
 /** Passos AUTÔNOMOS = remove os passos de LOGIN (o operador faz login no modo híbrido). */
 function passosAutonomos(passos: PassoRpa[]): PassoRpa[] {
   return passos.filter((p) => {
@@ -148,9 +155,11 @@ async function processarConstrucao(job: JobConstrucao): Promise<void> {
   const built = await criarPaginaPlaywright(false); // VISÍVEL (operador no laço)
   try {
     console.log(`\n[construção] Abrindo ${url} (objetivo: ${objetivo})`);
+    await progresso(job.id, "abrindo_portal");
     await built.page.navegar(url);
 
     // PORTÃO: validação de estrutura (markup pós-navegação)
+    await progresso(job.id, "validando_estrutura");
     const markup = (await built.pageNativa.content().catch(() => "")).slice(0, 200_000);
     const vEstr = validarEstrutura(objetivo, { markup, loginOk: false });
     if (vEstr.veredito === "nao_suporta") {
@@ -164,9 +173,11 @@ async function processarConstrucao(job: JobConstrucao): Promise<void> {
     }
 
     // LOGIN ASSISTIDO (híbrido): operador resolve login/2FA/captcha
+    await progresso(job.id, "aguardando_login_operador");
     await aguardarEnter("[construção] >>> Faça LOGIN (e 2FA/captcha) no navegador. Quando estiver logado, pressione ENTER aqui… ");
 
     // PASSOS AUTÔNOMOS (sem login): o agente busca → emite → extrai
+    await progresso(job.id, "executando_passos");
     const autonomos = passosAutonomos(specInicial.passosRpa ?? []);
     const contexto: Record<string, unknown> = { proposta: job.resumo?.casoTeste?.propostaTeste ?? "", ...(job.resumo?.casoTeste?.dados ?? {}) };
     if (objetivo === "apolice") {
@@ -177,6 +188,7 @@ async function processarConstrucao(job: JobConstrucao): Promise<void> {
         resolverSeletor({ seguradora: job.sistema, acao: papel, descricaoAcao: `Elemento para "${papel}" (${objetivo}).`, corretoraId: job.corretora_id, page: built.pageNativa }),
       log: (m) => console.log("  ·", m),
     });
+    await progresso(job.id, "avaliando_criterio");
     const pdf = built.page.ultimoPdf ? await built.page.ultimoPdf() : null;
     const resultado: ResultadoObjetivo = { numeroApolice: r.numeroApolice, pdfBytes: pdf?.length ?? 0, campos: r.campos };
     const avaliacao = avaliarCriterio(criterioPadrao(objetivo), resultado);

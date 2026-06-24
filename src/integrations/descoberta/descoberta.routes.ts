@@ -21,6 +21,7 @@ import { ingerirDescoberta } from "./descoberta.ingest";
 import {
   aprovarContrato,
   ativarAdapter,
+  atualizarProgressoJob,
   criarJobConstrucao,
   criarJobDescoberta,
   definirExecAtivo,
@@ -29,6 +30,7 @@ import {
   listarAdapters,
   listarAdaptersDaSeguradora,
   listarContratos,
+  listarExecucoes,
   obterContrato,
   proximoJobConstrucao,
   proximoJobDescoberta,
@@ -218,6 +220,15 @@ router.post("/construir", exigirAdmin, exigirCorretoraSelecionada, async (req: R
   }
 });
 
+router.get("/execucoes", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  try {
+    const execucoes = await listarExecucoes(req.corretoraId!);
+    res.json({ ok: true, execucoes });
+  } catch (e) {
+    res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
+  }
+});
+
 router.get("/seguradora/:id/adapters", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const id = z.string().uuid().safeParse(req.params.id);
   if (!id.success) {
@@ -332,6 +343,22 @@ agente.get("/construcao/trabalho", async (req: Request, res: Response) => {
     res.json({ ok: true, job });
   } catch (e) {
     res.status(500).json({ ok: false, erro: "trabalho_falhou", mensagem: (e as Error).message });
+  }
+});
+
+const progressoSchema = z.object({ jobId: z.string().uuid(), etapa: z.string().max(60) });
+agente.post("/construcao/progresso", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  const parsed = progressoSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ ok: false, erro: "input_invalido" });
+    return;
+  }
+  try {
+    await atualizarProgressoJob(parsed.data.jobId, parsed.data.etapa);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "progresso_falhou", mensagem: (e as Error).message });
   }
 });
 

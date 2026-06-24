@@ -409,6 +409,39 @@ export async function listarAdaptersDaSeguradora(corretoraId: string, seguradora
   return (data as AdapterRow[]) ?? [];
 }
 
+/** Execuções recentes (monitoramento de construção/extração) da corretora. */
+export interface ExecucaoRow {
+  id: string;
+  sistema: string;
+  ramo: string | null;
+  tipo: string;
+  status: string;
+  etapa: string | null;
+  erro: string | null;
+  custo_tokens: number | null;
+  resumo: { seguradoraConfigId?: string; objetivo?: string; adapterId?: string } | null;
+  criado_em: string;
+}
+
+export async function listarExecucoes(corretoraId: string, limite = 25, deps?: PersistDeps): Promise<ExecucaoRow[]> {
+  const sb = cliente(deps);
+  const { data, error } = await sb
+    .from("descoberta_execucao")
+    .select("id, sistema, ramo, tipo, status, etapa, erro, custo_tokens, resumo, criado_em")
+    .eq("corretora_id", corretoraId)
+    .order("criado_em", { ascending: false })
+    .limit(limite);
+  if (error) throw error;
+  return (data as ExecucaoRow[]) ?? [];
+}
+
+/** Atualiza só a ETAPA (marcador de evolução em tempo real; status segue 'andamento'). */
+export async function atualizarProgressoJob(jobId: string, etapa: string, deps?: PersistDeps): Promise<void> {
+  const sb = cliente(deps);
+  const { error } = await sb.from("descoberta_execucao").update({ etapa }).eq("id", jobId);
+  if (error) logger.warn("[descoberta] atualizarProgressoJob falhou", { erro: (error as Error).message });
+}
+
 export async function finalizarJob(
   jobId: string,
   patch: { status: string; etapa?: string; contratoId?: string | null; harRef?: string | null; custoTokens?: number | null; erro?: string | null; resumo?: unknown },
