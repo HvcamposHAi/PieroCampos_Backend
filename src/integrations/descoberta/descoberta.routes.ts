@@ -80,6 +80,17 @@ router.get("/", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, re
   }
 });
 
+// ⚠️ ROTAS ESTÁTICAS (segmento fixo) ANTES da dinâmica "/:id" — senão "/execucoes"
+// cai no handler de "/:id" e devolve 422 id_invalido.
+router.get("/execucoes", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  try {
+    const execucoes = await listarExecucoes(req.corretoraId!);
+    res.json({ ok: true, execucoes });
+  } catch (e) {
+    res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
+  }
+});
+
 router.get("/:id", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   const id = z.string().uuid().safeParse(req.params.id);
   if (!id.success) {
@@ -217,15 +228,6 @@ router.post("/construir", exigirAdmin, exigirCorretoraSelecionada, async (req: R
   } catch (e) {
     logger.error("[descoberta.routes] construir falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "construir_failed", mensagem: (e as Error).message });
-  }
-});
-
-router.get("/execucoes", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
-  try {
-    const execucoes = await listarExecucoes(req.corretoraId!);
-    res.json({ ok: true, execucoes });
-  } catch (e) {
-    res.status(500).json({ erro: "get_failed", mensagem: (e as Error).message });
   }
 });
 
