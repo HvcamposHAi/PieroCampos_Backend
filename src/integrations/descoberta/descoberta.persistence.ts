@@ -270,16 +270,50 @@ export interface JobConstrucao {
   resumo: { seguradoraConfigId?: string; objetivo?: Operacao | string; url?: string; casoTeste?: unknown } | null;
 }
 
+/** Job de construção EM VOO (andamento) para a chave, se houver. */
+export async function buscarConstrucaoEmVoo(
+  corretoraId: string,
+  seguradoraConfigId: string,
+  ramo: string,
+  objetivo: string,
+  deps?: PersistDeps,
+): Promise<{ id: string } | null> {
+  const sb = cliente(deps);
+  const { data } = await sb
+    .from("descoberta_execucao")
+    .select("id")
+    .eq("corretora_id", corretoraId)
+    .eq("seguradora_config_id", seguradoraConfigId)
+    .eq("ramo", ramo)
+    .eq("objetivo", objetivo)
+    .eq("tipo", "construcao")
+    .eq("status", "andamento")
+    .limit(1)
+    .maybeSingle();
+  return (data as { id: string } | null) ?? null;
+}
+
+/**
+ * Cria job de construção. IDEMPOTENTE: se já houver um EM VOO para a mesma chave
+ * (corretora,seguradora,ramo,objetivo), REUSA (não duplica — espelha
+ * apolice-job.enfileirar). Defesa em profundidade: índice parcial único (cláusula J)
+ * + tratamento de 23505 → devolve o existente.
+ */
 export async function criarJobConstrucao(
   corretoraId: string,
   input: { seguradoraConfigId: string; sistema: string; ramo: string; objetivo: string; url?: string | null; casoTeste?: unknown },
   deps?: PersistDeps,
-): Promise<{ jobId: string }> {
+): Promise<{ jobId: string; jaEmVoo: boolean }> {
   const sb = cliente(deps);
+  const emVoo = await buscarConstrucaoEmVoo(corretoraId, input.seguradoraConfigId, input.ramo, input.objetivo, deps);
+  if (emVoo) return { jobId: emVoo.id, jaEmVoo: true };
+
   const { data, error } = await sb
     .from("descoberta_execucao")
     .insert({
       corretora_id: corretoraId,
+      seguradora_config_id: input.seguradoraConfigId,
+      objetivo: input.objetivo,
       sistema: input.sistema,
       ramo: input.ramo,
       tipo: "construcao",
@@ -289,8 +323,108 @@ export async function criarJobConstrucao(
     })
     .select("id")
     .single();
+  if (error) {
+    // corrida: índice único disparou → devolve o em-voo existente
+    if ((error as { code?: string }).code === "23505") {
+      const ex = await buscarConstrucaoEmVoo(corretoraId, input.seguradoraConfigId, input.ramo, input.objetivo, deps);
+      if (ex) return { jobId: ex.id, jaEmVoo: true };
+    }
+    throw error;
+  }
+  return { jobId: (data as { id: string }).id, jaEmVoo: false };
+}
+
+/** Existe adapter VALIDADO+ativo p/ a chave? (para perguntar "reprocessar?"). */
+export async function existeAdapterValidado(
+  corretoraId: string,
+  seguradoraConfigId: string,
+  ramo: string,
+  objetivo: string,
+  deps?: PersistDeps,
+): Promise<boolean> {
+  const sb = cliente(deps);
+  const { data } = await sb
+    .from("adapter_spec")
+    .select("id")
+    .eq("corretora_id", corretoraId)
+    .eq("seguradora_config_id", seguradoraConfigId)
+    .eq("ramo", ramo)
+    .eq("objetivo", objetivo)
+    .eq("ativo", true)
+    .eq("status", "validado")
+    .limit(1)
+    .maybeSingle();
+  return Boolean(data);
+}
+
+/** Cancela um job EM ANDAMENTO (fila ou em execução). Idempotente. */
+export async function cancelarJob(corretoraId: string, jobId: string, deps?: PersistDeps): Promise<void> {
+  const sb = cliente(deps);
+  const { error } = await sb
+    .from("descoberta_execucao")
+    .update({ status: "cancelado", etapa: "cancelado" })
+    .eq("corretora_id", corretoraId)
+    .eq("id", jobId)
+    .eq("status", "andamento");
   if (error) throw error;
-  return { jobId: (data as { id: string }).id };
+}
+
+/** Status atual de um job (daemon checa cancelamento). */
+export async function lerStatusJob(jobId: string, deps?: PersistDeps): Promise<string | null> {
+  const sb = cliente(deps);
+  const { data } = await sb.from("descoberta_execucao").select("status").eq("id", jobId).maybeSingle();
+  return (data as { status?: string } | null)?.status ?? null;
+}
+
+/**
+ * Salva o CÓDIGO DE SCRAPING como RASCUNHO (status 'em_construcao', inativo) quando
+ * o build NÃO atingiu o objetivo — não perde o trabalho (seletores resolvidos) e
+ * o operador pode inspecionar/editar. NÃO desativa o adapter validado vigente.
+ */
+export async function salvarAdapterRascunho(
+  corretoraId: string,
+  input: { seguradoraConfigId: string; sistema: string; ramo: string; objetivo: string; spec: AdapterSpec; casoTeste?: unknown; url?: string | null },
+  deps?: PersistDeps,
+): Promise<{ contratoId: string; adapterId: string; versao: number }> {
+  const sb = cliente(deps);
+  const versao = await proximaVersaoSeguradora(sb, corretoraId, input.seguradoraConfigId, input.ramo, input.objetivo);
+  const { data: ct, error: e1 } = await sb
+    .from("pagina_contrato")
+    .insert({
+      corretora_id: corretoraId,
+      seguradora_config_id: input.seguradoraConfigId,
+      sistema: input.sistema,
+      ramo: input.ramo,
+      operacao: input.objetivo,
+      objetivo: input.objetivo,
+      url_base: input.url ?? null,
+      versao,
+      status: "rascunho",
+    })
+    .select("id")
+    .single();
+  if (e1) throw e1;
+  const contratoId = (ct as { id: string }).id;
+  const { data: ad, error: e2 } = await sb
+    .from("adapter_spec")
+    .insert({
+      corretora_id: corretoraId,
+      contrato_id: contratoId,
+      seguradora_config_id: input.seguradoraConfigId,
+      sistema: input.sistema,
+      ramo: input.ramo,
+      operacao: input.objetivo,
+      objetivo: input.objetivo,
+      spec: input.spec,
+      caso_teste: input.casoTeste ?? null,
+      versao,
+      ativo: false,
+      status: "em_construcao",
+    })
+    .select("id")
+    .single();
+  if (e2) throw e2;
+  return { contratoId, adapterId: (ad as { id: string }).id, versao };
 }
 
 /** Próximo job de CONSTRUÇÃO pendente (daemon). Token é a defesa. */

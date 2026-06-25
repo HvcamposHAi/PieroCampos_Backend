@@ -19,7 +19,7 @@ import axios from "axios";
 import { chromium, type Page } from "playwright";
 import { capturarPagina } from "../integrations/descoberta/captura/cdp-har.capture";
 import { criarPaginaPlaywright } from "../integrations/descoberta/runtime/playwright-page";
-import { executarRpa } from "../integrations/descoberta/runtime/rpa-runner";
+import { executarRpa, assarSeletores } from "../integrations/descoberta/runtime/rpa-runner";
 import { gerarSpecInicial } from "../integrations/descoberta/construtor/spec-template";
 import { validarEstrutura } from "../integrations/descoberta/validacao/estrutura.validator";
 import { avaliarCriterio, criterioPadrao, type ResultadoObjetivo } from "../integrations/descoberta/criterio/avaliar";
@@ -132,6 +132,16 @@ async function progresso(jobId: string, etapa: string): Promise<void> {
     .catch(() => undefined);
 }
 
+/** o operador cancelou o job? (checado em pontos-chave, inclusive antes de emitir). */
+async function cancelado(jobId: string): Promise<boolean> {
+  try {
+    const r = await axios.get(`${BACKEND}/api/descoberta/agente/construcao/${jobId}/status`, { headers: headers(), timeout: 30_000 });
+    return r.data?.status === "cancelado";
+  } catch {
+    return false;
+  }
+}
+
 /** Passos AUTÔNOMOS = remove os passos de LOGIN (o operador faz login no modo híbrido). */
 function passosAutonomos(passos: PassoRpa[]): PassoRpa[] {
   return passos.filter((p) => {
@@ -172,9 +182,21 @@ async function processarConstrucao(job: JobConstrucao): Promise<void> {
       return;
     }
 
+    // checagem de cancelamento ANTES de pedir o login
+    if (await cancelado(job.id)) {
+      console.log("[construção] cancelado pelo operador — encerrando.");
+      return;
+    }
+
     // LOGIN ASSISTIDO (híbrido): operador resolve login/2FA/captcha
     await progresso(job.id, "aguardando_login_operador");
     await aguardarEnter("[construção] >>> Faça LOGIN (e 2FA/captcha) no navegador. Quando estiver logado, pressione ENTER aqui… ");
+
+    // checagem de cancelamento ANTES dos passos autônomos (inclui o emitir irreversível)
+    if (await cancelado(job.id)) {
+      console.log("[construção] cancelado pelo operador antes de executar — encerrando (nada emitido).");
+      return;
+    }
 
     // PASSOS AUTÔNOMOS (sem login): o agente busca → emite → extrai
     await progresso(job.id, "executando_passos");
@@ -194,12 +216,17 @@ async function processarConstrucao(job: JobConstrucao): Promise<void> {
     const avaliacao = avaliarCriterio(criterioPadrao(objetivo), resultado);
     console.log(`[construção] critério: ${avaliacao.atingido ? "ATINGIDO" : "não atingido"} — ${avaliacao.motivo}`);
 
+    // "assa" os seletores resolvidos no spec → código de scraping DETERMINÍSTICO
+    const specFinal = { ...specInicial, passosRpa: assarSeletores(specInicial.passosRpa ?? [], r.seletoresResolvidos) };
+    const base = { jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, casoTeste: job.resumo?.casoTeste, url };
+
     if (avaliacao.atingido) {
-      await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "validado", spec: specInicial, casoTeste: job.resumo?.casoTeste, criterioSucesso: criterioPadrao(objetivo), url });
-      console.log("[construção] VALIDADO — adapter gravado no Admin › Integrações.");
+      await reportarConstrucao({ ...base, status: "validado", spec: specFinal, criterioSucesso: criterioPadrao(objetivo) });
+      console.log("[construção] VALIDADO — adapter (código de scraping) gravado no Admin › Integrações.");
     } else {
-      // apólice NÃO re-tenta o emitir (irreversível) → escala p/ humano
-      await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "requer_humano", erro: avaliacao.motivo });
+      // apólice NÃO re-tenta o emitir (irreversível) → escala p/ humano; salva RASCUNHO
+      await reportarConstrucao({ ...base, status: "requer_humano", spec: specFinal, erro: avaliacao.motivo });
+      console.log("[construção] Não atingiu o objetivo — código parcial salvo como rascunho p/ revisão.");
     }
   } catch (e) {
     await reportarConstrucao({ jobId: job.id, corretoraId: job.corretora_id, seguradoraConfigId, sistema: job.sistema, ramo: job.ramo ?? "auto", objetivo, status: "erro", erro: (e as Error).message });

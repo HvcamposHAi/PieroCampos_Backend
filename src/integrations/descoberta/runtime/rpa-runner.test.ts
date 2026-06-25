@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { executarRpa, validarPassosRpa, moedaBR, type PaginaRpa } from "./rpa-runner";
+import { executarRpa, validarPassosRpa, moedaBR, assarSeletores, type PaginaRpa } from "./rpa-runner";
 import type { PassoRpa } from "../descoberta.types";
 
 function fakePage(): { page: PaginaRpa; acoes: string[] } {
@@ -74,5 +74,17 @@ describe("executarRpa (emissão de apólice, fake page)", () => {
     const r = await executarRpa([{ tipo: "clicar", seletor: "botao_x", papel: true }], {}, page, { resolverSeletor: async () => null });
     expect(r.ok).toBe(false);
     expect(r.erro).toBe("seletor_nao_resolvido");
+  });
+
+  it("retorna seletoresResolvidos (papel→CSS) e assarSeletores assa o spec", async () => {
+    const { page } = fakePage();
+    const r = await executarRpa(passosApolice, { usuario: "u", senha: "s", proposta: "P" }, page, {
+      resolverSeletor: async (papel) => (papel === "botao_emitir" ? "button.emitir" : null),
+    });
+    expect(r.seletoresResolvidos.botao_emitir).toBe("button.emitir");
+    const assado = assarSeletores(passosApolice, r.seletoresResolvidos);
+    const emitir = assado.find((p) => p.tipo === "clicar" && (p as { esperarDownload?: boolean }).esperarDownload) as { seletor: string; papel?: boolean };
+    expect(emitir.seletor).toBe("button.emitir");
+    expect(emitir.papel).toBe(false);
   });
 });

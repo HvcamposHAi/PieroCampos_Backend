@@ -22,11 +22,15 @@ import {
   aprovarContrato,
   ativarAdapter,
   atualizarProgressoJob,
+  buscarConstrucaoEmVoo,
+  cancelarJob,
   criarJobConstrucao,
   criarJobDescoberta,
   definirExecAtivo,
+  existeAdapterValidado,
   finalizarJob,
   lerExecAtivo,
+  lerStatusJob,
   listarAdapters,
   listarAdaptersDaSeguradora,
   listarContratos,
@@ -34,6 +38,7 @@ import {
   obterContrato,
   proximoJobConstrucao,
   proximoJobDescoberta,
+  salvarAdapterRascunho,
   salvarAdapterValidado,
 } from "./descoberta.persistence";
 
@@ -190,6 +195,8 @@ const construirSchema = z.object({
   ramo: z.string().min(1).default("auto"),
   objetivo: z.enum(["validar_estrutura", "consulta", "cotacao", "apolice"]),
   url: z.string().url().optional(),
+  /** reprocessar mesmo já tendo adapter validado (revê tudo p/ a seguradora). */
+  forcar: z.boolean().optional(),
   casoTeste: z
     .object({
       dados: z.record(z.unknown()).optional(),
@@ -216,7 +223,18 @@ router.post("/construir", exigirAdmin, exigirCorretoraSelecionada, async (req: R
     return;
   }
   try {
-    const { jobId } = await criarJobConstrucao(req.corretoraId!, {
+    // anti-duplicação: já existe um processo EM VOO p/ a chave?
+    const emVoo = await buscarConstrucaoEmVoo(req.corretoraId!, d.seguradoraConfigId, d.ramo, d.objetivo);
+    if (emVoo) {
+      res.status(409).json({ erro: "processo_em_andamento", mensagem: "Já existe uma construção em andamento para essa seguradora/objetivo.", jobId: emVoo.id });
+      return;
+    }
+    // já validado e não está forçando → pede confirmação de reprocesso
+    if (!d.forcar && (await existeAdapterValidado(req.corretoraId!, d.seguradoraConfigId, d.ramo, d.objetivo))) {
+      res.status(409).json({ erro: "ja_validado", mensagem: "Essa seguradora já tem RPA validada para esse objetivo. Reprocessar revê tudo e arquiva a versão anterior." });
+      return;
+    }
+    const { jobId, jaEmVoo } = await criarJobConstrucao(req.corretoraId!, {
       seguradoraConfigId: d.seguradoraConfigId,
       sistema: d.sistema,
       ramo: d.ramo,
@@ -224,10 +242,24 @@ router.post("/construir", exigirAdmin, exigirCorretoraSelecionada, async (req: R
       url: d.url,
       casoTeste: d.casoTeste,
     });
-    res.json({ ok: true, jobId });
+    res.json({ ok: true, jobId, jaEmVoo });
   } catch (e) {
     logger.error("[descoberta.routes] construir falhou", { erro: (e as Error).message });
     res.status(500).json({ erro: "construir_failed", mensagem: (e as Error).message });
+  }
+});
+
+router.post("/execucoes/:id/cancelar", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
+  const id = z.string().uuid().safeParse(req.params.id);
+  if (!id.success) {
+    res.status(422).json({ erro: "id_invalido" });
+    return;
+  }
+  try {
+    await cancelarJob(req.corretoraId!, id.data);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: "cancelar_failed", mensagem: (e as Error).message });
   }
 });
 
@@ -348,6 +380,22 @@ agente.get("/construcao/trabalho", async (req: Request, res: Response) => {
   }
 });
 
+// daemon checa cancelamento (token-gated)
+agente.get("/construcao/:id/status", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  const id = z.string().uuid().safeParse(req.params.id);
+  if (!id.success) {
+    res.status(422).json({ ok: false, erro: "id_invalido" });
+    return;
+  }
+  try {
+    const status = await lerStatusJob(id.data);
+    res.json({ ok: true, status });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: "status_falhou", mensagem: (e as Error).message });
+  }
+});
+
 const progressoSchema = z.object({ jobId: z.string().uuid(), etapa: z.string().max(60) });
 agente.post("/construcao/progresso", async (req: Request, res: Response) => {
   if (!exigirTokenAgente(req, res)) return;
@@ -403,8 +451,27 @@ agente.post("/construcao/reportar", async (req: Request, res: Response) => {
       res.json({ ok: true, status: "validado", adapterId });
       return;
     }
-    await finalizarJob(d.jobId, { status: d.status === "erro" ? "erro" : "andamento", etapa: d.status, erro: d.erro ?? null });
-    res.json({ ok: true, status: d.status });
+    // não-validado (requer_humano/erro/nao_suporta): SALVA o código de scraping
+    // parcial como RASCUNHO (em_construcao) se veio spec — não perde o trabalho.
+    let rascunhoId: string | undefined;
+    if (d.spec && d.status !== "nao_suporta") {
+      try {
+        const r = await salvarAdapterRascunho(d.corretoraId, {
+          seguradoraConfigId: d.seguradoraConfigId,
+          sistema: d.sistema,
+          ramo: d.ramo,
+          objetivo: d.objetivo,
+          spec: d.spec as never,
+          casoTeste: d.casoTeste,
+          url: d.url ?? null,
+        });
+        rascunhoId = r.adapterId;
+      } catch (e) {
+        logger.warn("[descoberta.routes] salvar rascunho falhou", { erro: (e as Error).message });
+      }
+    }
+    await finalizarJob(d.jobId, { status: d.status === "requer_humano" || d.status === "nao_suporta" ? "ok" : "erro", etapa: d.status, erro: d.erro ?? null, resumo: rascunhoId ? { rascunhoId } : undefined });
+    res.json({ ok: true, status: d.status, rascunhoId });
   } catch (e) {
     await finalizarJob(d.jobId, { status: "erro", etapa: "persistir", erro: (e as Error).message });
     res.status(500).json({ ok: false, erro: "reportar_falhou", mensagem: (e as Error).message });

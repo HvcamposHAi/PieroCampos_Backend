@@ -45,6 +45,8 @@ export interface RpaResultado {
   pdfBytes?: number;
   erro?: string;
   passoFalho?: string;
+  /** papel → seletor CSS resolvido em runtime (p/ "assar" o spec determinístico). */
+  seletoresResolvidos: Record<string, string>;
 }
 
 /** "R$ 1.234,56" → 1234.56 ; retorna NaN se não parsear. */
@@ -85,11 +87,19 @@ export async function executarRpa(
   deps: RpaRunnerDeps = {},
 ): Promise<RpaResultado> {
   const val = validarPassosRpa(passos);
-  if (!val.ok) return { ok: false, campos: {}, erro: val.erro };
+  if (!val.ok) return { ok: false, campos: {}, erro: val.erro, seletoresResolvidos: {} };
 
   const campos: Record<string, string | number> = {};
+  const seletoresResolvidos: Record<string, string> = {};
   let pdfBytes: number | undefined;
   const log = deps.log ?? ((): void => undefined);
+
+  // resolve um papel e REGISTRA o seletor (p/ "assar" o spec determinístico).
+  const resolverReg = async (p: { seletor: string; papel?: boolean }): Promise<string | null> => {
+    const sel = await resolver(p, deps);
+    if (sel && p.papel) seletoresResolvidos[p.seletor] = sel;
+    return sel;
+  };
 
   try {
     for (const passo of passos) {
@@ -100,15 +110,15 @@ export async function executarRpa(
         }
         case "preencher": {
           const p = passo as PassoPreencher;
-          const sel = await resolver(p, deps);
-          if (!sel) return { ok: false, campos, erro: "seletor_nao_resolvido", passoFalho: `preencher:${p.descricao ?? p.seletor}` };
+          const sel = await resolverReg(p);
+          if (!sel) return { ok: false, campos, erro: "seletor_nao_resolvido", passoFalho: `preencher:${p.descricao ?? p.seletor}`, seletoresResolvidos };
           await page.preencher(sel, aplicarTemplate(p.valor, contexto));
           break;
         }
         case "clicar": {
           const p = passo as PassoClicar;
-          const sel = await resolver(p, deps);
-          if (!sel) return { ok: false, campos, erro: "seletor_nao_resolvido", passoFalho: `clicar:${p.descricao ?? p.seletor}` };
+          const sel = await resolverReg(p);
+          if (!sel) return { ok: false, campos, erro: "seletor_nao_resolvido", passoFalho: `clicar:${p.descricao ?? p.seletor}`, seletoresResolvidos };
           const res = await page.clicar(sel, { esperarDownload: p.esperarDownload });
           if (p.esperarDownload && res && typeof res === "object" && typeof res.downloadBytes === "number") {
             pdfBytes = res.downloadBytes;
@@ -136,9 +146,23 @@ export async function executarRpa(
       }
     }
   } catch (e) {
-    return { ok: false, campos, pdfBytes, erro: e instanceof Error ? e.message : "erro_rpa" };
+    return { ok: false, campos, pdfBytes, erro: e instanceof Error ? e.message : "erro_rpa", seletoresResolvidos };
   }
 
   const numeroApolice = typeof campos.numeroApolice === "string" ? campos.numeroApolice : null;
-  return { ok: true, campos, numeroApolice, pdfBytes };
+  return { ok: true, campos, numeroApolice, pdfBytes, seletoresResolvidos };
+}
+
+/**
+ * "Assa" os seletores resolvidos no spec: troca os passos `papel` pelos seletores
+ * CSS reais (papel:false). Resultado = código de scraping DETERMINÍSTICO p/ salvar
+ * no banco. Passos não resolvidos permanecem como papel (ainda dependem de LLM).
+ */
+export function assarSeletores(passos: PassoRpa[], resolvidos: Record<string, string>): PassoRpa[] {
+  return passos.map((p) => {
+    if ((p.tipo === "preencher" || p.tipo === "clicar") && p.papel && resolvidos[p.seletor]) {
+      return { ...p, seletor: resolvidos[p.seletor]!, papel: false };
+    }
+    return p;
+  });
 }
