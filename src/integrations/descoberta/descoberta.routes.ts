@@ -42,6 +42,13 @@ import {
   salvarAdapterValidado,
 } from "./descoberta.persistence";
 
+// ── Heartbeat do AGENTE LOCAL (in-memory; Render Free = 1 instância) ─────────
+// O daemon bate aqui a cada poll; o Admin lê p/ mostrar "agente online/offline".
+// Sem DB: se o backend reinicia/hiberna, vira offline até o próximo heartbeat.
+let agenteUltimoHeartbeat = 0;
+let agenteHost = "";
+const AGENTE_ONLINE_JANELA_MS = 30_000; // online se bateu nos últimos 30s
+
 // ── Schemas ────────────────────────────────────────────────────────────────
 
 const harEntradaSchema = z.object({
@@ -87,6 +94,13 @@ router.get("/", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, re
 
 // ⚠️ ROTAS ESTÁTICAS (segmento fixo) ANTES da dinâmica "/:id" — senão "/execucoes"
 // cai no handler de "/:id" e devolve 422 id_invalido.
+// liveness do agente local (o Admin mostra online/offline)
+router.get("/agente-status", exigirAdmin, async (_req: Request, res: Response) => {
+  const idadeMs = agenteUltimoHeartbeat ? Date.now() - agenteUltimoHeartbeat : null;
+  const online = idadeMs !== null && idadeMs < AGENTE_ONLINE_JANELA_MS;
+  res.json({ ok: true, online, host: agenteHost || null, idadeSeg: idadeMs !== null ? Math.round(idadeMs / 1000) : null });
+});
+
 router.get("/execucoes", exigirAdmin, exigirCorretoraSelecionada, async (req: Request, res: Response) => {
   try {
     const execucoes = await listarExecucoes(req.corretoraId!);
@@ -369,6 +383,16 @@ agente.post("/reportar", async (req: Request, res: Response) => {
 });
 
 // ── v2: construção (daemon roda o loop e reporta o adapter VALIDADO) ──────────
+
+// o daemon bate aqui a cada poll → marca-se online
+const heartbeatSchema = z.object({ host: z.string().max(80).optional() });
+agente.post("/heartbeat", async (req: Request, res: Response) => {
+  if (!exigirTokenAgente(req, res)) return;
+  const parsed = heartbeatSchema.safeParse(req.body ?? {});
+  agenteUltimoHeartbeat = Date.now();
+  agenteHost = parsed.success ? (parsed.data.host ?? "") : "";
+  res.json({ ok: true });
+});
 
 agente.get("/construcao/trabalho", async (req: Request, res: Response) => {
   if (!exigirTokenAgente(req, res)) return;

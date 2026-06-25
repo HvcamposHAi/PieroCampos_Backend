@@ -15,6 +15,7 @@
  */
 import "dotenv/config";
 import readline from "node:readline";
+import os from "node:os";
 import axios from "axios";
 import { chromium, type Page } from "playwright";
 import { capturarPagina } from "../integrations/descoberta/captura/cdp-har.capture";
@@ -41,6 +42,13 @@ interface Job {
 
 const headers = (): Record<string, string> => ({ "x-cron-token": TOKEN });
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** sinaliza ao backend que o agente está VIVO (Admin mostra online/offline). */
+async function heartbeat(): Promise<void> {
+  await axios
+    .post(`${BACKEND}/api/descoberta/agente/heartbeat`, { host: os.hostname() }, { headers: headers(), timeout: 15_000 })
+    .catch(() => undefined);
+}
 
 async function pegarTrabalho(): Promise<Job | null> {
   const r = await axios.get(`${BACKEND}/api/descoberta/agente/trabalho`, { headers: headers(), timeout: 90_000 });
@@ -244,6 +252,7 @@ async function loop(): Promise<void> {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
+      await heartbeat(); // sinaliza vivo a cada ciclo (Admin mostra "agente online")
       const construcao = await pegarConstrucao();
       if (construcao) {
         console.log(`[descoberta-agent] CONSTRUÇÃO ${construcao.id} (${construcao.sistema})`);
